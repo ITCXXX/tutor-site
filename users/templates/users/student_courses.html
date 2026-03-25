@@ -1,0 +1,71 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h1 class="display-4 fw-bold mb-3">Мои курсы</h1>
+            <p class="lead text-muted">Курсы, на которые вы записаны</p>
+        </div>
+        
+        {% if enrollments %}
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+            {% for enrollment in enrollments %}
+            <div class="col">
+                <div class="card h-100 shadow-sm border-0">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ enrollment.course.title }}</h5>
+                        <p class="card-text">{{ enrollment.course.short_description|truncatechars:100 }}</p>
+                        
+                        <div class="mb-3">
+                            <div class="progress">
+                                <div class="progress-bar" role="progressbar" 
+                                     style="width: {{ enrollment.progress }}%;" 
+                                     aria-valuenow="{{ enrollment.progress }}" 
+                                     aria-valuemin="0" aria-valuemax="100">
+                                    {{ enrollment.progress }}%
+                                </div>
+                            </div>
+                            <small class="text-muted">Прогресс</small>
+                        </div>
+                        
+                        <div class="d-flex justify-content-between text-muted small mb-2">
+                            <span>📅 Записан: {{ enrollment.enrolled_at|date:"d.m.Y" }}</span>
+                            <span>📊 {{ enrollment.course.modules.count }} модулей</span>
+                        </div>
+                    </div>
+                    <div class="card-footer bg-white border-0">
+                        <div class="d-grid gap-2">
+                            <a href="{% url 'course_detail' enrollment.course.slug %}" class="btn btn-primary">
+                                Продолжить обучение
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div class="text-center mt-5">
+            <a href="{% url 'courses_list' %}" class="btn btn-outline-primary">
+                📚 Посмотреть все курсы
+            </a>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <div style="font-size: 4rem; color: #6c757d;">🎓</div>
+            <h3 class="my-3">Вы ещё не записаны ни на один курс</h3>
+            <p class="text-muted mb-4">
+                Выберите курс из каталога и запишитесь на него, чтобы начать обучение.
+            </p>
+            <a href="{% url 'courses_list' %}" class="btn btn-primary btn-lg">
+                Перейти в каталог курсов
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

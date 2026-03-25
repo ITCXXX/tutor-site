@@ -1,0 +1,108 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Личный кабинет {{ role }}{% endblock %}
+
+{% block content %}
+<section style="padding-top: 100px; min-height: 70vh;">
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-8 col-lg-6">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-primary text-white text-center py-3">
+                        <h3 class="mb-0">Личный кабинет {{ role }}</h3>
+                    </div>
+                    
+                    <div class="card-body p-4">
+                        <div class="text-center mb-4">
+                            <div class="mb-3">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="#667eea" viewBox="0 0 16 16">
+                                    <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10c-2.29 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/>
+                                </svg>
+                            </div>
+                            <h4 class="text-primary mb-2">Добро пожаловать, {{ user.username }}!</h4>
+                            <p class="text-muted">Ваш личный кабинет</p>
+                        </div>
+                        
+                        <div class="mb-4 p-3 bg-light rounded">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <p><strong>Логин:</strong><br>{{ user.username }}</p>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <p><strong>Роль:</strong><br>{{ user.get_role_display }}</p>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <p><strong>Дата регистрации:</strong><br>{{ user.date_joined|date:"d.m.Y" }}</p>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <p><strong>Последний вход:</strong><br>{{ user.last_login|date:"d.m.Y H:i" }}</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-center mt-4">
+                            <a href="{% url 'logout' %}" class="btn btn-outline-danger">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-box-arrow-right me-2" viewBox="0 0 16 16">
+                                    <path fill-rule="evenodd" d="M10 12.5a.5.5 0 0 1-.5.5h-8a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 .5.5v2a.5.5 0 0 0 1 0v-2A1.5 1.5 0 0 0 9.5 2h-8A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h8a1.5 1.5 0 0 0 1.5-1.5v-2a.5.5 0 0 0-1 0v2z"/>
+                                    <path fill-rule="evenodd" d="M15.854 8.354a.5.5 0 0 0 0-.708l-3-3a.5.5 0 0 0-.708.708L14.293 7.5H5.5a.5.5 0 0 0 0 1h8.793l-2.147 2.146a.5.5 0 0 0 .708.708l3-3z"/>
+                                </svg>
+                                Выйти из системы
+                            </a>
+                        </div>
+                        
+                        <!-- Блок быстрой статистики -->
+                        {% if average_progress is not None %}
+                        <div class="card mt-4 border-0" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                            <div class="card-body text-center">
+                                <h5 class="card-title mb-3">📊 Ваш прогресс</h5>
+                                <div class="display-4 fw-bold mb-2">{{ average_progress }}%</div>
+                                <p class="mb-1">Средний прогресс по курсам</p>
+                                <div class="progress bg-white bg-opacity-25" style="height: 8px;">
+                                    <div class="progress-bar bg-white" style="width: {{ average_progress }}%"></div>
+                                </div>
+                                <small>
+                                    {{ completed_courses }} из {{ total_courses }} заданий пройдено
+                                </small>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                    </div>
+                </div>
+                
+                <!-- Карточки функций -->
+                <div class="row mt-4">
+                    <div class="col-md-4">
+                        <div class="card h-100 shadow-sm border-0">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Мои курсы</h5>
+                                <p class="card-text">Просмотр курсов, на которые вы записаны</p>
+                                <a href="{% url 'student_courses' %}" class="btn btn-primary">Перейти</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card h-100 shadow-sm border-0">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Методические материалы</h5>
+                                <p class="card-text">Дополнительные материалы для обучения</p>
+                                <a href="{% url 'materials_list' %}" class="btn btn-primary">Перейти</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card h-100 shadow-sm border-0">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Мой прогресс</h5>
+                                <p class="card-text">Статистика и прогресс по заданиям</p>
+                                <a href="{% url 'student_progress' %}" class="btn btn-primary">Перейти</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

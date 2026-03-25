@@ -1,0 +1,403 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container">
+        <nav aria-label="breadcrumb" class="mb-4">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'home' %}">Главная</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'student_dashboard' %}">Личный кабинет</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'student_progress' %}">Мой прогресс</a></li>
+                <li class="breadcrumb-item active">{{ assignment.title }}</li>
+            </ol>
+        </nav>
+
+        <div class="row">
+            <!-- Левая колонка - задача -->
+            <div class="col-lg-8">
+                <div class="card mb-4">
+                    <div class="card-header bg-light">
+                        <h4 class="mb-0">{{ assignment.title }}</h4>
+                    </div>
+                    <div class="card-body">
+                        <!-- Прогресс -->
+                        <div class="mb-4">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <small class="text-muted">Прогресс по прототипу</small>
+                                <span class="badge bg-primary" id="progress-badge">
+                                    {{ progress.correct_attempts }}/{{ assignment.required_correct }}
+                                </span>
+                            </div>
+                            <div class="progress" style="height: 10px;">
+                                <div class="progress-bar bg-success"
+                                    id="progress-bar"
+                                    style="width: {{ progress.get_percentage }}%"></div>
+                            </div>
+                            <small class="text-muted" id="progress-text">
+                                Решено правильно: {{ progress.correct_attempts }} из {{ progress.total_attempts }}
+                                ({{ progress.get_percentage|floatformat:1 }}%, цель: {{ assignment.required_correct }} правильных)
+                            </small>
+                        </div>
+
+
+                        <!-- Условие задачи -->
+                        <div class="problem-statement card mb-4">
+                            <div class="card-body">
+                                <h5 class="card-title">Условие задачи</h5>
+                                <div id="problem-condition" class="math-content">
+                                    {{ problem.condition_text|safe }}
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Форма ответа -->
+                        <div class="answer-form card">
+                            <div class="card-body">
+                                <h5 class="card-title">Ваш ответ</h5>
+
+                                {% if problem.status == 'solved' %}
+                                <div class="alert alert-success">
+                                    <h6><i class="bi bi-check-circle"></i> Задача решена!</h6>
+                                    <p class="mb-0">
+                                        Правильный ответ: <strong>{{ problem.correct_answer }}</strong>
+                                    </p>
+                                </div>
+                                {% endif %}
+
+                                <form id="answerForm" data-problem-id="{{ problem.id }}">
+                                    <div class="mb-3">
+                                        <label class="form-label">Введите ответ (десятичная дробь):</label>
+                                        <input type="text"
+                                            class="form-control"
+                                            name="answer"
+                                            id="answerInput"
+                                            placeholder="Например, 0.25"
+                                            {% if problem.status == 'solved' %}disabled{% endif %}>
+                                    </div>
+
+                                    <div class="d-flex gap-2">
+                                        <button type="submit" class="btn btn-primary"
+                                                {% if problem.status == 'solved' %}disabled{% endif %}>
+                                            <i class="bi bi-check-lg"></i> Проверить ответ
+                                        </button>
+
+                                        <button type="button" id="newProblemBtn" class="btn btn-outline-secondary">
+                                            <i class="bi bi-arrow-repeat"></i> Новая задача
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Правая колонка - статистика -->
+            <div class="col-lg-4">
+                <!-- Информация о прототипе -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h6 class="mb-0"><i class="bi bi-info-circle"></i> Информация</h6>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Тип ответа:</strong>
+                            <span class="badge bg-info">Выбор 1-4</span>
+                        </p>
+                        <p><strong>Нужно решить правильно:</strong>
+                            {{ assignment.required_correct }} задач
+                        </p>
+                        <p id="status-line">
+                            <strong>Текущий статус:</strong>
+                            {% if progress.is_completed %}
+                            <span class="badge bg-success">Пройдено</span>
+                            {% else %}
+                            <span class="badge bg-warning">В процессе</span>
+                            {% endif %}
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Последние попытки -->
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="mb-0"><i class="bi bi-clock-history"></i> Последние попытки</h6>
+                    </div>
+                    <div class="card-body">
+                        {% if attempts %}
+                        <div class="list-group list-group-flush">
+                            {% for attempt in attempts %}
+                            <div class="list-group-item d-flex justify-content-between align-items-center
+                                       {% if attempt.is_correct %}bg-success bg-opacity-10{% else %}bg-danger bg-opacity-10{% endif %}">
+                                <div>
+                                    <small>{{ attempt.created_at|time }}</small><br>
+                                    <span class="badge {% if attempt.is_correct %}bg-success{% else %}bg-danger{% endif %}">
+                                        Ответ: {{ attempt.user_answer }}
+                                    </span>
+                                </div>
+                                <div>
+                                    {% if attempt.is_correct %}
+                                    <i class="bi bi-check-circle text-success"></i>
+                                    {% else %}
+                                    <i class="bi bi-x-circle text-danger"></i>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <p class="text-muted text-center mb-0">Попыток еще не было</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .math-content {
+        font-size: 1.1rem;
+        line-height: 1.6;
+    }
+
+    .math-content ol {
+        list-style: none;
+        padding: 0;
+        margin: 1.5rem 0;
+    }
+
+    .math-content li {
+        display: flex;
+        align-items: center;
+        padding: 0.8rem 1rem;
+        margin-bottom: 1rem;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        border-left: 4px solid #667eea;
+        transition: background-color 0.2s;
+    }
+
+    .math-content li:hover {
+        background-color: #e9ecef;
+    }
+
+    .math-content li .fraction-number {
+        font-weight: bold;
+        font-size: 1.2rem;
+        min-width: 2.5rem;
+        color: #667eea;
+    }
+
+    .math-content li .fraction-formula {
+        font-size: 1.4rem;
+        margin-left: 1rem;
+    }
+
+    .MathJax {
+        font-size: 1.3rem !important;
+    }
+
+    .problem-statement .card-body {
+        background-color: #fcfdfe;
+    }
+
+    .card-title {
+        color: #2c3e50;
+        border-bottom: 2px solid #667eea;
+        padding-bottom: 0.5rem;
+        margin-bottom: 1.5rem;
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Обработка выбора ответа
+document.querySelectorAll('.answer-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('.answer-btn').forEach(b => {
+            b.classList.remove('active');
+        });
+        this.classList.add('active');
+    });
+});
+
+// Функция загрузки новой задачи
+async function loadNewProblem() {
+    const assignmentId = {{ assignment.id }};
+    const btn = document.getElementById('newProblemBtn');
+    const originalText = btn.innerHTML;
+
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Загрузка...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(`/exam/generate-new/${assignmentId}/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            }
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            // Обновляем условие задачи
+            document.getElementById('problem-condition').innerHTML = result.condition_html;
+            // Обновляем ID задачи в форме
+            document.getElementById('answerForm').dataset.problemId = result.problem_id;
+            // Сбрасываем выбор ответа
+            document.querySelectorAll('.answer-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelectorAll('.btn-check').forEach(radio => {
+                radio.checked = false;
+                radio.disabled = false;
+            });
+            document.querySelectorAll('#answerForm button').forEach(b => {
+                b.disabled = false;
+            });
+
+            showAlert('Новая задача загружена', 'info');
+
+            // Перерисовываем формулы
+            if (window.MathJax) {
+                MathJax.typeset();
+            }
+        } else {
+            showAlert(result.error || 'Ошибка генерации задачи', 'danger');
+        }
+    } catch (error) {
+        showAlert('Ошибка соединения', 'danger');
+        console.error('Ошибка:', error);
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+
+// Отправка ответа
+document.getElementById('answerForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    const formData = new FormData(this);
+    const answer = formData.get('answer');
+
+    if (!answer || answer.trim() === '') {
+        showAlert('Пожалуйста, введите ответ', 'warning');
+        return;
+    }
+
+    const problemId = this.dataset.problemId;
+
+    try {
+        const response = await fetch(`/exam/check/${problemId}/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({ answer: answer })
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            if (result.correct) {
+                showAlert('Правильно! ✓', 'success');
+
+                // Обновляем прогресс на странице
+                const progressBar = document.getElementById('progress-bar');
+                const badge = document.getElementById('progress-badge');
+                const progressText = document.getElementById('progress-text');
+
+                if (progressBar && result.progress_percentage !== undefined) {
+                    progressBar.style.width = result.progress_percentage + '%';
+                }
+
+                if (badge && result.progress_correct_attempts !== undefined) {
+                    badge.textContent = `${result.progress_correct_attempts}/{{ assignment.required_correct }}`;
+                }
+
+                if (progressText &&
+                    result.progress_percentage !== undefined &&
+                    result.progress_correct_attempts !== undefined &&
+                    result.total_attempts !== undefined) {
+
+                    const perc = typeof result.progress_percentage === 'number'
+                        ? result.progress_percentage.toFixed(1)
+                        : result.progress_percentage;
+
+                    progressText.textContent =
+                        `Решено правильно: ${result.progress_correct_attempts} из ${result.total_attempts} (${perc}%, цель: {{ assignment.required_correct }} правильных)`;
+                }
+
+                const statusLine = document.getElementById('status-line');
+
+                if (statusLine) {
+                    if (result.is_completed) {
+                        statusLine.innerHTML =
+                            '<strong>Текущий статус:</strong> <span class="badge bg-success">Пройдено</span>';
+                    } else {
+                        statusLine.innerHTML =
+                            '<strong>Текущий статус:</strong> <span class="badge bg-success">Решена</span>';
+                    }
+                }
+
+            } else {
+                showAlert('Неправильно ✗. Попробуйте еще раз.', 'danger');
+                if (result.attempts_count >= 3 && result.correct_answer !== undefined) {
+                    showAlert(`Правильный ответ: ${result.correct_answer}`, 'info';
+                }
+            }
+        } else {
+            showAlert(result.error || 'Ошибка проверки', 'danger');
+        }
+    } catch (error) {
+        showAlert('Ошибка соединения', 'danger');
+        console.error('Ошибка:', error);
+    }
+});
+
+
+// Обработчик кнопки "Новая задача"
+document.getElementById('newProblemBtn').addEventListener('click', loadNewProblem);
+
+// Вспомогательные функции
+function showAlert(message, type) {
+    document.querySelectorAll('.custom-alert').forEach(alert => alert.remove());
+
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `custom-alert alert alert-${type} alert-dismissible fade show position-fixed`;
+    alertDiv.style.top = '20px';
+    alertDiv.style.right = '20px';
+    alertDiv.style.zIndex = '1050';
+    alertDiv.style.minWidth = '300px';
+    alertDiv.innerHTML = `
+        <div class="d-flex align-items-center">
+            <div class="flex-grow-1">${message}</div>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+
+    document.body.appendChild(alertDiv);
+
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    if (window.MathJax) {
+        MathJax.typeset();
+    }
+});
+</script>
+{% endblock %}

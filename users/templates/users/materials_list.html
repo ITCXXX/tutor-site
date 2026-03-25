@@ -1,0 +1,45 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h1 class="display-4 fw-bold mb-3">Методические материалы</h1>
+            <p class="lead text-muted">Дополнительные материалы для изучения математики</p>
+        </div>
+        
+        {% if categories %}
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+            {% for category in categories %}
+            <div class="col">
+                <div class="card h-100 shadow-sm border-0 hover-shadow">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ category.icon }} {{ category.title }}</h5>
+                        {% if category.description %}
+                        <p class="card-text text-muted">{{ category.description|truncatechars:100 }}</p>
+                        {% endif %}
+                        <p class="card-text">
+                            <small class="text-muted">Материалов: {{ category.materials.count }}</small>
+                        </p>
+                    </div>
+                    <div class="card-footer bg-white border-0">
+                        <a href="{% url 'material_category_detail' category.slug %}" class="btn btn-outline-primary w-100">
+                            Смотреть материалы
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <h3 class="my-3">Материалы в разработке</h3>
+            <p class="text-muted">Скоро здесь появятся полезные материалы для обучения.</p>
+        </div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

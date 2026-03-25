@@ -1,0 +1,160 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container">
+        <!-- Хлебные крошки -->
+        <nav aria-label="breadcrumb" class="mb-4">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'home' %}">Главная</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'courses_list' %}">Каталог курсов</a></li>
+                <li class="breadcrumb-item active" aria-current="page">{{ course.title }}</li>
+            </ol>
+        </nav>
+        
+        <!-- Заголовок курса -->
+        <div class="card border-0 shadow-sm mb-5">
+            <div class="card-body">
+                <h1 class="display-5 fw-bold mb-3">{{ course.title }}</h1>
+                <p class="lead">{{ course.short_description }}</p>
+                
+                <div class="d-flex flex-wrap gap-3 mb-4">
+                    <span class="badge bg-primary fs-6 p-2">
+                        📦 {{ modules.count }} модулей
+                    </span>
+                    <span class="badge bg-success fs-6 p-2">
+                        📚 {{ total_lessons }} уроков
+                    </span>
+                    {% if free_lessons > 0 %}
+                    <span class="badge bg-warning text-dark fs-6 p-2">
+                        🎁 {{ free_lessons }} бесплатных уроков
+                    </span>
+                    {% endif %}
+                </div>
+                
+                {% if course.full_description %}
+                <div class="mt-4">
+                    <h5>О курсе</h5>
+                    <div class="bg-light p-4 rounded">
+                        {{ course.full_description|linebreaks }}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Модули курса -->
+        {% if modules %}
+        <h2 class="mb-4">Программа курса</h2>
+        
+        <div class="accordion" id="courseAccordion">
+            {% for module in modules %}
+            <div class="accordion-item mb-3">
+                <h2 class="accordion-header" id="heading{{ module.id }}">
+                    <button class="accordion-button {% if not forloop.first %}collapsed{% endif %}" 
+                            type="button" 
+                            data-bs-toggle="collapse" 
+                            data-bs-target="#collapse{{ module.id }}">
+                        <div>
+                            <strong>Модуль {{ forloop.counter }}:</strong> {{ module.title }}
+                            <span class="badge bg-secondary ms-2">{{ module.lessons.count }} уроков</span>
+                        </div>
+                    </button>
+                </h2>
+                
+                <div id="collapse{{ module.id }}" 
+                     class="accordion-collapse collapse {% if forloop.first %}show{% endif %}" 
+                     data-bs-parent="#courseAccordion">
+                    <div class="accordion-body">
+                        {% if module.description %}
+                        <p class="mb-3">{{ module.description }}</p>
+                        {% endif %}
+                        
+                        <div class="list-group">
+                            {% for lesson in module.lessons.all %}
+                            <div class="list-group-item border-0">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="mb-1">
+                                            {{ forloop.counter }}. {{ lesson.title }}
+                                            {% if lesson.is_free %}
+                                            <span class="badge bg-success ms-2">Бесплатно</span>
+                                            {% endif %}
+                                        </h6>
+                                        <small class="text-muted">
+                                            {% if lesson.lesson_type == 'video' %}🎥 Видеоурок
+                                            {% elif lesson.lesson_type == 'text' %}📝 Текстовый урок
+                                            {% elif lesson.lesson_type == 'hybrid' %}🎬 Видео + текст
+                                            {% else %}💪 Практика{% endif %}
+                                            
+                                            {% if lesson.duration > 0 %} • {{ lesson.duration }} мин.{% endif %}
+                                        </small>
+                                    </div>
+                                    <div>
+                                        {% if user.is_authenticated %}
+                                        <button class="btn btn-sm btn-outline-primary">
+                                            Начать
+                                        </button>
+                                        {% else %}
+                                        <a href="{% url 'login' %}?next={{ request.path }}" 
+                                           class="btn btn-sm btn-outline-secondary">
+                                            Войдите для доступа
+                                        </a>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        {% else %}
+        <div class="alert alert-info text-center py-4">
+            <h4>Программа курса в разработке</h4>
+            <p class="mb-0">Модули и уроки будут добавлены в ближайшее время.</p>
+        </div>
+        {% endif %}
+        
+        <!-- Кнопки действий -->
+        <div class="text-center mt-5">
+            {% if user.is_authenticated %}
+                {% if user.role == 'student' %}
+                    {% if not user_enrolled %}
+                        <form method="post" action="{% url 'enroll_to_course' course.id %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-primary btn-lg px-5">
+                                🎓 Записаться на курс
+                            </button>
+                        </form>
+                    {% else %}
+                        <div class="alert alert-info">
+                            Вы уже записаны на этот курс. 
+                            <a href="{% url 'student_courses' %}" class="alert-link">Перейти к изучению</a>
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <a href="{% url 'login' %}" class="btn btn-primary btn-lg px-5">
+                        📚 Войти как ученик
+                    </a>
+                {% endif %}
+            {% else %}
+                <div class="d-flex flex-column flex-md-row justify-content-center gap-3">
+                    <a href="{% url 'login' %}?next={{ request.path }}" class="btn btn-primary btn-lg px-5">
+                        🔐 Войти для записи
+                    </a>
+                    <a href="{% url 'home' %}#contact" class="btn btn-outline-primary btn-lg px-5">
+                        📞 Задать вопрос
+                    </a>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</section>
+{% endblock %}

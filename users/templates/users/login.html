@@ -1,0 +1,55 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Вход в личный кабинет{% endblock %}
+
+{% block content %}
+<section style="padding-top: 100px; min-height: 70vh;">
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-6 col-lg-5">
+                <div class="card shadow-sm border-0">
+                    <div class="card-body p-5">
+                        <h2 class="text-center mb-4">Вход в личный кабинет</h2>
+                        
+                        {% if error %}
+                        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                            {{ error }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
+                        {% endif %}
+                        
+                        <form method="post">
+                            {% csrf_token %}
+                            
+                            <div class="mb-3">
+                                <label for="username" class="form-label">Логин</label>
+                                <input type="text" class="form-control" id="username" name="username" 
+                                       placeholder="Введите ваш логин" required autofocus>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <label for="password" class="form-label">Пароль</label>
+                                <input type="password" class="form-control" id="password" name="password" 
+                                       placeholder="Введите ваш пароль" required>
+                            </div>
+                            
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-primary btn-lg">Войти в систему</button>
+                            </div>
+                        </form>
+                        
+                        <div class="text-center mt-4">
+                            <p class="text-muted">Нет аккаунта? 
+                                <a href="{% url 'home' %}#contact" class="text-decoration-none">
+                                    Свяжитесь со мной для регистрации
+                                </a>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

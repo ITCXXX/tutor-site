@@ -1,0 +1,91 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container">
+        <!-- Хлебные крошки -->
+        <nav aria-label="breadcrumb" class="mb-4">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'home' %}">Главная</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'materials_list' %}">Материалы</a></li>
+                <li class="breadcrumb-item active" aria-current="page">{{ category.title }}</li>
+            </ol>
+        </nav>
+        
+        <!-- Заголовок категории -->
+        <div class="mb-5">
+            <h1 class="display-5 fw-bold mb-3">{{ category.icon }} {{ category.title }}</h1>
+            {% if category.description %}
+            <p class="lead">{{ category.description }}</p>
+            {% endif %}
+        </div>
+        
+        <!-- Список материалов -->
+        {% if materials %}
+        <div class="list-group">
+            {% for material in materials %}
+            <div class="list-group-item list-group-item-action border-0 shadow-sm mb-3">
+                <div class="d-flex w-100 justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-1">{{ material.title }}</h5>
+                        <p class="mb-1 text-muted">{{ material.description|truncatechars:150 }}</p>
+                        <small>
+                            <span class="badge bg-secondary">{{ material.get_material_type_display }}</span>
+                            <span class="badge bg-light text-dark border">
+                                {{ material.created_at|date:"d.m.Y" }}
+                            </span>
+                        </small>
+                    </div>
+                    <div class="btn-group" role="group">
+                        {% if material.file %}
+                            {% if material.file.name|lower|slice:"-4:" == ".pdf" %}
+                                <!-- Для PDF: кнопки Просмотреть и Скачать -->
+                                <a href="{% url 'material_view' material.id %}" 
+                                   class="btn btn-primary">
+                                    👁️ Просмотреть
+                                </a>
+                                <a href="{{ material.file.url }}" 
+                                   class="btn btn-outline-primary" 
+                                   download>
+                                    ⬇️
+                                </a>
+                            {% else %}
+                                <!-- Для других файлов: только скачивание -->
+                                <a href="{{ material.file.url }}" 
+                                   class="btn btn-primary" 
+                                   download>
+                                    ⬇️ Скачать
+                                </a>
+                            {% endif %}
+                        {% elif material.external_url %}
+                            <!-- Внешние ссылки -->
+                            <a href="{{ material.external_url }}" 
+                               class="btn btn-primary" 
+                               target="_blank">
+                                🔗 Перейти
+                            </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info text-center py-4">
+            <h4>В этой категории пока нет материалов</h4>
+            <p class="mb-0">Материалы будут добавлены в ближайшее время.</p>
+        </div>
+        {% endif %}
+        
+        <!-- Навигация -->
+        <div class="mt-5 text-center">
+            <a href="{% url 'materials_list' %}" class="btn btn-outline-secondary">
+                ← Вернуться к категориям
+            </a>
+        </div>
+    </div>
+</section>
+{% endblock %}

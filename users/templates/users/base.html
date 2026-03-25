@@ -1,0 +1,168 @@
+<!-- users/templates/users/home.html -->
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Иван Зенченко - Репетитор по математике{% endblock %}
+
+{% block content %}
+    <!-- Герой-секция -->
+    <section id="home" class="hero-section">
+        <div class="container text-center">
+            <h1 class="display-4 fw-bold mb-4">Профессиональный репетитор по математике</h1>
+            <p class="lead mb-5">Индивидуальный подход к каждому ученику. Повышение успеваемости и подготовка к экзаменам</p>
+            <a href="#contact" class="btn btn-primary btn-lg px-4 me-2">Записаться на занятие</a>
+            <a href="#about" class="btn btn-outline-light btn-lg px-4">Узнать больше</a>
+        </div>
+    </section>
+
+    <!-- О себе -->
+    <section id="about" class="py-5">
+        <div class="container">
+            <h2 class="text-center section-title">О себе</h2>
+            
+            <div class="row">
+                <div class="col-lg-10 mx-auto">
+                    <!-- Основной текст о себе из вашего index.html -->
+                    <div class="about-content">
+                        <p class="lead mb-4">
+                            Здравствуйте! Меня зовут Иван. Хотя мне 18 лет, я уже три года успешно помогаю школьникам покорять математику. 
+                            Мой собственный свежий опыт сдачи экзаменов и участия в олимпиадах, помноженный на педагогическую практику, 
+                            дает ученикам ощутимые результаты.
+                        </p>
+                        
+                        <!-- Здесь будет продолжение текста из вашего index.html -->
+                        <!-- Я покажу структуру, вы потом вставите полный текст -->
+                        
+                        <div class="row mt-5">
+                            <div class="col-md-6 mb-4">
+                                <div class="card h-100 feature-card">
+                                    <div class="card-body">
+                                        <h4 class="card-title text-primary">Мои достижения</h4>
+                                        <ul class="list-unstyled">
+                                            <li class="mb-2"><strong>✓ 100 баллов</strong> на профильном ЕГЭ по математике</li>
+                                            <li class="mb-2"><strong>✓ «5»</strong> на ОГЭ по математике</li>
+                                            <li class="mb-2"><strong>✓ Золотая медаль</strong> «За особые успехи в обучении»</li>
+                                            <li class="mb-2"><strong>✓ Победа</strong> в олимпиаде по математике Финансового университета</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6 mb-4">
+                                <div class="card h-100 feature-card">
+                                    <div class="card-body">
+                                        <h4 class="card-title text-primary">Результаты учеников</h4>
+                                        <ul class="list-unstyled">
+                                            <li class="mb-2">✓ Устойчивый рост школьной успеваемости</li>
+                                            <li class="mb-2">✓ Успешная сдача ОГЭ, ЕГЭ, МЦКО</li>
+                                            <li class="mb-2">✓ Поступление в ведущие школы Москвы</li>
+                                            <li class="mb-2">✓ Развитие математического мышления</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- О занятиях -->
+    <section id="lessons" class="py-5 bg-light">
+        <div class="container">
+            <h2 class="text-center section-title">О занятиях</h2>
+            
+            <div class="row">
+                <div class="col-lg-8 mx-auto text-center mb-5">
+                    <p class="lead">
+                        <strong>Все занятия проходят онлайн</strong> с использованием современных цифровых инструментов, 
+                        что обеспечивает максимальную эффективность и комфорт для ученика.
+                    </p>
+                </div>
+            </div>
+            
+            <div class="row g-4">
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <div class="mb-3">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="#667eea" viewBox="0 0 16 16">
+                                    <path d="M14.5 3a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zm-13-1A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13z"/>
+                                    <path d="M3 8.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5zm0-5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-1z"/>
+                                </svg>
+                            </div>
+                            <h4 class="text-primary">ЦИФРОВАЯ ДОСКА MIRO</h4>
+                            <ul class="list-unstyled mt-3">
+                                <li class="mb-2">Визуализация задач через иллюстрации</li>
+                                <li class="mb-2">Все материалы в электронном виде</li>
+                                <li class="mb-2">Интерактив с "вау"-эффектом</li>
+                                <li class="mb-2">Связь через Zoom, Discord и др.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Добавьте еще две карточки по аналогии -->
+            </div>
+        </div>
+    </section>
+
+    <!-- Контакты -->
+    <section id="contact" class="py-5">
+        <div class="container">
+            <h2 class="text-center section-title">Контакты</h2>
+            
+            <div class="row g-4">
+                <div class="col-md-6">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <h4 class="card-title mb-4">Свяжитесь со мной</h4>
+                            <div class="mb-3">
+                                <i class="bi bi-envelope me-2"></i>
+                                <a href="mailto:zenchivan@yandex.ru">zenchivan@yandex.ru</a>
+                            </div>
+                            <div class="mb-3">
+                                <i class="bi bi-telephone me-2"></i>
+                                <a href="tel:+79774797523">+7 (977) 479-75-23</a>
+                            </div>
+                            <div class="mb-3">
+                                <i class="bi bi-telegram me-2"></i>
+                                <a href="https://t.me/Zenchivan" target="_blank">Telegram: @Zenchivan</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card h-100">
+                        <div class="card-body text-center">
+                            <h4 class="card-title mb-4">Мои ресурсы</h4>
+                            <div class="mb-3">
+                                <i class="bi bi-youtube me-2"></i>
+                                <a href="https://www.youtube.com/@vsemvgeomu" target="_blank">YouTube канал</a>
+                            </div>
+                            <div class="mb-3">
+                                <i class="bi bi-telegram me-2"></i>
+                                <a href="https://t.me/ZenchenkoIM" target="_blank">Telegram-канал</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Дополнительные скрипты для главной страницы
+    // Например, галерея портфолио из вашего index.html
+    
+    // Инициализация галереи (упрощенная версия)
+    document.addEventListener('DOMContentLoaded', function() {
+        // Здесь будет код галереи из вашего index.html
+        console.log('Главная страница загружена');
+    });
+</script>
+{% endblock %}
