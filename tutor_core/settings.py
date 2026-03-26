@@ -31,9 +31,11 @@ SECRET_KEY = os.getenv(
 # на сервере зададим DJANGO_DEBUG=False → DEBUG = False
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 
-# ALLOWED_HOSTS:
-# временно разрешаем все хосты, чтобы убедиться, что деплой работает
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = [
+    "web-production-b8e1c.up.railway.app",
+    "127.0.0.1",
+    "localhost",
+]
 
 
 # Application definition
