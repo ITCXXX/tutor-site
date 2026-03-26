@@ -20,132 +20,119 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
-
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-c5!ba$1homzlg3yci=n@jrntp2x1nould$%_b_zitjg2hi^9y&')
+SECRET_KEY = os.getenv(
+    "SECRET_KEY",
+    "django-insecure-c5!ba$1homzlg3yci=n@jrntp2x1nould$%_b_zitjg2hi^9y&",
+)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG') == 'True'
+# Переключатель DEBUG через переменную окружения:
+# локально DJANGO_DEBUG обычно не задан → DEBUG = True
+# на сервере зададим DJANGO_DEBUG=False → DEBUG = False
+DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = []
-
+# ALLOWED_HOSTS:
+# локально можно оставить пустым/["*"],
+# на сервере нужно будет прописать реальный домен (например, "myapp.up.railway.app")
+ALLOWED_HOSTS = ["web-production-b8e1c.up.railway.app", "127.0.0.1", "localhost"]
 
 # Application definition
 
-# tutor_core/settings.py
-
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+
     # Сторонние приложения
-    'rest_framework',  # <-- ДОБАВЬТЕ ЭТУ СТРОКУ ЗДЕСЬ
-    
+    "rest_framework",
+
     # Ваши приложения
-    'users',  # Ваше приложение
+    "users",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = 'tutor_core.urls'
+ROOT_URLCONF = "tutor_core.urls"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
 
-WSGI_APPLICATION = 'tutor_core.wsgi.application'
-
+WSGI_APPLICATION = "tutor_core.wsgi.application"
 
 # Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-
+# Пока SQLite; при переходе на PostgreSQL на хостинге
+# заменим этот блок на чтение DATABASE_URL.
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
 }
 
-
 # Password validation
-# https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
-
 
 # Internationalization
-# https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'ru-ru'  # <--- Изменили на русский
-
-TIME_ZONE = 'Europe/Moscow'  # <--- Изменили на московское время
-
+LANGUAGE_CODE = "ru-ru"
+TIME_ZONE = "Europe/Moscow"
 USE_I18N = True
-
 USE_TZ = True
 
+# Static files (CSS, JavaScript, Images)
 
-# ==================== Статические файлы (CSS, JavaScript, Images) ====================
-# https://docs.djangoproject.com/en/6.0/howto/static-files/
+STATIC_URL = "static/"
 
-# URL-префикс для статических файлов
-STATIC_URL = 'static/'
+# Папка для collectstatic (для деплоя)
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# Папка для сбора ВСЕХ статических файлов командой collectstatic
-STATIC_ROOT = BASE_DIR / 'staticfiles'  # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
-
-# Папки, где Django ищет статические файлы в режиме разработки
+# Папки для статических файлов в разработке
 STATICFILES_DIRS = [
-    BASE_DIR / "static",           # Глобальная папка static
-    BASE_DIR / "users" / "static", # Папка static в приложении users
+    BASE_DIR / "static",
+    BASE_DIR / "users" / "static",
 ]
 
-# ==================== Медиафайлы (загружаемые пользователями) ====================
-# URL-префикс для медиафайлов
-MEDIA_URL = 'media/'
+# Медиафайлы
 
-# Физический путь к папке с медиафайлами
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
-# ==================== Кастомная модель пользователя ====================
-# Указываем Django использовать нашу кастомную модель пользователя
-AUTH_USER_MODEL = 'users.User'
+# Кастомная модель пользователя
+AUTH_USER_MODEL = "users.User"
