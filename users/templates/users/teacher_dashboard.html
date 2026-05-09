@@ -1,0 +1,358 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.teacher-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+}
+.teacher-hero h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: .5rem; }
+.teacher-hero .lead { opacity: .9; margin-bottom: 0; }
+
+.stat-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: 1rem 1.25rem;
+}
+.stat-card .stat-num { font-size: 1.6rem; font-weight: 700; color: var(--c-primary-600); line-height: 1; }
+.stat-card .stat-lbl { font-size: .85rem; color: var(--c-text-muted); margin-top: .25rem; }
+
+.student-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: 1rem 1.25rem;
+    transition: border-color .15s, box-shadow .15s;
+}
+.student-card:hover {
+    border-color: var(--c-primary-600);
+    box-shadow: 0 2px 8px rgba(124, 58, 237, .08);
+}
+.student-name {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin-bottom: .25rem;
+}
+.student-meta {
+    font-size: .82rem;
+    color: var(--c-text-muted);
+    margin-bottom: .75rem;
+}
+.progress-row {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    font-size: .85rem;
+    margin-bottom: .35rem;
+}
+.progress-row .label { color: var(--c-text-soft); flex: 0 0 130px; }
+.progress-row .bar-wrap { flex: 1; }
+.progress-row .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--c-border);
+    overflow: hidden;
+}
+.progress-row .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--c-primary-600);
+}
+.progress-row .bar-fill.green { background: var(--c-success); }
+.progress-row .num { color: var(--c-text-soft); font-weight: 600; flex: 0 0 auto; min-width: 60px; text-align: right; }
+
+.empty-state {
+    background: var(--c-bg-soft);
+    border: 1px dashed var(--c-border);
+    border-radius: .5rem;
+    padding: 2rem;
+    text-align: center;
+    color: var(--c-text-muted);
+}
+
+.course-card {
+    display: block;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: 1rem 1.25rem;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color .15s, box-shadow .15s;
+}
+.course-card:hover {
+    border-color: var(--c-primary-600);
+    box-shadow: 0 2px 8px rgba(124, 58, 237, .08);
+    color: inherit;
+}
+.course-card .course-title {
+    font-weight: 600;
+    color: var(--c-text);
+    margin-bottom: .25rem;
+}
+.course-card .badge-manual {
+    display: inline-block;
+    font-size: .7rem;
+    font-weight: 600;
+    padding: .15rem .45rem;
+    border-radius: .25rem;
+    background: var(--c-warning-soft);
+    color: var(--c-warning-text);
+    margin-left: .25rem;
+}
+.course-card .course-meta {
+    font-size: .82rem;
+    color: var(--c-text-muted);
+    margin-bottom: .55rem;
+}
+.course-card .progress-row {
+    margin-bottom: 0;
+}
+
+/* Раскрывающиеся секции */
+.section-block { margin-bottom: 1.5rem; }
+.section-block summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .55rem .25rem;
+    margin-bottom: .75rem;
+    border-bottom: 1px solid var(--c-border);
+}
+.section-block summary::-webkit-details-marker { display: none; }
+.section-block summary::before {
+    content: "▸";
+    color: var(--c-text-muted);
+    font-size: .9rem;
+    transition: transform .15s;
+    flex: 0 0 auto;
+}
+.section-block[open] > summary::before { transform: rotate(90deg); }
+.section-block summary h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin: 0;
+    flex: 1;
+}
+.section-block summary .section-action {
+    flex: 0 0 auto;
+    font-size: .8rem;
+}
+
+@media (max-width: 640px) {
+    .progress-row { flex-wrap: wrap; }
+    .progress-row .label { flex: 0 0 auto; }
+    .progress-row .num { margin-left: auto; }
+    .stat-card .stat-num { font-size: 1.3rem; }
+    .stat-card { padding: .8rem 1rem; }
+    .section-block summary { flex-wrap: wrap; gap: .4rem; }
+    .section-block summary h2 { font-size: 1rem; }
+    .section-block summary .section-action { width: 100%; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container">
+        <!-- Шапка -->
+        <div class="teacher-hero">
+            <h1>Кабинет преподавателя</h1>
+            <p class="lead">Здравствуйте, {{ user.username }}!
+                {% if user.teacher_profile %} {{ user.teacher_profile.specialization }}{% endif %}</p>
+        </div>
+
+        <!-- Сводная статистика -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-md-4">
+                <div class="stat-card">
+                    <div class="stat-num">{{ students_count }}</div>
+                    <div class="stat-lbl">учеников</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-4">
+                <div class="stat-card">
+                    <div class="stat-num">{{ total_enrollments }}</div>
+                    <div class="stat-lbl">записей на курсы</div>
+                </div>
+            </div>
+            <div class="col-12 col-md-4">
+                <a href="{% url 'teacher_submissions' %}" class="stat-card"
+                   style="display:block; text-decoration: none; color: inherit;
+                          {% if pending_submissions_count %}border-color: var(--c-primary-400); background: var(--c-primary-50);{% endif %}">
+                    <div class="stat-num" style="color: {% if pending_submissions_count %}var(--c-primary-700){% else %}var(--c-text-muted){% endif %};">
+                        {{ pending_submissions_count }}
+                    </div>
+                    <div class="stat-lbl">решений на проверке →</div>
+                </a>
+            </div>
+        </div>
+
+        <!-- Список курсов -->
+        <details class="section-block" open>
+            <summary>
+                <h2>Курсы группы</h2>
+            </summary>
+            {% if courses_data %}
+            <div class="row g-3">
+                {% for c in courses_data %}
+                <div class="col-12 col-lg-6">
+                    <a class="course-card" href="{% url 'teacher_course_progress' c.course.slug %}">
+                        <div class="course-title">{{ c.course.title }}</div>
+                        <div class="course-meta">
+                            {{ c.students_count }}
+                            {% if c.students_count == 1 %}ученик{% elif c.students_count > 1 and c.students_count < 5 %}ученика{% else %}учеников{% endif %}
+                            записан{% if c.students_count == 1 %}{% else %}о{% endif %}
+                        </div>
+                        <div class="progress-row">
+                            <span class="label">Прогресс группы:</span>
+                            <div class="bar-wrap">
+                                <div class="bar"><div class="bar-fill green" style="width: {{ c.avg_progress }}%"></div></div>
+                            </div>
+                            <span class="num">{{ c.avg_progress }}%</span>
+                        </div>
+                    </a>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state" style="padding: 1rem;">
+                Нет курсов, на которые записаны ваши ученики.
+            </div>
+            {% endif %}
+        </details>
+
+        <!-- Задачники -->
+        <details class="section-block" open>
+            <summary>
+                <h2>Мои курсы</h2>
+                <span class="d-flex gap-2 section-action">
+                    <a href="{% url 'teacher_hw_course_new' %}"
+                       onclick="event.stopPropagation()"
+                       class="btn btn-sm btn-primary">+ Курс с ДЗ</a>
+                    <a href="{% url 'teacher_workbook_new' %}"
+                       onclick="event.stopPropagation()"
+                       class="btn btn-sm btn-outline-primary">+ Задачник</a>
+                </span>
+            </summary>
+            {% if owned_data %}
+            <div class="row g-3">
+                {% for c in owned_data %}
+                <div class="col-12 col-lg-6">
+                    <a class="course-card" href="{% url 'teacher_course_progress' c.course.slug %}">
+                        <div class="course-title">
+                            {{ c.course.title }}
+                            {% if c.is_homework %}
+                            <span class="badge-manual" style="background: var(--c-primary-100); color: var(--c-primary-800);">курс с ДЗ</span>
+                            {% else %}
+                            <span class="badge-manual">задачник</span>
+                            {% endif %}
+                        </div>
+                        <div class="course-meta">
+                            {% if c.students_count == 0 %}
+                                нет учеников
+                            {% else %}
+                                {{ c.students_count }}
+                                {% if c.students_count == 1 %}ученик{% elif c.students_count > 1 and c.students_count < 5 %}ученика{% else %}учеников{% endif %}
+                            {% endif %}
+                        </div>
+                        <div class="progress-row">
+                            <span class="label">Решено задач:</span>
+                            <div class="bar-wrap">
+                                <div class="bar"><div class="bar-fill green" style="width: {{ c.avg_progress }}%"></div></div>
+                            </div>
+                            <span class="num">{{ c.avg_progress }}%</span>
+                        </div>
+                    </a>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state" style="padding: 1rem;">
+                У вас ещё нет своих курсов.
+                <a href="{% url 'teacher_hw_course_new' %}">Создайте курс с ДЗ</a>
+                или <a href="{% url 'teacher_workbook_new' %}">задачник</a>.
+            </div>
+            {% endif %}
+        </details>
+
+        <!-- Список учеников -->
+        <details class="section-block" open>
+            <summary>
+                <h2>Мои ученики</h2>
+                <a href="{% url 'teacher_student_new' %}"
+                   onclick="event.stopPropagation()"
+                   class="btn btn-sm btn-primary section-action">+ Новый ученик</a>
+            </summary>
+
+            {% if students_data %}
+            <div class="row g-3">
+                {% for s in students_data %}
+            <div class="col-12 col-lg-6">
+                <a class="student-card" href="{% url 'teacher_student_detail' s.student.id %}"
+                   style="display: block; text-decoration: none; color: inherit;">
+                    <div class="student-name">{{ s.profile.display_name }}</div>
+                    <div class="student-meta">
+                        {% if s.profile.real_name %}{{ s.profile.real_name }}{% endif %}
+                        {% if s.profile.grade %}{% if s.profile.real_name %} · {% endif %}{{ s.profile.grade }} класс{% endif %}
+                    </div>
+
+                    <div class="progress-row">
+                        <span class="label">Курсов:</span>
+                        <span class="num">{{ s.total_courses }}</span>
+                    </div>
+                    <div class="progress-row">
+                        <span class="label">Средний прогресс:</span>
+                        <div class="bar-wrap">
+                            <div class="bar"><div class="bar-fill" style="width: {{ s.average_progress }}%"></div></div>
+                        </div>
+                        <span class="num">{{ s.average_progress }}%</span>
+                    </div>
+                    <div class="progress-row">
+                        <span class="label">Задач решено:</span>
+                        <div class="bar-wrap">
+                            <div class="bar">
+                                {% if s.total_proto > 0 %}
+                                <div class="bar-fill green"
+                                     style="width: {% widthratio s.completed_proto s.total_proto 100 %}%"></div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <span class="num">{{ s.completed_proto }}/{{ s.total_proto }}</span>
+                    </div>
+
+                    {% if s.last_login %}
+                    <div class="text-muted mt-2" style="font-size: .78rem;">
+                        Последний вход: {{ s.last_login|date:"d.m.Y H:i" }}
+                    </div>
+                    {% endif %}
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+            {% else %}
+            <div class="empty-state">
+                <p class="mb-2"><strong>К вам пока не прикреплён ни один ученик.</strong></p>
+                <p class="mb-0">Привязка делается администратором через панель управления:
+                    Профиль ученика → поле «Преподаватель».</p>
+            </div>
+            {% endif %}
+        </details>
+
+        <div class="text-center mt-4 mb-5">
+            <a href="{% url 'logout' %}" class="btn btn-outline-secondary">Выйти из системы</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

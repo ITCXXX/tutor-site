@@ -17,8 +17,8 @@
     }
     
     body {
-        background-color: #f8f9fa;
-        color: #333;
+        background-color: var(--c-bg);
+        color: var(--c-text);
         line-height: 1.6;
         scroll-behavior: smooth;
     }
@@ -36,7 +36,7 @@
     
     .section-header h2 {
         font-size: 2.5rem;
-        color: #2c3e50;
+        color: var(--c-primary-text);
         margin-bottom: 1rem;
         position: relative;
         display: inline-block;
@@ -50,7 +50,7 @@
         transform: translateX(-50%);
         width: 80px;
         height: 4px;
-        background: linear-gradient(to right, #3498db, #2c3e50);
+        background: linear-gradient(to right, var(--c-primary-500), var(--c-primary-text));
         border-radius: 2px;
     }
     
@@ -58,15 +58,15 @@
     #home {
         display: flex;
         align-items: center;
-        background: linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), 
-                    url('https://images.unsplash.com/photo-1509228468518-180dd4864904?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1920&q=80');
+        background-image: linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)),
+                          url('https://images.unsplash.com/photo-1509228468518-180dd4864904?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1920&q=80');
         background-size: cover;
         background-position: center;
         text-align: center;
         padding-top: 120px; /* Учитываем фиксированную навигацию */
         padding-bottom: 100px;
     }
-    
+
     .hero-content {
         max-width: 800px;
         margin: 0 auto;
@@ -75,18 +75,18 @@
     .hero-content h1 {
         font-size: 3.5rem;
         margin-bottom: 1.5rem;
-        color: #2c3e50;
+        color: var(--c-primary-text);
     }
     
     .hero-content p {
         font-size: 1.3rem;
         margin-bottom: 2rem;
-        color: #4a5568;
+        color: var(--c-text-soft);
     }
     
     .btn {
         display: inline-block;
-        background: linear-gradient(to right, #3498db, #2c3e50);
+        background: linear-gradient(to right, var(--c-primary-500), var(--c-primary-text));
         color: white;
         padding: 0.8rem 2rem;
         border-radius: 50px;
@@ -114,7 +114,7 @@
     }
     
     .feature-card {
-        background: white;
+        background: var(--c-surface);
         border-radius: 10px;
         padding: 30px;
         box-shadow: 0 5px 15px rgba(0,0,0,0.05);
@@ -126,7 +126,7 @@
     }
     
     .feature-card h3 {
-        color: #3498db;
+        color: var(--c-primary-500);
         margin-bottom: 15px;
         display: flex;
         align-items: center;
@@ -154,7 +154,7 @@
         content: "✓";
         position: absolute;
         left: 0;
-        color: #3498db;
+        color: var(--c-primary-500);
         font-weight: bold;
     }
     
@@ -167,7 +167,7 @@
     
     /* Стили для отзывов */
     #reviews {
-        background-color: #f9fbfd;
+        background-color: var(--c-bg-soft);
     }
     
     .reviews-container {
@@ -177,7 +177,7 @@
     }
     
     .review-card {
-        background: white;
+        background: var(--c-surface);
         border-radius: 10px;
         padding: 30px;
         box-shadow: 0 5px 20px rgba(0,0,0,0.08);
@@ -196,7 +196,7 @@
         top: 20px;
         left: 20px;
         font-size: 5rem;
-        color: #3498db;
+        color: var(--c-primary-500);
         opacity: 0.1;
         font-family: Georgia, serif;
         line-height: 1;
@@ -210,13 +210,13 @@
     .review-text {
         font-style: italic;
         margin-bottom: 20px;
-        color: #4a5568;
+        color: var(--c-text-soft);
         line-height: 1.7;
     }
     
     .review-author {
         font-weight: bold;
-        color: #2c3e50;
+        color: var(--c-primary-text);
         text-align: right;
         font-style: normal;
     }
@@ -225,7 +225,7 @@
         grid-column: 1 / -1;
         max-width: 800px;
         margin: 0 auto;
-        background: white;
+        background: var(--c-surface);
         border-radius: 10px;
         overflow: hidden;
         box-shadow: 0 8px 25px rgba(0,0,0,0.12);
@@ -281,14 +281,14 @@
         max-height: 500px;
         border-radius: 10px;
         box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        border: 1px solid #eaeaea;
+        border: 1px solid var(--c-border);
         object-fit: contain;
     }
     
     .image-caption {
         margin-top: 15px;
         font-size: 1.1rem;
-        color: #2c3e50;
+        color: var(--c-primary-text);
         font-weight: 500;
     }
     
@@ -301,7 +301,7 @@
     
     .gallery-btn {
         cursor: pointer;
-        background: linear-gradient(to right, #3498db, #2c3e50);
+        background: linear-gradient(to right, var(--c-primary-500), var(--c-primary-text));
         color: white;
         border: none;
         padding: 10px 20px;
@@ -333,7 +333,7 @@
     }
     
     .dot.active {
-        background-color: #3498db;
+        background-color: var(--c-primary-500);
     }
     
     /* Контактная информация */
@@ -346,7 +346,7 @@
     }
     
     .contact-card {
-        background: white;
+        background: var(--c-surface);
         border-radius: 10px;
         padding: 30px;
         box-shadow: 0 5px 15px rgba(0,0,0,0.05);
@@ -359,7 +359,7 @@
     }
     
     .contact-card h3 {
-        color: #2c3e50;
+        color: var(--c-primary-text);
         margin-bottom: 20px;
         font-size: 1.5rem;
     }
@@ -375,17 +375,17 @@
         width: 24px;
         height: 24px;
         margin-right: 10px;
-        fill: #3498db;
+        fill: var(--c-primary-500);
     }
     
     .contact-detail a {
-        color: #2c3e50;
+        color: var(--c-primary-text);
         text-decoration: none;
         transition: color 0.3s;
     }
     
     .contact-detail a:hover {
-        color: #3498db;
+        color: var(--c-primary-500);
         text-decoration: underline;
     }
     
@@ -452,8 +452,8 @@
     <section id="home">
         <div class="container">
             <div class="hero-content">
-                <h1>Профессиональный репетитор по математике</h1>
-                <p>Индивидуальный подход к каждому ученику. Повышение успеваемости и подготовка к экзаменам</p>
+                <h1>Иван Зенченко</h1>
+                <p>Готовлю школьников 5–11 классов к школьной математике, ОГЭ, ЕГЭ (база и профиль) и олимпиадам. Занимаюсь онлайн, преподаю с 2022 года.</p>
                 <a href="#contact" class="btn">Записаться на занятие</a>
             </div>
         </div>
@@ -466,101 +466,54 @@
                 <h2>О себе</h2>
             </div>
             <div class="content">
-                <div class="about-text" style="max-width: 900px; margin: 0 auto;">
-                    <p style="margin-bottom: 20px; font-size: 1.1rem; line-height: 1.8;">
-                        Здравствуйте! Меня зовут Иван. Хотя мне 18 лет, я уже три года успешно помогаю школьникам покорять математику. 
-                        Мой собственный свежий опыт сдачи экзаменов и участия в олимпиадах, помноженный на педагогическую практику, 
-                        дает ученикам ощутимые результаты.
+                <div class="about-text" style="max-width: 760px; margin: 0 auto;">
+                    <p style="margin-bottom: 1.25rem; font-size: 1.08rem; line-height: 1.75;">
+                        Я всех горячо приветствую! Меня зовут Иван. Школьникам преподаю математику
+                        с 2022 года, занимаюсь онлайн — так удобнее и мне, и ученикам из разных
+                        городов. Сейчас я учусь на бюджете в МГИМО по направлению «Международные
+                        экономические отношения».
                     </p>
-                    
-                    <p style="margin-bottom: 20px; font-size: 1.1rem; line-height: 1.8;">
-                        Мое знакомство с углубленной математикой началось в 5 классе. Учеба в математическом классе с 5 по 7 класс 
-                        принесла первые плоды: в 6 классе я стал призером Математического праздника (МОШ по математике). 
-                        Дальнейшее развитие получил в проекте "Математическая вертикаль", где учился с 7 по 9 класс, который дал мне 
-                        ту самую прочную базу. Следующим шагом стал профильный 10 класс с углубленным изучением математики школы №1514, 
-                        которая является одной из сильнейших физмат-школ Москвы, где я подтвердил свой уровень, став призером 
-                        Межрегиональной олимпиады школьников на базе ведомственных образовательных организаций.
+
+                    <p style="margin-bottom: 1.25rem; font-size: 1.08rem; line-height: 1.75;">
+                        Свой путь в математике я начал с пятого класса, когда поступил в математический
+                        класс. С 7 по 9 класс продолжил в проекте «Математическая вертикаль», а в 10
+                        классе учился в физмат-классе школы №1514. 11 класс я провёл на семейном
+                        обучении. По пути собрал и несколько дипломов: ещё в 6 классе стал призёром
+                        Математического праздника (МОШ), в 10 классе — призёром Межрегиональной
+                        олимпиады школьников, а в выпускном — победителем олимпиады Финансового
+                        университета. Школу окончил с золотой медалью, ЕГЭ по профильной математике
+                        сдал на 100 баллов, а ОГЭ — на «5».
                     </p>
-                    
-                    <p style="margin-bottom: 20px; font-size: 1.1rem; line-height: 1.8;">
-                        Мои главные достижения говорят сами за себя:
+
+                    <p style="margin-bottom: 0; font-size: 1.08rem; line-height: 1.75;">
+                        Сейчас я работаю с учениками 5–11 классов: это и школьная программа, и подготовка
+                        к ОГЭ, и ЕГЭ (база и профиль), и олимпиады. Форматы разные — индивидуально,
+                        в парах или небольших группах; темп и план подбираю под конкретного ребёнка.
+                        А если математика «не идёт» — мы вместе ищем, где именно случился пробел,
+                        и собираем фундамент заново. Чаще всего дело не в способностях, а в нескольких
+                        пропущенных шагах несколько лет назад — и когда они аккуратно закрываются,
+                        всё остальное встаёт на свои места.
                     </p>
-                    
-                    <ul style="list-style-type: none; margin-bottom: 30px;">
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            <strong>100 баллов</strong> на профильном ЕГЭ по математике
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            <strong>«5»</strong> на ОГЭ по математике
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            <strong>Золотая медаль</strong> «За особые успехи в обучении»
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            <strong>Победа</strong> в олимпиаде по математике Финансового университета при Правительстве РФ (11 класс)
-                        </li>
-                    </ul>
-                    
-                    <p style="margin-bottom: 20px; font-size: 1.1rem; line-height: 1.8;">
-                        За три года репетиторской практики я помог многим школьникам. Ключевые результаты моих учеников:
-                    </p>
-                    
-                    <ul style="list-style-type: none; margin-bottom: 30px;">
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Устойчивый рост школьной успеваемости
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Успешная сдача ответственных экзаменов: ОГЭ, ЕГЭ, МЦКО
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Поступление в ведущие школы Москвы
-                        </li>
-                    </ul>
-                    
-                    <p style="margin-bottom: 20px; font-size: 1.1rem; line-height: 1.8;">
-                        Искренние отзывы моих учеников и их родителей — лучшее подтверждение эффективности нашей совместной работы.
-                    </p>
-                    
-                    <p style="margin-bottom: 20px; font-size: 1.1rem; line-height: 1.8;">
-                        Как я преподаю? Я прекрасно понимаю актуальные требования экзаменов и знаю, как доходчиво объяснить даже 
-                        самые сложные темы. В основе моего подхода:
-                    </p>
-                    
-                    <ul style="list-style-type: none; margin-bottom: 30px;">
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Индивидуальная траектория для каждого ученика
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Четкая систематизация знаний и работа над пробелами
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Фокус на понимании сути, а не механическом заучивании
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Развитие навыков математического мышления и логики
-                        </li>
-                        <li style="margin-bottom: 15px; padding-left: 30px; position: relative; font-size: 1.1rem;">
-                            <span style="position: absolute; left: 0; color: #3498db; font-weight: bold;">✓</span>
-                            Регулярная отработка решения задач, что особенно актуально в современных реалиях
-                        </li>
-                    </ul>
-                    
-                    <p style="font-size: 1.1rem; line-height: 1.8;">
-                        Моя главная цель — сформировать у вас глубокое понимание математики и уверенность в своих силах. 
-                        Я сам недавно прошел путь от ученика до высоких результатов и отлично знаю, как этого достичь. 
-                        Готов стать вашим надежным проводником в мире математики!
-                    </p>
+                </div>
+
+                <!-- Цифры -->
+                <div class="stats-grid" style="max-width: 900px; margin: 3rem auto 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                    <div style="background: #fff; border: 1px solid var(--c-border); border-radius: var(--r-lg); padding: 1.25rem 1rem; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: 700; color: var(--c-primary-700); line-height: 1;">2022</div>
+                        <div style="font-size: .88rem; color: var(--c-text-muted); margin-top: .35rem;">год начала практики</div>
+                    </div>
+                    <div style="background: #fff; border: 1px solid var(--c-border); border-radius: var(--r-lg); padding: 1.25rem 1rem; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: 700; color: var(--c-primary-700); line-height: 1;">100</div>
+                        <div style="font-size: .88rem; color: var(--c-text-muted); margin-top: .35rem;">баллов за ЕГЭ</div>
+                    </div>
+                    <div style="background: #fff; border: 1px solid var(--c-border); border-radius: var(--r-lg); padding: 1.25rem 1rem; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: 700; color: var(--c-primary-700); line-height: 1;">5–11</div>
+                        <div style="font-size: .88rem; color: var(--c-text-muted); margin-top: .35rem;">классы, с которыми работаю</div>
+                    </div>
+                    <div style="background: #fff; border: 1px solid var(--c-border); border-radius: var(--r-lg); padding: 1.25rem 1rem; text-align: center;">
+                        <div style="font-size: 1.8rem; font-weight: 700; color: var(--c-primary-700); line-height: 1;">МГИМО</div>
+                        <div style="font-size: .88rem; color: var(--c-text-muted); margin-top: .35rem;">студент-бюджетник</div>
+                    </div>
                 </div>
                 
                 <!-- Портфолио -->
@@ -609,19 +562,19 @@
     </section>
 
     <!-- О занятиях -->
-    <section id="lessons" style="background-color: #f0f7ff;">
+    <section id="lessons" style="background-color: var(--c-primary-50);">
         <div class="container">
             <div class="section-header">
-                <h2>О занятиях</h2>
+                <h2>Как проходят занятия</h2>
             </div>
             <div class="content">
-                <div style="max-width: 800px; margin: 0 auto; text-align: center; margin-bottom: 40px;">
-                    <p style="font-size: 1.2rem;">
-                        <strong>Все занятия проходят онлайн</strong> с использованием современных цифровых инструментов, 
-                        что обеспечивает максимальную эффективность и комфорт для ученика.
+                <div style="max-width: 760px; margin: 0 auto 2.5rem; text-align: center;">
+                    <p style="font-size: 1.08rem; line-height: 1.7;">
+                        Все уроки идут онлайн по видеосвязи (Zoom или Teams) с цифровой доской (Miro или Holst).
+                        Доска заменяет тетрадь: после урока остаётся весь конспект — ученик может вернуться к любой задаче.
                     </p>
                 </div>
-                
+
                 <div class="lesson-features">
                     <div class="feature-card">
                         <h3>
@@ -630,48 +583,45 @@
                                 <line x1="8" y1="21" x2="16" y2="21"></line>
                                 <line x1="12" y1="17" x2="12" y2="21"></line>
                             </svg>
-                            <span class="miro-highlight">ЦИФРОВАЯ ДОСКА MIRO</span> В РЕАЛЬНОМ ВРЕМЕНИ
+                            Цифровая доска
                         </h3>
                         <ul>
-                            <li>Визуализация задач через красивые иллюстрации</li>
-                            <li>Все материалы — в электронном виде после урока</li>
-                            <li>Интерактив с "вау"-эффектом вместо скучной теории</li>
-                            <li>Связь через удобную для вас платформу (Zoom, Discord и др.)</li>
-                            <li>Удобство онлайн-формата без потери качества</li>
+                            <li>Miro или Holst — пишем и рисуем вместе в реальном времени</li>
+                            <li>Графики, чертежи, схемы — наглядно, а не «диктую — записывайте»</li>
+                            <li>Конспект урока остаётся ученику навсегда</li>
+                            <li>Связь через Zoom или Microsoft Teams — что вам удобнее</li>
                         </ul>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <polyline points="12 6 12 12 16 14"></polyline>
                             </svg>
-                            Формат занятий
+                            Формат
                         </h3>
                         <ul>
-                            <li>Индивидуальные уроки <strong>от 45 до 120 минут</strong></li>
-                            <li>Гибкое расписание под ваши возможности</li>
-                            <li>Адаптация под уровень и цели ученика</li>
-                            <li>Регулярная обратная связь и отчеты</li>
-                            <li>Доступ к учебным материалам 24/7</li>
+                            <li>Один на один, 45–120 минут — под возраст и задачу</li>
+                            <li>Гибкое расписание, переносы за сутки — без проблем</li>
+                            <li>5–11 классы: школьная программа, ОГЭ, ЕГЭ, олимпиады</li>
+                            <li>Между уроками отвечаю на вопросы по материалу</li>
                         </ul>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
                                 <polyline points="22 4 12 14.01 9 11.01"></polyline>
                             </svg>
-                            Что вы получите
+                            Чему я учу
                         </h3>
                         <ul>
-                            <li>Понимание вместо заучивания</li>
-                            <li>Умение решать нестандартные задачи</li>
-                            <li>Повышение успеваемости минимум на 1 балл</li>
-                            <li>Развитие логического мышления</li>
-                            <li>Уверенность на контрольных и экзаменах</li>
+                            <li>Понимать, а не заучивать формулы</li>
+                            <li>Видеть структуру задачи и ловушки в условиях</li>
+                            <li>Спокойно работать на контрольных и экзаменах</li>
+                            <li>Не бояться, когда задача «не похожа на тип»</li>
                         </ul>
                     </div>
                 </div>
@@ -683,23 +633,9 @@
     <section id="reviews">
         <div class="container">
             <div class="section-header">
-                <h2>Отзывы учеников</h2>
+                <h2>Отзывы</h2>
             </div>
             <div class="reviews-container">
-                <!-- Видео отзыв (вертикальный) -->
-                <!-- Замените ВЕСЬ блок video-review на этот: -->
-<div class="video-review">
-    <div class="video-container vertical">
-        <video controls playsinline poster="{% static 'users/images/attest.jpg' %}">
-            <source src="{% static 'users/images/34343.mp4' %}" type="video/mp4">
-            Ваш браузер не поддерживает видео в формате MP4.
-        </video>
-    </div>
-    <p style="text-align: center; margin-top: 10px; font-style: italic;">
-        Видеоотзыв ученика
-    </p>
-</div>
-                
                 <!-- Новый отзыв -->
                 <div class="review-card">
                     <div class="review-content">
@@ -707,7 +643,7 @@
                             Хочу выразить огромную благодарность Ивану! Мы к нему обратились, для подготовки ребенка к МКЦО, 
                             задача усложнилась коротким сроком. По результату экзамен был сдан на твердую 4, чему мы были очень рады. 
                             При этом оценки поменялись с 4 на 5! Спасибо, огромное, за его понимание и готовность помочь, 
-                            в ситуациях, которые мы думали невозможные! 💐💐💐
+                            в ситуациях, которые мы думали невозможные!
                         </div>
                         <div class="review-author">— Инна</div>
                     </div>
@@ -748,9 +684,9 @@
                     </div>
                 </div>
 
-                <div class="review-card" style="background: #e6f7ff; border: 2px dashed #3498db; text-align: center; padding: 40px;">
+                <div class="review-card" style="background: #e6f7ff; border: 2px dashed var(--c-primary-500); text-align: center; padding: 40px;">
                     <div class="review-content">
-                        <div class="review-text" style="font-size: 1.8rem; font-weight: bold; color: #2c3e50; font-style: italic;">
+                        <div class="review-text" style="font-size: 1.8rem; font-weight: bold; color: var(--c-primary-text); font-style: italic;">
                             Скоро здесь будет ваш отзыв!
                         </div>
                     </div>

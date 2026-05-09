@@ -44,6 +44,12 @@ CSRF_TRUSTED_ORIGINS = [
 # Application definition
 
 INSTALLED_APPS = [
+    # django-unfold должен идти ДО django.contrib.admin
+    "unfold",
+    "unfold.contrib.filters",
+    "unfold.contrib.forms",
+    "unfold.contrib.inlines",
+
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -114,21 +120,9 @@ else:
 
 
 # Password validation
-
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
-]
+# Валидаторы отключены: пароли учеников выдаёт сам преподаватель,
+# простые пароли вроде "polina" — это нормально и удобно.
+AUTH_PASSWORD_VALIDATORS = []
 
 # Internationalization
 
@@ -139,7 +133,7 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
 
 # Папка для collectstatic (для деплоя)
 STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -152,8 +146,111 @@ STATICFILES_DIRS = [
 
 # Медиафайлы
 
-MEDIA_URL = "media/"
+MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Разрешаем iframe с того же домена — нужно для встроенного просмотра PDF.
+X_FRAME_OPTIONS = "SAMEORIGIN"
 
 # Кастомная модель пользователя
 AUTH_USER_MODEL = "users.User"
+
+# ===== django-unfold (красивая админка) =====
+UNFOLD = {
+    "SITE_TITLE": "Tutor Site — админка",
+    "SITE_HEADER": "Tutor Site",
+    "SITE_SUBHEADER": "Панель управления",
+    "SITE_SYMBOL": "school",  # Material Symbols icon
+    "SHOW_HISTORY": True,
+    "SHOW_VIEW_ON_SITE": True,
+    "THEME": None,  # None = пользователь сам переключает свет/тьму
+    "COLORS": {
+        "primary": {
+            "50": "239 246 255",
+            "100": "219 234 254",
+            "200": "191 219 254",
+            "300": "147 197 253",
+            "400": "96 165 250",
+            "500": "59 130 246",
+            "600": "37 99 235",
+            "700": "29 78 216",
+            "800": "30 64 175",
+            "900": "30 58 138",
+            "950": "23 37 84",
+        },
+    },
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+        "navigation": [
+            {
+                "title": "Обучение",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Курсы",
+                        "icon": "menu_book",
+                        "link": "/admin/users/course/",
+                    },
+                    {
+                        "title": "Модули",
+                        "icon": "view_module",
+                        "link": "/admin/users/module/",
+                    },
+                    {
+                        "title": "Уроки",
+                        "icon": "article",
+                        "link": "/admin/users/lesson/",
+                    },
+                    {
+                        "title": "Задания",
+                        "icon": "assignment",
+                        "link": "/admin/users/assignment/",
+                    },
+                ],
+            },
+            {
+                "title": "Пользователи",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Пользователи",
+                        "icon": "person",
+                        "link": "/admin/users/user/",
+                    },
+                    {
+                        "title": "Преподаватели",
+                        "icon": "school",
+                        "link": "/admin/users/teacherprofile/",
+                    },
+                    {
+                        "title": "Профили учеников",
+                        "icon": "badge",
+                        "link": "/admin/users/studentprofile/",
+                    },
+                    {
+                        "title": "Записи на курсы",
+                        "icon": "how_to_reg",
+                        "link": "/admin/users/enrollment/",
+                    },
+                ],
+            },
+            {
+                "title": "Материалы",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Категории",
+                        "icon": "folder",
+                        "link": "/admin/users/materialcategory/",
+                    },
+                    {
+                        "title": "Материалы",
+                        "icon": "description",
+                        "link": "/admin/users/material/",
+                    },
+                ],
+            },
+        ],
+    },
+}

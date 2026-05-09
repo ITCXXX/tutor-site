@@ -1,0 +1,93 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.form-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.form-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.form-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.5rem;
+}
+.format-block {
+    background: var(--c-bg-soft);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    padding: 1rem 1.2rem;
+    margin-top: 1.5rem;
+    font-size: .85rem;
+}
+.format-block code, .format-block pre {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-sm);
+    padding: .5rem .8rem;
+    font-size: .82rem;
+    font-family: var(--font-mono);
+    display: block;
+    overflow-x: auto;
+    white-space: pre;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 700px;">
+
+        <a href="{% url 'teacher_course_progress' course.slug %}" class="btn-back">← К курсу</a>
+
+        <div class="form-hero">
+            <h1>Импорт ДЗ — {{ course.title }}</h1>
+            <div class="meta">Загрузите JSON-файл с заранее подготовленным ДЗ. Картинки в JSON не передаются — добавьте их вручную после импорта.</div>
+        </div>
+
+        <form method="post" enctype="multipart/form-data" class="form-card">
+            {% csrf_token %}
+            <div class="mb-3">
+                <label class="form-label">JSON-файл *</label>
+                <input type="file" name="file" class="form-control" accept=".json,application/json" required>
+            </div>
+            <div class="d-flex justify-content-between mt-3">
+                <a href="{% url 'teacher_course_progress' course.slug %}" class="btn btn-outline-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">Импортировать →</button>
+            </div>
+        </form>
+
+        <div class="format-block">
+            <strong>Формат файла</strong> (получается автоматически при «Экспорт» с любого ДЗ):
+<pre>{
+  "version": 1,
+  "lesson_title": "ДЗ от 5 мая",
+  "lesson_intro": "Краткая теория…",
+  "tasks": [
+    {
+      "condition": "Реши уравнение \\(2x+3=11\\)",
+      "answer": "4",
+      "requires_review": false
+    },
+    {
+      "condition": "Докажи теорему о трёх перпендикулярах",
+      "answer": "",
+      "requires_review": true
+    }
+  ]
+}</pre>
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,95 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.form-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
+
+.form-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: 1.5rem;
+}
+.form-card label { font-weight: 500; font-size: .9rem; color: var(--c-text-soft); }
+.form-card .form-text { font-size: .78rem; color: var(--c-text-muted); }
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 700px;">
+
+        <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+
+        <div class="form-hero">
+            <h1>Новый ученик</h1>
+        </div>
+
+        <form method="post" class="form-card">
+            {% csrf_token %}
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Логин *</label>
+                    <input type="text" name="username" class="form-control"
+                           value="{{ form_data.username|default:'' }}" required autofocus>
+                    <div class="form-text">Латиница, без пробелов. Под этим именем ученик будет входить.</div>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Пароль *</label>
+                    <input type="text" name="password" class="form-control"
+                           value="{{ form_data.password|default:'' }}" required>
+                    <div class="form-text">Минимум 4 символа. Можно открыто — ученик потом сменит.</div>
+                </div>
+
+                <div class="col-md-6">
+                    <label class="form-label">Имя для отображения</label>
+                    <input type="text" name="display_name" class="form-control"
+                           value="{{ form_data.display_name|default:'' }}"
+                           placeholder="Полина">
+                    <div class="form-text">Если пусто — будет использован логин.</div>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Полное имя</label>
+                    <input type="text" name="real_name" class="form-control"
+                           value="{{ form_data.real_name|default:'' }}"
+                           placeholder="Иванова Полина">
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Класс</label>
+                    <input type="text" name="grade" class="form-control"
+                           value="{{ form_data.grade|default:'' }}"
+                           placeholder="5">
+                </div>
+                <div class="col-md-8">
+                    <label class="form-label">Заметки</label>
+                    <input type="text" name="notes" class="form-control"
+                           value="{{ form_data.notes|default:'' }}"
+                           placeholder="Слабо с дробями, занимаемся по средам">
+                </div>
+            </div>
+
+            <div class="mt-4 d-flex justify-content-between">
+                <a href="{% url 'teacher_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">Создать ученика →</button>
+            </div>
+            <div class="form-text mt-2">
+                После создания вы сразу сможете записать ученика на курсы.
+            </div>
+        </form>
+
+    </div>
+</section>
+{% endblock %}

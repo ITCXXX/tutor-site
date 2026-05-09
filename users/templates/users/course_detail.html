@@ -1,7 +1,112 @@
 {% extends "users/visitor_base.html" %}
-{% load static %}
+{% load static dict_extras %}
 
 {% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+/* Lesson — раскрывающийся блок «Задание N» */
+.lesson-collapse {
+    border: 1px solid var(--c-border);
+    border-radius: .375rem;
+    margin-bottom: .6rem;
+    background: var(--c-surface);
+    overflow: hidden;
+}
+.lesson-collapse:last-child { margin-bottom: 0; }
+.lesson-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: .65rem .9rem;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    user-select: none;
+    background: var(--c-bg-soft);
+}
+.lesson-summary:hover { background: #eef0f3; }
+.lesson-summary::-webkit-details-marker { display: none; }
+.lesson-summary::before {
+    content: "▸";
+    color: var(--c-text-muted);
+    font-size: .9rem;
+    transition: transform .15s;
+    flex: 0 0 auto;
+}
+details[open] > .lesson-summary::before { transform: rotate(90deg); }
+.lesson-title {
+    font-weight: 600;
+    color: var(--c-text);
+    flex: 1;
+    min-width: 0;
+}
+.lesson-meta {
+    font-size: .78rem;
+    color: var(--c-text-muted);
+    flex: 0 0 auto;
+}
+.lesson-body { padding: .8rem .9rem; border-top: 1px solid #e9ecef; }
+
+/* Карточка прототипа — Тип N (видна сразу после раскрытия урока) */
+.proto-card {
+    border: 1px solid var(--c-border);
+    border-left: 3px solid #adb5bd;
+    border-radius: .375rem;
+    background: var(--c-surface);
+    padding: .65rem .85rem;
+    margin-bottom: .55rem;
+}
+.proto-card:last-child { margin-bottom: 0; }
+.proto-card.has-progress { border-color: var(--c-success); border-left-color: var(--c-success); background: var(--c-success-soft); }
+
+.proto-card-header {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    margin-bottom: .25rem;
+}
+.proto-num { font-weight: 600; color: var(--c-text); flex: 0 0 auto; }
+.proto-bar-wrap { flex: 0 0 90px; margin-left: auto; }
+.proto-bar { height: 4px; border-radius: 2px; background: var(--c-border); overflow: hidden; }
+.proto-bar-fill { height: 100%; border-radius: 2px; background: var(--c-primary-600); }
+.proto-card.has-progress .proto-bar-fill { background: var(--c-success); }
+.proto-count { font-size: .72rem; color: var(--c-text-muted); white-space: nowrap; flex: 0 0 auto; }
+.proto-lock { font-size: .85rem; color: var(--c-text-muted); flex: 0 0 auto; margin-left: auto; }
+
+.proto-fulltitle {
+    font-size: .9rem;
+    font-weight: 500;
+    color: var(--c-text-soft);
+    margin-bottom: .25rem;
+}
+.proto-desc {
+    font-size: .82rem;
+    color: var(--c-text-muted);
+    margin-bottom: .55rem;
+    line-height: 1.4;
+}
+.proto-link {
+    display: inline-block;
+    font-size: .82rem;
+    padding: .3rem .75rem;
+    border-radius: .3rem;
+    background: var(--c-primary-600);
+    color: #fff;
+    text-decoration: none;
+}
+.proto-link:hover { background: var(--c-primary-700); color: #fff; }
+.has-progress .proto-link { background: var(--c-success); }
+.has-progress .proto-link:hover { background: #15803d; color: #fff; }
+
+@media (max-width: 640px) {
+    .proto-card-header { flex-wrap: wrap; gap: .35rem; }
+    .proto-bar-wrap { flex: 1 1 auto; margin-left: 0; }
+    .proto-count { margin-left: auto; }
+    .lesson-summary { gap: .45rem; }
+    .accordion-button { font-size: .95rem; padding: .85rem 1rem; }
+}
+</style>
+{% endblock %}
 
 {% block content %}
 <section style="padding-top: 80px;">
@@ -14,27 +119,22 @@
                 <li class="breadcrumb-item active" aria-current="page">{{ course.title }}</li>
             </ol>
         </nav>
-        
+
         <!-- Заголовок курса -->
         <div class="card border-0 shadow-sm mb-5">
             <div class="card-body">
                 <h1 class="display-5 fw-bold mb-3">{{ course.title }}</h1>
                 <p class="lead">{{ course.short_description }}</p>
-                
+
                 <div class="d-flex flex-wrap gap-3 mb-4">
                     <span class="badge bg-primary fs-6 p-2">
-                        📦 {{ modules.count }} модулей
+                        {{ modules.count }} модулей
                     </span>
                     <span class="badge bg-success fs-6 p-2">
-                        📚 {{ total_lessons }} уроков
+                        {{ total_lessons }} уроков
                     </span>
-                    {% if free_lessons > 0 %}
-                    <span class="badge bg-warning text-dark fs-6 p-2">
-                        🎁 {{ free_lessons }} бесплатных уроков
-                    </span>
-                    {% endif %}
                 </div>
-                
+
                 {% if course.full_description %}
                 <div class="mt-4">
                     <h5>О курсе</h5>
@@ -45,18 +145,18 @@
                 {% endif %}
             </div>
         </div>
-        
+
         <!-- Модули курса -->
         {% if modules %}
         <h2 class="mb-4">Программа курса</h2>
-        
+
         <div class="accordion" id="courseAccordion">
             {% for module in modules %}
             <div class="accordion-item mb-3">
                 <h2 class="accordion-header" id="heading{{ module.id }}">
-                    <button class="accordion-button {% if not forloop.first %}collapsed{% endif %}" 
-                            type="button" 
-                            data-bs-toggle="collapse" 
+                    <button class="accordion-button {% if not forloop.first %}collapsed{% endif %}"
+                            type="button"
+                            data-bs-toggle="collapse"
                             data-bs-target="#collapse{{ module.id }}">
                         <div>
                             <strong>Модуль {{ forloop.counter }}:</strong> {{ module.title }}
@@ -64,64 +164,81 @@
                         </div>
                     </button>
                 </h2>
-                
-                <div id="collapse{{ module.id }}" 
-                     class="accordion-collapse collapse {% if forloop.first %}show{% endif %}" 
+
+                <div id="collapse{{ module.id }}"
+                     class="accordion-collapse collapse {% if forloop.first %}show{% endif %}"
                      data-bs-parent="#courseAccordion">
                     <div class="accordion-body">
                         {% if module.description %}
                         <p class="mb-3">{{ module.description }}</p>
                         {% endif %}
-                        
-                        <div class="list-group">
-                            {% for lesson in module.lessons.all %}
-                            <div class="list-group-item border-0">
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <h6 class="mb-1">
-                                            {{ forloop.counter }}. {{ lesson.title }}
-                                            {% if lesson.is_free %}
-                                            <span class="badge bg-success ms-2">Бесплатно</span>
+
+                        {% for lesson in module.lessons.all %}
+                        {% if lesson.id in generator_lesson_ids %}
+                        {# Урок с генераторами — клик ведёт сразу на единую практику #}
+                        <a href="{% url 'lesson_practice' lesson.id %}" class="lesson-collapse"
+                           style="display:flex; padding:.65rem .9rem; text-decoration:none;
+                                  color:inherit; align-items:center; gap:.6rem; background:var(--c-bg-soft);
+                                  border:1px solid var(--c-border); border-radius:.375rem;
+                                  margin-bottom:.6rem;">
+                            <span class="lesson-title">{{ lesson.title }}</span>
+                            <span class="lesson-meta" style="margin-left:auto;">
+                                {{ lesson.assignments.count }} тип. → к практике
+                            </span>
+                        </a>
+                        {% else %}
+                        <details class="lesson-collapse">
+                            <summary class="lesson-summary">
+                                <span class="lesson-title">{{ lesson.title }}</span>
+                                {% if lesson.assignments.all %}
+                                <span class="lesson-meta">{{ lesson.assignments.count }} тип.</span>
+                                {% else %}
+                                <span class="lesson-meta">пусто</span>
+                                {% endif %}
+                            </summary>
+                            <div class="lesson-body">
+                                {% if lesson.assignments.all %}
+                                {% for assignment in lesson.assignments.all %}
+                                    {% with prog=student_progress_map|get_item:assignment.id %}
+                                    <div class="proto-card {% if prog %}has-progress{% endif %}">
+                                        <div class="proto-card-header">
+                                            <span class="proto-num">Тип {{ assignment.order }}</span>
+                                            {% if prog %}
+                                            <div class="proto-bar-wrap">
+                                                <div class="proto-bar">
+                                                    <div class="proto-bar-fill" style="width:{% widthratio prog.0 prog.1 100 %}%"></div>
+                                                </div>
+                                            </div>
+                                            <span class="proto-count">{{ prog.0 }}/{{ prog.1 }}</span>
                                             {% endif %}
-                                        </h6>
-                                        <small class="text-muted">
-                                            {% if lesson.lesson_type == 'video' %}🎥 Видеоурок
-                                            {% elif lesson.lesson_type == 'text' %}📝 Текстовый урок
-                                            {% elif lesson.lesson_type == 'hybrid' %}🎬 Видео + текст
-                                            {% else %}💪 Практика{% endif %}
-                                            
-                                            {% if lesson.duration > 0 %} • {{ lesson.duration }} мин.{% endif %}
-                                        </small>
-                                    </div>
-                                    <div>
-                                        {% if user.is_authenticated %}
-                                        <button class="btn btn-sm btn-outline-primary">
-                                            Начать
-                                        </button>
-                                        {% else %}
-                                        <a href="{% url 'login' %}?next={{ request.path }}" 
-                                           class="btn btn-sm btn-outline-secondary">
-                                            Войдите для доступа
+                                        </div>
+                                        <div class="proto-fulltitle">{{ assignment.title }}</div>
+                                        <a href="{% url 'assignment_practice' assignment.id %}" class="proto-link">
+                                            Перейти к практике →
                                         </a>
-                                        {% endif %}
                                     </div>
-                                </div>
+                                    {% endwith %}
+                                {% endfor %}
+                                {% else %}
+                                <span class="text-muted" style="font-size:.85rem;">Задания появятся позже</span>
+                                {% endif %}
                             </div>
-                            {% endfor %}
-                        </div>
+                        </details>
+                        {% endif %}
+                        {% endfor %}
                     </div>
                 </div>
             </div>
             {% endfor %}
         </div>
-        
+
         {% else %}
         <div class="alert alert-info text-center py-4">
             <h4>Программа курса в разработке</h4>
             <p class="mb-0">Модули и уроки будут добавлены в ближайшее время.</p>
         </div>
         {% endif %}
-        
+
         <!-- Кнопки действий -->
         <div class="text-center mt-5">
             {% if user.is_authenticated %}
@@ -130,27 +247,27 @@
                         <form method="post" action="{% url 'enroll_to_course' course.id %}">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-primary btn-lg px-5">
-                                🎓 Записаться на курс
+                                Записаться на курс
                             </button>
                         </form>
                     {% else %}
                         <div class="alert alert-info">
-                            Вы уже записаны на этот курс. 
+                            Вы уже записаны на этот курс.
                             <a href="{% url 'student_courses' %}" class="alert-link">Перейти к изучению</a>
                         </div>
                     {% endif %}
                 {% else %}
                     <a href="{% url 'login' %}" class="btn btn-primary btn-lg px-5">
-                        📚 Войти как ученик
+                        Войти как ученик
                     </a>
                 {% endif %}
             {% else %}
                 <div class="d-flex flex-column flex-md-row justify-content-center gap-3">
                     <a href="{% url 'login' %}?next={{ request.path }}" class="btn btn-primary btn-lg px-5">
-                        🔐 Войти для записи
+                        Войти для записи
                     </a>
                     <a href="{% url 'home' %}#contact" class="btn btn-outline-primary btn-lg px-5">
-                        📞 Задать вопрос
+                        Задать вопрос
                     </a>
                 </div>
             {% endif %}

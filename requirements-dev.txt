@@ -1,0 +1,20 @@
+# Зависимости только для разработки.
+# На Railway НЕ устанавливаются — там работает только requirements.txt.
+#
+# Установить локально:
+#   .\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# Используется для:
+#   - matplotlib + numpy: генерация SVG-графиков для Lesson 8 (Задача 8 ЕГЭ).
+#     После генерации SVG лежит в БД (поле image_svg), на сервер matplotlib
+#     не нужен — Django отдаёт готовый текст.
+#
+# Workflow обновления задач Lesson 8:
+#   1) править populate_ege8.py
+#   2) python manage.py populate_ege8 --clear  (локально)
+#   3) python manage.py dumpdata users.Lesson users.Assignment users.TestQuestion users.AnswerOption --indent 2 > fixtures/lesson_8.json
+#   4) git commit fixtures/lesson_8.json
+#   5) на Railway: python manage.py loaddata lesson_8
+
+matplotlib==3.9.2
+numpy==2.1.3

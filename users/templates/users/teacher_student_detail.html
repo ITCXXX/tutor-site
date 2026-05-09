@@ -1,0 +1,172 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.student-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.student-hero h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 .35rem; }
+.student-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.section-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.25rem;
+}
+.section-card h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 .85rem;
+    color: var(--c-text);
+}
+
+.notes-textarea { font-size: .95rem; min-height: 110px; }
+.notes-meta { font-size: .8rem; color: var(--c-text-muted); }
+
+.course-link {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .65rem .85rem;
+    background: var(--c-bg-soft);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    margin-bottom: .35rem;
+    text-decoration: none;
+    color: inherit;
+}
+.course-link:hover { border-color: var(--c-primary-600); color: inherit; }
+.course-link .title { font-weight: 600; flex: 1; }
+.course-link .meta { font-size: .8rem; color: var(--c-text-muted); }
+
+.attempts-table { font-size: .85rem; }
+.attempts-table .lesson-row {
+    background: var(--c-bg-soft);
+    padding: .35rem .65rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin-top: .8rem;
+}
+.attempts-table .lesson-row:first-child { margin-top: 0; }
+.attempt-row {
+    display: grid;
+    grid-template-columns: 1fr 80px 80px 130px;
+    gap: .55rem;
+    padding: .35rem .65rem;
+    align-items: center;
+    border-bottom: 1px solid #f1f5f9;
+}
+.attempt-row .task-info { color: var(--c-text-muted); }
+.attempt-row .task-info strong { color: var(--c-text); }
+.attempt-row .ans { font-family: var(--font-mono); }
+.attempt-row .verdict.ok { color: var(--c-success); font-weight: 600; }
+.attempt-row .verdict.bad { color: var(--c-danger); font-weight: 600; }
+.attempt-row .when { color: var(--c-text-muted); font-size: .78rem; text-align: right; }
+.empty { color: var(--c-text-muted); font-size: .9rem; }
+
+.course-block { margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px dashed var(--c-border); }
+.course-block:last-child { border-bottom: none; padding-bottom: 0; }
+.course-block .course-title { font-weight: 600; margin-bottom: .35rem; }
+
+@media (max-width: 640px) {
+    .attempt-row {
+        grid-template-columns: 1fr auto;
+        gap: .15rem .55rem;
+        padding: .55rem .65rem;
+    }
+    .attempt-row .task-info { grid-column: 1 / -1; }
+    .attempt-row .ans { font-weight: 600; }
+    .attempt-row .when { text-align: right; }
+    .course-link { flex-wrap: wrap; }
+    .course-link .meta { flex: 0 0 auto; margin-left: auto; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 1000px;">
+
+        <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+
+        <div class="student-hero">
+            <h1>{{ profile.display_name }}{% if profile.grade %} · {{ profile.grade }} класс{% endif %}</h1>
+            {% if profile.real_name %}<div class="meta">{{ profile.real_name }}</div>{% endif %}
+        </div>
+
+        <!-- Заметки -->
+        <div class="section-card">
+            <h2>Заметки</h2>
+            <form method="post">
+                {% csrf_token %}
+                <textarea name="notes" class="form-control notes-textarea"
+                          placeholder="Слабо с дробями. Хочет в матшколу. Проблема с концентрацией…">{{ profile.notes }}</textarea>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <span class="notes-meta">Видны только вам.</span>
+                    <button type="submit" name="save_notes" value="1" class="btn btn-sm btn-primary">Сохранить</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Курсы -->
+        <div class="section-card">
+            <h2>Курсы</h2>
+            {% if enrollments %}
+            {% for e in enrollments %}
+            <a class="course-link" href="{% url 'teacher_student_workbook' e.course.slug student.id %}">
+                <span class="title">{{ e.course.title }}</span>
+                <span class="meta">{% if e.course.is_homework %}курс с ДЗ{% elif e.course.is_manual %}задачник{% else %}авто-курс{% endif %}</span>
+            </a>
+            {% endfor %}
+            {% else %}
+            <p class="empty mb-0">Не записан ни на один курс.</p>
+            {% endif %}
+            <div class="mt-2">
+                <a href="{% url 'teacher_student_enroll' student.id %}"
+                   class="btn btn-sm btn-outline-secondary">Записать на курс</a>
+            </div>
+        </div>
+
+        <!-- История ответов на ДЗ -->
+        <div class="section-card">
+            <h2>История ответов на ДЗ</h2>
+            {% if attempts_by_course %}
+            <div class="attempts-table">
+                {% for c in attempts_by_course %}
+                <div class="course-block">
+                    <div class="course-title">{{ c.course.title }}</div>
+                    {% for a in c.items %}
+                    <div class="attempt-row">
+                        <div class="task-info">
+                            <strong>{{ a.assignment.lesson.title }}</strong>
+                            · задача {{ a.assignment.title }}
+                        </div>
+                        <div class="ans">{{ a.answer }}</div>
+                        <div class="verdict {% if a.is_correct %}ok{% else %}bad{% endif %}">
+                            {% if a.is_correct %}верно{% else %}неверно{% endif %}
+                        </div>
+                        <div class="when">{{ a.created_at|date:"d.m H:i" }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="empty mb-0">Ученик ещё не сдавал ДЗ.</p>
+            {% endif %}
+        </div>
+
+    </div>
+</section>
+{% endblock %}
