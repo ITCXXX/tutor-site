@@ -1,0 +1,48 @@
+# ============================================================================
+# systemd unit для tutor_site (gunicorn).
+# Положить в /etc/systemd/system/tutor.service, затем:
+#   systemctl daemon-reload
+#   systemctl enable --now tutor
+#   systemctl status tutor
+#   journalctl -u tutor -f
+# ============================================================================
+
+[Unit]
+Description=Tutor site (gunicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=notify
+User=tutor
+Group=tutor
+WorkingDirectory=/opt/tutor
+EnvironmentFile=/opt/tutor/.env
+
+# unix-сокет для общения с nginx (быстрее tcp).
+ExecStart=/opt/tutor/venv/bin/gunicorn \
+    --workers 3 \
+    --worker-class sync \
+    --timeout 60 \
+    --bind unix:/run/tutor.sock \
+    --umask 007 \
+    --access-logfile - \
+    --error-logfile - \
+    tutor_core.wsgi:application
+
+# Перезапускать при крашах.
+Restart=on-failure
+RestartSec=3
+
+# systemd создаст /run/tutor.sock с правами `tutor:tutor`.
+RuntimeDirectory=tutor
+RuntimeDirectoryMode=0755
+
+# Лимиты безопасности.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tutor/media /opt/tutor/staticfiles /opt/tutor/db.sqlite3 /run/tutor
+
+[Install]
+WantedBy=multi-user.target

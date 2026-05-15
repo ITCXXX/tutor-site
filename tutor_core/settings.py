@@ -32,18 +32,28 @@ SECRET_KEY = os.getenv(
 # на сервере зададим DJANGO_DEBUG=False → DEBUG = False
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 
+# DJANGO_ALLOWED_HOSTS — список через запятую, например:
+#   "zenchenkoim.ru,www.zenchenkoim.ru"
+_default_hosts = "127.0.0.1,localhost"
 ALLOWED_HOSTS = [
-    "web-production-b8e1c.up.railway.app",
-    "127.0.0.1",
-    "localhost",
+    h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", _default_hosts).split(",")
+    if h.strip()
 ]
-CSRF_TRUSTED_ORIGINS = [
-    "https://web-production-b8e1c.up.railway.app",
-]
+
+# CSRF_TRUSTED_ORIGINS — origins (со схемой) через запятую:
+#   "https://zenchenkoim.ru,https://www.zenchenkoim.ru"
+_csrf_env = os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "")
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_env.split(",") if o.strip()]
 
 # Application definition
 
 INSTALLED_APPS = [
+    # django-unfold должен идти ДО django.contrib.admin
+    "unfold",
+    "unfold.contrib.filters",
+    "unfold.contrib.forms",
+    "unfold.contrib.inlines",
+
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -68,6 +78,15 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+# WhiteNoise (отдача статики через Django) — опционально:
+# на проде установлен через requirements.txt и автоматически вставляется
+# сразу после SecurityMiddleware. Локально без него сервер тоже запустится.
+try:
+    import whitenoise  # noqa: F401
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+except ImportError:
+    pass
+
 ROOT_URLCONF = "tutor_core.urls"
 
 TEMPLATES = [
@@ -90,21 +109,36 @@ WSGI_APPLICATION = "tutor_core.wsgi.application"
 # Database
 # Пока SQLite; при переходе на PostgreSQL на хостинге
 # заменим этот блок на чтение DATABASE_URL.
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-if DATABASE_URL and not DEBUG:
-    parsed = urlparse(DATABASE_URL)
-    DATABASES = {
-        "default": {
+
+def _try_parse_postgres_url(url):
+    """Парсит postgres URL, возвращает dict или None при ошибке."""
+    try:
+        parsed = urlparse(url)
+        # parsed.port триггерит ValueError при невалидном порте (например, "port")
+        port = parsed.port or 5432
+        if not parsed.path or len(parsed.path) <= 1:
+            return None
+        return {
             "ENGINE": "django.db.backends.postgresql",
             "NAME": parsed.path[1:],
             "USER": parsed.username,
             "PASSWORD": parsed.password,
             "HOST": parsed.hostname,
-            "PORT": parsed.port or "5432",
+            "PORT": str(port),
         }
-    }
+    except (ValueError, AttributeError):
+        return None
+
+
+_postgres_config = _try_parse_postgres_url(DATABASE_URL) if DATABASE_URL else None
+
+if _postgres_config and not DEBUG:
+    DATABASES = {"default": _postgres_config}
 else:
+    # Fallback: SQLite. Используется в локальной разработке
+    # и как safety net, если DATABASE_URL невалиден.
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
@@ -114,21 +148,9 @@ else:
 
 
 # Password validation
-
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
-]
+# Валидаторы отключены: пароли учеников выдаёт сам преподаватель,
+# простые пароли вроде "polina" — это нормально и удобно.
+AUTH_PASSWORD_VALIDATORS = []
 
 # Internationalization
 
@@ -139,7 +161,7 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
 
 # Папка для collectstatic (для деплоя)
 STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -150,10 +172,190 @@ STATICFILES_DIRS = [
     BASE_DIR / "users" / "static",
 ]
 
+# WhiteNoise: сжатый storage с manifest (имена файлов с хешем — долгий cache).
+# В DEBUG используем обычный, чтобы не требовать collectstatic при разработке.
+# Если whitenoise не установлен (например, локально без `pip install whitenoise`),
+# Django использует свой дефолтный StaticFilesStorage.
+if not DEBUG:
+    try:
+        import whitenoise.storage  # noqa: F401
+        STORAGES = {
+            "default": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "staticfiles": {
+                "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+            },
+        }
+    except ImportError:
+        pass
+
 # Медиафайлы
 
-MEDIA_URL = "media/"
+MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# ============================================================================
+# PRODUCTION SECURITY
+# Включается только когда DEBUG=False. На сервере перед Django стоит nginx
+# с SSL (Let's Encrypt), поэтому safely включаем HTTPS-only.
+# ============================================================================
+if not DEBUG:
+    # Nginx ставит X-Forwarded-Proto: https — Django должен это уважать.
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+    # Принудительно редиректить http → https.
+    SECURE_SSL_REDIRECT = True
+
+    # HSTS: браузер запоминает «этот сайт только по https» на год.
+    # ВКЛЮЧАТЬ ПОСТЕПЕННО: сначала маленький max_age (например, 60 на день),
+    # убедиться что всё работает, потом поднять до года и preload.
+    SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+    # Cookie только по HTTPS.
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+    # Защита от MIME-sniffing и XSS.
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_REFERRER_POLICY = "same-origin"
+
+# ============================================================================
+# LOGGING — пишет в stdout, чтобы systemd/journald подхватил.
+# Просмотр на сервере: `journalctl -u tutor -f`
+# ============================================================================
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {
+            "format": "{asctime} {levelname} {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+}
+
+# Разрешаем iframe с того же домена — нужно для встроенного просмотра PDF.
+X_FRAME_OPTIONS = "SAMEORIGIN"
 
 # Кастомная модель пользователя
 AUTH_USER_MODEL = "users.User"
+
+# ===== django-unfold (красивая админка) =====
+UNFOLD = {
+    "SITE_TITLE": "Tutor Site — админка",
+    "SITE_HEADER": "Tutor Site",
+    "SITE_SUBHEADER": "Панель управления",
+    "SITE_SYMBOL": "school",  # Material Symbols icon
+    "SHOW_HISTORY": True,
+    "SHOW_VIEW_ON_SITE": True,
+    "THEME": None,  # None = пользователь сам переключает свет/тьму
+    "COLORS": {
+        "primary": {
+            "50": "239 246 255",
+            "100": "219 234 254",
+            "200": "191 219 254",
+            "300": "147 197 253",
+            "400": "96 165 250",
+            "500": "59 130 246",
+            "600": "37 99 235",
+            "700": "29 78 216",
+            "800": "30 64 175",
+            "900": "30 58 138",
+            "950": "23 37 84",
+        },
+    },
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+        "navigation": [
+            {
+                "title": "Обучение",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Курсы",
+                        "icon": "menu_book",
+                        "link": "/admin/users/course/",
+                    },
+                    {
+                        "title": "Модули",
+                        "icon": "view_module",
+                        "link": "/admin/users/module/",
+                    },
+                    {
+                        "title": "Уроки",
+                        "icon": "article",
+                        "link": "/admin/users/lesson/",
+                    },
+                    {
+                        "title": "Задания",
+                        "icon": "assignment",
+                        "link": "/admin/users/assignment/",
+                    },
+                ],
+            },
+            {
+                "title": "Пользователи",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Пользователи",
+                        "icon": "person",
+                        "link": "/admin/users/user/",
+                    },
+                    {
+                        "title": "Преподаватели",
+                        "icon": "school",
+                        "link": "/admin/users/teacherprofile/",
+                    },
+                    {
+                        "title": "Профили учеников",
+                        "icon": "badge",
+                        "link": "/admin/users/studentprofile/",
+                    },
+                    {
+                        "title": "Записи на курсы",
+                        "icon": "how_to_reg",
+                        "link": "/admin/users/enrollment/",
+                    },
+                ],
+            },
+            {
+                "title": "Материалы",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Категории",
+                        "icon": "folder",
+                        "link": "/admin/users/materialcategory/",
+                    },
+                    {
+                        "title": "Материалы",
+                        "icon": "description",
+                        "link": "/admin/users/material/",
+                    },
+                ],
+            },
+        ],
+    },
+}

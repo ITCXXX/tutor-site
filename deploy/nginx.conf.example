@@ -1,0 +1,53 @@
+# ============================================================================
+# nginx-конфиг для tutor_site.
+# Положить в /etc/nginx/sites-available/tutor, затем:
+#   ln -s /etc/nginx/sites-available/tutor /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx
+#
+# Этот файл — ВРЕМЕННЫЙ конфиг (только http) для первого certbot.
+# После certbot --nginx он сам допишет блок https + редирект.
+# ============================================================================
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name zenchenkoim.ru www.zenchenkoim.ru;
+
+    # Размер загружаемых файлов (на случай больших PDF/картинок).
+    client_max_body_size 25M;
+
+    # ACME challenge для Let's Encrypt — ДОЛЖЕН отдаваться по http.
+    location /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+    }
+
+    # Медиа-файлы (картинки заданий) — отдаём напрямую, минуя Django.
+    location /media/ {
+        alias /opt/tutor/media/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # Статика (Django collectstatic) — отдаёт WhiteNoise через gunicorn,
+    # но nginx тоже может, если хочется снять нагрузку с Python:
+    # location /static/ {
+    #     alias /opt/tutor/staticfiles/;
+    #     expires 30d;
+    #     add_header Cache-Control "public, immutable";
+    # }
+
+    # Всё остальное — на gunicorn (через unix-сокет).
+    location / {
+        proxy_pass http://unix:/run/tutor.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+        proxy_read_timeout 60s;
+    }
+
+    # Прячем версию nginx.
+    server_tokens off;
+}
