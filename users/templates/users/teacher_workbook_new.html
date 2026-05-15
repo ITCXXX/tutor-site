@@ -1,0 +1,183 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.workbook-form-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.workbook-form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.workbook-form-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.form-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: 1.5rem;
+}
+.form-card label { font-weight: 500; font-size: .9rem; color: var(--c-text-soft); }
+.form-card .form-text { font-size: .78rem; color: var(--c-text-muted); }
+
+.section-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin: 1.5rem 0 .75rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--c-border);
+}
+
+.module-row {
+    display: grid;
+    grid-template-columns: 1fr 90px 90px 38px;
+    gap: .55rem;
+    align-items: end;
+    margin-bottom: .6rem;
+}
+.module-row .form-control { font-size: .9rem; }
+.module-row .btn-remove {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    color: #dc3545;
+    border-radius: .375rem;
+    height: 38px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+.module-row .btn-remove:hover {
+    background: #f8d7da;
+    border-color: #dc3545;
+}
+.module-row .head {
+    font-size: .78rem;
+    color: var(--c-text-muted);
+    margin-bottom: .15rem;
+    font-weight: 500;
+}
+.module-row .head:not(:first-child) { text-align: center; }
+
+.btn-add-module {
+    background: transparent;
+    border: 1px dashed var(--c-border-strong);
+    color: var(--c-text-soft);
+    border-radius: .375rem;
+    padding: .55rem 1rem;
+    font-size: .88rem;
+    cursor: pointer;
+    width: 100%;
+    margin-top: .5rem;
+}
+.btn-add-module:hover { border-color: var(--c-primary-600); color: var(--c-primary-600); }
+
+@media (max-width: 640px) {
+    .module-row {
+        grid-template-columns: 1fr 1fr 38px;
+        gap: .4rem;
+    }
+    .module-row > input[name=module_name] { grid-column: 1 / -1; }
+    .module-row .head:first-child { grid-column: 1 / -1; text-align: left; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 800px;">
+
+        <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+
+        <div class="workbook-form-hero">
+            <h1>Новый задачник</h1>
+            <div class="meta">Создайте сборник задач из бумажного учебника или PDF: укажите модули и диапазоны номеров.</div>
+        </div>
+
+        <form method="post" class="form-card">
+            {% csrf_token %}
+
+            <div class="row g-3">
+                <div class="col-md-12">
+                    <label class="form-label">Название задачника *</label>
+                    <input type="text" name="title" class="form-control"
+                           value="{{ form_data.title|default:'' }}"
+                           placeholder="Сканави · Геометрия" required>
+                </div>
+                <div class="col-md-12">
+                    <label class="form-label">Описание</label>
+                    <input type="text" name="description" class="form-control"
+                           value="{{ form_data.description|default:'' }}"
+                           placeholder="Сборник для подготовки к олимпиадам">
+                </div>
+            </div>
+
+            <div class="section-title">Модули и нумерация задач</div>
+            <div class="form-text mb-2">
+                Каждый модуль — это параграф из учебника. Например: «§1. Уравнения», задачи с 1 по 25.
+            </div>
+
+            <div class="module-row">
+                <div class="head">Название модуля</div>
+                <div class="head">№ от</div>
+                <div class="head">№ до</div>
+                <div></div>
+            </div>
+
+            <div id="modules-container">
+                {% for name, start, end in rows %}
+                <div class="module-row">
+                    <input type="text" name="module_name" class="form-control"
+                           value="{{ name }}" placeholder="§1. Уравнения">
+                    <input type="number" name="module_start" class="form-control"
+                           value="{{ start }}" placeholder="1" min="1">
+                    <input type="number" name="module_end" class="form-control"
+                           value="{{ end }}" placeholder="25" min="1">
+                    <button type="button" class="btn-remove" onclick="removeRow(this)" title="Удалить">×</button>
+                </div>
+                {% endfor %}
+            </div>
+
+            <button type="button" class="btn-add-module" onclick="addRow()">+ Добавить модуль</button>
+
+            <div class="mt-4 d-flex justify-content-between">
+                <a href="{% url 'teacher_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">Создать задачник →</button>
+            </div>
+        </form>
+
+    </div>
+</section>
+
+<script>
+function addRow() {
+    const container = document.getElementById('modules-container');
+    const row = document.createElement('div');
+    row.className = 'module-row';
+    row.innerHTML = `
+        <input type="text" name="module_name" class="form-control" placeholder="§N. Название">
+        <input type="number" name="module_start" class="form-control" placeholder="1" min="1">
+        <input type="number" name="module_end" class="form-control" placeholder="25" min="1">
+        <button type="button" class="btn-remove" onclick="removeRow(this)" title="Удалить">×</button>
+    `;
+    container.appendChild(row);
+    row.querySelector('input[name=module_name]').focus();
+}
+
+function removeRow(btn) {
+    const container = document.getElementById('modules-container');
+    if (container.children.length <= 1) {
+        // оставляем пустую строку
+        btn.closest('.module-row').querySelectorAll('input').forEach(i => i.value = '');
+        return;
+    }
+    btn.closest('.module-row').remove();
+}
+</script>
+{% endblock %}

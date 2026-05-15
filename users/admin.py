@@ -1,29 +1,32 @@
 # users/admin.py
 from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.utils.safestring import mark_safe
+from unfold.admin import ModelAdmin, TabularInline
 from .models import (
-    User, StudentProfile, ParentProfile, 
+    User, StudentProfile, TeacherProfile,
     Course, Module, Lesson, Assignment, TestQuestion, AnswerOption,
     MaterialCategory, Material, Enrollment,
     # Новые модели для экзаменационной подготовки
-    ProblemGenerator, GeneratedProblem, ProblemAttempt, StudentProgress
+    ProblemGenerator, GeneratedProblem, ProblemAttempt, StudentProgress,
+    ManualMark,
 )
 
 # --------------------------------------------------
 # Существующие модели пользователей (не изменяем)
 # --------------------------------------------------
-class CustomUserAdmin(UserAdmin):
-    list_display = ('username', 'role', 'email', 'is_active', 'date_joined')
+class CustomUserAdmin(DjangoUserAdmin, ModelAdmin):
+    list_display = ('username', 'plaintext_password', 'role', 'is_active', 'date_joined')
     list_filter = ('role', 'is_active', 'is_staff')
-    search_fields = ('username', 'email')
+    search_fields = ('username',)
 
-    readonly_fields = ('last_login', 'date_joined')
+    readonly_fields = ('last_login', 'date_joined', 'password_display')
 
     fieldsets = (
-        (None, {'fields': ('username', 'password')}),
-        ('Личная информация', {'fields': ('email', 'phone', 'role')}),
+        (None, {'fields': ('username', 'password_display')}),
+        ('Роль', {'fields': ('role',)}),
         ('Разрешения', {
-            'fields': ('is_active', 'is_staff', 'is_superuser', 'linked_students'),
+            'fields': ('is_active', 'is_staff', 'is_superuser'),
         }),
         ('Важные даты', {
             'fields': ('last_login', 'date_joined'),
@@ -33,28 +36,49 @@ class CustomUserAdmin(UserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('username', 'password1', 'password2', 'role', 'email'),
+            'fields': ('username', 'password1', 'password2', 'role'),
         }),
     )
 
-    filter_horizontal = ('linked_students',)
+    filter_horizontal = ()  # отключаем groups/user_permissions из дефолтного UserAdmin
+
+    @admin.display(description='Текущий пароль')
+    def password_display(self, obj):
+        if not obj or not obj.pk:
+            return '—'
+        pw = obj.plaintext_password or '(не задан или установлен до включения хранения)'
+        return mark_safe(
+            f'<div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">'
+            f'<code style="font-size:1.1rem;font-weight:600;background:#1e293b;'
+            f'color:#fbbf24;padding:.4rem .75rem;border-radius:.375rem;">{pw}</code>'
+            f'<a href="../password/" '
+            f'style="display:inline-block;background:#2563eb;color:#fff;'
+            f'padding:.4rem .9rem;border-radius:.375rem;text-decoration:none;'
+            f'font-weight:500;font-size:.9rem;">Сменить пароль →</a>'
+            f'</div>'
+        )
+
 
 @admin.register(StudentProfile)
-class StudentProfileAdmin(admin.ModelAdmin):
-    list_display = ('display_name', 'user', 'grade', 'school')
+class StudentProfileAdmin(ModelAdmin):
+    list_display = ('display_name', 'user', 'teacher', 'grade')
+    list_filter = ('teacher', 'grade')
     search_fields = ('display_name', 'real_name', 'user__username')
+    autocomplete_fields = ('user', 'teacher')
 
-@admin.register(ParentProfile)
-class ParentProfileAdmin(admin.ModelAdmin):
-    list_display = ('display_name', 'user', 'real_name')
-    search_fields = ('display_name', 'real_name', 'user__username')
+
+@admin.register(TeacherProfile)
+class TeacherProfileAdmin(ModelAdmin):
+    list_display = ('display_name', 'user', 'specialization')
+    search_fields = ('display_name', 'real_name', 'user__username', 'specialization')
+    autocomplete_fields = ('user',)
 
 # --------------------------------------------------
 # НОВЫЕ МОДЕЛИ ДЛЯ ЭКЗАМЕНАЦИОННОЙ ПОДГОТОВКИ
 # --------------------------------------------------
 
 @admin.register(ProblemGenerator)
-class ProblemGeneratorAdmin(admin.ModelAdmin):
+class ProblemGeneratorAdmin(ModelAdmin):
     list_display = ('name', 'generator_type', 'created_at')
     list_filter = ('generator_type',)
     search_fields = ('name',)
@@ -78,7 +102,7 @@ class ProblemGeneratorAdmin(admin.ModelAdmin):
     )
 
 @admin.register(GeneratedProblem)
-class GeneratedProblemAdmin(admin.ModelAdmin):
+class GeneratedProblemAdmin(ModelAdmin):
     list_display = ('id', 'student', 'assignment', 'status', 'attempts_count', 'correct_attempts', 'created_at')
     list_filter = ('status', 'assignment', 'created_at')
     search_fields = ('student__username', 'assignment__title')
@@ -97,14 +121,14 @@ class GeneratedProblemAdmin(admin.ModelAdmin):
     )
 
 @admin.register(ProblemAttempt)
-class ProblemAttemptAdmin(admin.ModelAdmin):
+class ProblemAttemptAdmin(ModelAdmin):
     list_display = ('id', 'student', 'problem', 'is_correct', 'created_at')
     list_filter = ('is_correct', 'created_at')
     search_fields = ('student__username', 'problem__assignment__title')
     readonly_fields = ('created_at',)
 
 @admin.register(StudentProgress)
-class StudentProgressAdmin(admin.ModelAdmin):
+class StudentProgressAdmin(ModelAdmin):
     list_display = ('student', 'assignment', 'get_percentage', 'is_completed', 'updated_at')
     list_filter = ('is_completed', 'assignment')
     search_fields = ('student__username', 'assignment__title')
@@ -114,11 +138,20 @@ class StudentProgressAdmin(admin.ModelAdmin):
         return f"{obj.get_percentage():.1f}%"
     get_percentage.short_description = 'Процент правильных'
 
+
+@admin.register(ManualMark)
+class ManualMarkAdmin(ModelAdmin):
+    list_display = ('student', 'assignment', 'is_completed', 'marked_by', 'marked_at')
+    list_filter = ('is_completed', 'marked_by')
+    search_fields = ('student__username', 'assignment__title')
+    autocomplete_fields = ('student', 'assignment', 'marked_by')
+
+
 # --------------------------------------------------
 # Вложенные админки для курсов (обновленные)
 # --------------------------------------------------
 
-class AnswerOptionInline(admin.TabularInline):
+class AnswerOptionInline(TabularInline):
     """Варианты ответов для вопросов"""
     model = AnswerOption
     extra = 4
@@ -126,7 +159,7 @@ class AnswerOptionInline(admin.TabularInline):
     max_num = 6
     ordering = ['order']
 
-class TestQuestionInline(admin.TabularInline):
+class TestQuestionInline(TabularInline):
     """Вопросы для заданий"""
     model = TestQuestion
     extra = 1
@@ -135,7 +168,7 @@ class TestQuestionInline(admin.TabularInline):
     ordering = ['order']
 
 @admin.register(TestQuestion)
-class TestQuestionAdmin(admin.ModelAdmin):
+class TestQuestionAdmin(ModelAdmin):
     """Админка вопросов с вариантами ответов"""
     inlines = [AnswerOptionInline]
     list_display = ['id', 'question_text_short', 'assignment', 'question_type']
@@ -147,7 +180,7 @@ class TestQuestionAdmin(admin.ModelAdmin):
         return obj.question_text[:80] + '...' if len(obj.question_text) > 80 else obj.question_text
     question_text_short.short_description = 'Вопрос'
 
-class AssignmentInline(admin.TabularInline):
+class AssignmentInline(TabularInline):
     """Задания для уроков"""
     model = Assignment
     extra = 1
@@ -157,7 +190,7 @@ class AssignmentInline(admin.TabularInline):
 
 # ОБНОВЛЕННАЯ АДМИНКА ДЛЯ ASSIGNMENT
 @admin.register(Assignment)
-class AssignmentAdmin(admin.ModelAdmin):
+class AssignmentAdmin(ModelAdmin):
     """Админка заданий с вопросами и генераторами"""
     inlines = [TestQuestionInline]
     list_display = ['title', 'lesson', 'assignment_type', 'answer_type', 'problem_generator', 'points', 'questions_count']
@@ -183,7 +216,7 @@ class AssignmentAdmin(admin.ModelAdmin):
         return obj.questions.count()
     questions_count.short_description = 'Вопросов'
 
-class LessonInline(admin.TabularInline):
+class LessonInline(TabularInline):
     """Уроки для модулей"""
     model = Lesson
     extra = 1
@@ -192,7 +225,7 @@ class LessonInline(admin.TabularInline):
     ordering = ['order']
 
 @admin.register(Lesson)
-class LessonAdmin(admin.ModelAdmin):
+class LessonAdmin(ModelAdmin):
     """Админка уроков с заданиями"""
     inlines = [AssignmentInline]
     list_display = ['title', 'module', 'lesson_type', 'duration', 'order', 'is_free', 'assignments_count']
@@ -205,7 +238,7 @@ class LessonAdmin(admin.ModelAdmin):
         return obj.assignments.count()
     assignments_count.short_description = 'Заданий'
 
-class ModuleInline(admin.TabularInline):
+class ModuleInline(TabularInline):
     """Модули для курсов"""
     model = Module
     extra = 1
@@ -219,7 +252,7 @@ class ModuleInline(admin.TabularInline):
     lesson_count.short_description = 'Уроков'
 
 @admin.register(Module)
-class ModuleAdmin(admin.ModelAdmin):
+class ModuleAdmin(ModelAdmin):
     """Админка модулей с уроками"""
     inlines = [LessonInline]
     list_display = ['title', 'course', 'order', 'lessons_count']
@@ -233,7 +266,7 @@ class ModuleAdmin(admin.ModelAdmin):
     lessons_count.short_description = 'Уроков'
 
 @admin.register(Course)
-class CourseAdmin(admin.ModelAdmin):
+class CourseAdmin(ModelAdmin):
     """Главная админка курсов"""
     inlines = [ModuleInline]
     list_display = ['title', 'slug', 'is_active', 'modules_count', 'order', 'created_at']
@@ -261,7 +294,7 @@ class CourseAdmin(admin.ModelAdmin):
     modules_count.short_description = 'Модулей'
     
 @admin.register(MaterialCategory)
-class MaterialCategoryAdmin(admin.ModelAdmin):
+class MaterialCategoryAdmin(ModelAdmin):
     list_display = ('title', 'slug', 'order', 'materials_count')
     list_editable = ('order',)
     prepopulated_fields = {'slug': ('title',)}
@@ -271,14 +304,14 @@ class MaterialCategoryAdmin(admin.ModelAdmin):
     materials_count.short_description = 'Материалов'
 
 @admin.register(Material)
-class MaterialAdmin(admin.ModelAdmin):
+class MaterialAdmin(ModelAdmin):
     list_display = ('title', 'category', 'material_type', 'is_free', 'order')
     list_filter = ('category', 'material_type', 'is_free')
     list_editable = ('order', 'is_free')
     search_fields = ('title', 'description')
 
 @admin.register(Enrollment)
-class EnrollmentAdmin(admin.ModelAdmin):
+class EnrollmentAdmin(ModelAdmin):
     list_display = ('student', 'course', 'enrolled_at', 'progress', 'is_active')
     list_filter = ('is_active', 'course')
     search_fields = ('student__username', 'course__title')

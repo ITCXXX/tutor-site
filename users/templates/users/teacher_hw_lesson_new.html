@@ -1,0 +1,294 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.form-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.form-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.form-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: 1.5rem;
+}
+.form-card label { font-weight: 500; font-size: .9rem; color: var(--c-text-soft); }
+.form-card .form-text { font-size: .78rem; color: var(--c-text-muted); }
+
+.section-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin: 1.5rem 0 .75rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--c-border);
+}
+
+.task-row {
+    display: grid;
+    grid-template-columns: 32px 1fr 160px 38px;
+    gap: .55rem;
+    align-items: start;
+    margin-bottom: 1.1rem;
+    padding-bottom: 1.1rem;
+    border-bottom: 1px dashed var(--c-border);
+}
+.task-row:last-of-type { border-bottom: none; }
+.task-row .num {
+    font-weight: 600;
+    color: var(--c-primary-700);
+    padding-top: .55rem;
+    text-align: center;
+}
+.task-row textarea {
+    min-height: 60px;
+    resize: vertical;
+    font-family: var(--font-sans);
+}
+.task-row .btn-remove {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    color: #dc3545;
+    border-radius: .375rem;
+    height: 38px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+.task-row .btn-remove:hover {
+    background: #f8d7da;
+    border-color: #dc3545;
+}
+
+/* Поле «картинка к задаче» — занимает ту же колонку, что и условие */
+.task-row .image-block {
+    grid-column: 2 / 4;
+    margin-top: .35rem;
+    font-size: .82rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .55rem;
+}
+.task-row .image-block .current-thumb {
+    max-height: 60px;
+    max-width: 100px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-sm);
+    background: var(--c-surface);
+    object-fit: contain;
+    cursor: zoom-in;
+}
+
+/* Лайтбокс — общий, подключён в visitor_base.html */
+
+@media (max-width: 640px) {
+    .task-row {
+        grid-template-columns: 1fr 38px;
+        gap: .4rem;
+    }
+    .task-row .num { grid-column: 1 / -1; padding-top: 0; text-align: left; font-size: .9rem; }
+    .task-row textarea { grid-column: 1 / -1; }
+    .task-row .answer-input { grid-column: 1; }
+    .task-row .btn-remove { grid-column: 2; align-self: stretch; }
+    .task-row .image-block,
+    .task-row .review-toggle { grid-column: 1 / -1; }
+}
+.task-row .image-block label.upload {
+    color: var(--c-primary-600);
+    cursor: pointer;
+    text-decoration: underline;
+}
+.task-row .image-block input[type=file] { font-size: .8rem; }
+.task-row .image-block .filename { color: var(--c-text-muted); font-size: .78rem; }
+.task-row .image-block .remove-check { display: inline-flex; align-items: center; gap: .25rem; color: var(--c-text-muted); }
+
+.task-row .review-toggle {
+    grid-column: 2 / 4;
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .82rem;
+    color: var(--c-text-muted);
+    margin-top: .35rem;
+}
+.task-row .review-toggle input { margin: 0; }
+.task-row.review-mode .answer-input {
+    background: #f1f5f9;
+    color: var(--c-text-muted);
+}
+.task-row.review-mode .review-toggle { color: var(--c-primary-700); font-weight: 500; }
+
+.btn-add-task {
+    background: transparent;
+    border: 1px dashed var(--c-border-strong);
+    color: var(--c-text-soft);
+    border-radius: .375rem;
+    padding: .55rem 1rem;
+    font-size: .88rem;
+    cursor: pointer;
+    width: 100%;
+    margin-top: .5rem;
+}
+.btn-add-task:hover { border-color: var(--c-primary-600); color: var(--c-primary-600); }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 900px;">
+
+        <a href="{% url 'teacher_course_progress' course.slug %}" class="btn-back">← К курсу</a>
+
+        <div class="form-hero">
+            <h1>{% if is_edit %}Редактировать ДЗ{% else %}Новое ДЗ{% endif %} — {{ course.title }}</h1>
+            <div class="meta">Заполните условие и правильный ответ для каждой задачи. Условие поддерживает LaTeX через \(…\).</div>
+        </div>
+
+        <form method="post" class="form-card" enctype="multipart/form-data">
+            {% csrf_token %}
+
+            <div class="mb-3">
+                <label class="form-label">Название ДЗ *</label>
+                <input type="text" name="lesson_title" class="form-control"
+                       value="{{ form_data.lesson_title|default:'' }}"
+                       placeholder="ДЗ от 5 мая · §3 уравнения" required autofocus>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Краткая теория / напоминание (необязательно)</label>
+                <textarea name="lesson_intro" class="form-control" rows="3"
+                          placeholder="Например: «Сегодня мы разобрали неравенства методом интервалов. Помни про знаки на бесконечности».">{{ form_data.lesson_intro|default:lesson_intro|default:'' }}</textarea>
+                <div class="form-text">Показывается ученику над списком задач. Поддерживает LaTeX через \(…\).</div>
+            </div>
+
+            <div class="section-title">Задачи</div>
+
+            <div class="task-row">
+                <div class="head"></div>
+                <div class="head" style="font-size:.78rem;color:#6c757d;font-weight:500;">Условие</div>
+                <div class="head" style="font-size:.78rem;color:#6c757d;font-weight:500;">Правильный ответ</div>
+                <div></div>
+            </div>
+
+            <div id="tasks-container">
+                {% for r in rows %}
+                <div class="task-row{% if r.requires_review %} review-mode{% endif %}" data-idx="{{ forloop.counter0 }}">
+                    <div class="num">{{ forloop.counter }}.</div>
+                    <textarea name="task_condition" class="form-control"
+                              placeholder="Реши уравнение \(2x + 3 = 11\)">{{ r.condition }}</textarea>
+                    <input type="text" name="task_answer" class="form-control answer-input"
+                           value="{{ r.answer }}" placeholder="4"
+                           {% if r.requires_review %}readonly{% endif %}>
+                    <button type="button" class="btn-remove" onclick="removeTask(this)" title="Удалить">×</button>
+
+                    <div class="image-block">
+                        {% if r.image_url %}
+                        <img src="{{ r.image_url }}" class="current-thumb" alt=""
+                             data-lightbox-src="{{ r.image_url }}">
+                        <label class="remove-check">
+                            <input type="checkbox" name="task_remove_image_{{ forloop.counter0 }}" value="1">
+                            удалить картинку
+                        </label>
+                        <span class="filename">или загрузить новую:</span>
+                        {% else %}
+                        <span class="filename">Картинка к задаче (необязательно):</span>
+                        {% endif %}
+                        <input type="file" name="task_image_{{ forloop.counter0 }}"
+                               accept="image/*" class="image-input">
+                    </div>
+
+                    <label class="review-toggle">
+                        <input type="checkbox" name="task_review_{{ forloop.counter0 }}" value="1"
+                               class="review-check"
+                               {% if r.requires_review %}checked{% endif %}
+                               onchange="toggleReview(this)">
+                        требует проверки преподавателем (ученик пишет развёрнутое решение, ответ не нужен)
+                    </label>
+                </div>
+                {% endfor %}
+            </div>
+
+            <button type="button" class="btn-add-task" onclick="addTask()">+ Добавить задачу</button>
+
+            <div class="mt-4 d-flex justify-content-between">
+                <a href="{% url 'teacher_course_progress' course.slug %}" class="btn btn-outline-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">
+                    {% if is_edit %}Сохранить изменения →{% else %}Опубликовать ДЗ →{% endif %}
+                </button>
+            </div>
+        </form>
+
+    </div>
+</section>
+
+<script>
+function renumber() {
+    document.querySelectorAll('#tasks-container .task-row').forEach((row, i) => {
+        row.querySelector('.num').textContent = (i + 1) + '.';
+        row.dataset.idx = i;
+        const fileInput = row.querySelector('input[type=file].image-input');
+        if (fileInput) fileInput.name = `task_image_${i}`;
+        const removeChk = row.querySelector('input[type=checkbox][name^=task_remove_image_]');
+        if (removeChk) removeChk.name = `task_remove_image_${i}`;
+        const reviewChk = row.querySelector('input.review-check');
+        if (reviewChk) reviewChk.name = `task_review_${i}`;
+    });
+}
+function toggleReview(chk) {
+    const row = chk.closest('.task-row');
+    row.classList.toggle('review-mode', chk.checked);
+    const answer = row.querySelector('input.answer-input');
+    if (answer) {
+        answer.readOnly = chk.checked;
+        if (chk.checked) answer.value = '';
+    }
+}
+function addTask() {
+    const c = document.getElementById('tasks-container');
+    const row = document.createElement('div');
+    row.className = 'task-row';
+    row.innerHTML = `
+        <div class="num"></div>
+        <textarea name="task_condition" class="form-control" placeholder="Условие задачи"></textarea>
+        <input type="text" name="task_answer" class="form-control answer-input" placeholder="Ответ">
+        <button type="button" class="btn-remove" onclick="removeTask(this)" title="Удалить">×</button>
+        <div class="image-block">
+            <span class="filename">Картинка к задаче (необязательно):</span>
+            <input type="file" name="task_image_x" accept="image/*" class="image-input">
+        </div>
+        <label class="review-toggle">
+            <input type="checkbox" name="task_review_x" value="1" class="review-check" onchange="toggleReview(this)">
+            требует проверки преподавателем (ученик пишет развёрнутое решение, ответ не нужен)
+        </label>
+    `;
+    c.appendChild(row);
+    renumber();
+    row.querySelector('textarea').focus();
+}
+function removeTask(btn) {
+    const c = document.getElementById('tasks-container');
+    if (c.children.length <= 1) {
+        btn.closest('.task-row').querySelectorAll('textarea, input[type=text]').forEach(i => i.value = '');
+        const fi = btn.closest('.task-row').querySelector('input[type=file]');
+        if (fi) fi.value = '';
+        return;
+    }
+    btn.closest('.task-row').remove();
+    renumber();
+}
+renumber();
+
+</script>
+{% endblock %}

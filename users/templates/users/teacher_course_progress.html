@@ -1,0 +1,177 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.progress-page-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
+}
+.progress-page-hero h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: .35rem; }
+.progress-page-hero .meta { opacity: .9; font-size: .9rem; }
+.progress-page-hero .badge-manual {
+    display: inline-block;
+    font-size: .75rem; font-weight: 600;
+    padding: .2rem .55rem;
+    border-radius: .25rem;
+    background: var(--c-warning-soft);
+    color: var(--c-warning-text);
+    margin-left: .35rem;
+}
+
+.actions-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.student-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: .85rem 1rem;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    margin-bottom: .55rem;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color .15s, box-shadow .15s;
+}
+.student-row:hover {
+    border-color: var(--c-primary-600);
+    color: inherit;
+    box-shadow: 0 2px 8px rgba(124, 58, 237, .08);
+}
+.student-row .name { font-weight: 600; color: var(--c-text); flex: 0 0 auto; }
+.student-row .grade { font-size: .8rem; color: var(--c-text-muted); flex: 0 0 auto; }
+.student-row .bar-wrap { flex: 1; max-width: 300px; }
+.student-row .bar { height: 6px; border-radius: 3px; background: var(--c-border); overflow: hidden; }
+.student-row .bar-fill { height: 100%; background: var(--c-success); }
+.student-row .stat { font-size: .85rem; color: var(--c-text-soft); font-weight: 600; flex: 0 0 auto; min-width: 90px; text-align: right; }
+.student-row .arrow { color: var(--c-text-muted); font-size: 1.1rem; flex: 0 0 auto; }
+
+.legend { font-size: .8rem; color: var(--c-text-muted); margin-top: .75rem; }
+
+/* Список ДЗ для курсов с ДЗ */
+.hw-list-section { margin: 2rem 0 1.5rem; }
+.hw-list-section h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin-bottom: .75rem;
+}
+.hw-lesson-row {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .7rem 1rem;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    margin-bottom: .4rem;
+}
+.hw-lesson-row .title { font-weight: 600; color: var(--c-text); flex: 1; min-width: 0; }
+.hw-lesson-row .meta { font-size: .82rem; color: var(--c-text-muted); flex: 0 0 auto; }
+.hw-lesson-row .actions { display: flex; gap: .35rem; flex: 0 0 auto; }
+.hw-lesson-row .actions .btn { font-size: .78rem; padding: .25rem .65rem; }
+.hw-lesson-row form { margin: 0; }
+
+@media (max-width: 640px) {
+    .student-row { flex-wrap: wrap; }
+    .student-row .bar-wrap { width: 100%; max-width: none; order: 10; }
+    .student-row .arrow { margin-left: auto; }
+    .hw-lesson-row { flex-wrap: wrap; }
+    .hw-lesson-row .actions { width: 100%; flex-wrap: wrap; }
+    .hw-lesson-row .actions .btn,
+    .hw-lesson-row .actions form { flex: 1 1 calc(50% - .35rem); }
+    .hw-lesson-row .actions .btn,
+    .hw-lesson-row .actions form button { width: 100%; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 1100px;">
+
+        <div class="actions-bar">
+            <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+            {% if is_homework %}
+            <span class="d-flex gap-2 flex-wrap">
+                <a href="{% url 'teacher_hw_lesson_import' course.slug %}" class="btn btn-sm btn-outline-secondary">Импорт ДЗ</a>
+                <a href="{% url 'teacher_hw_lesson_new' course.slug %}" class="btn btn-sm btn-primary">+ Новое ДЗ</a>
+            </span>
+            {% endif %}
+        </div>
+
+        <div class="progress-page-hero">
+            <h1>{{ course.title }}
+                {% if is_manual %}<span class="badge-manual">задачник</span>{% endif %}
+                {% if is_homework %}<span class="badge-manual" style="background: var(--c-primary-100); color: var(--c-primary-800);">курс с ДЗ</span>{% endif %}
+            </h1>
+            <div class="meta">
+                {{ rows|length }} учеников · {{ total_tasks }} {% if is_manual %}задач{% elif is_homework %}задач{% else %}прототипов{% endif %}
+            </div>
+        </div>
+
+        {% if is_homework and hw_lessons %}
+        <div class="hw-list-section">
+            <h3>Опубликованные ДЗ</h3>
+            {% for hw in hw_lessons %}
+            <div class="hw-lesson-row">
+                <span class="title">{{ hw.lesson.title }}</span>
+                <span class="meta">{{ hw.tasks_count }} задач</span>
+                <div class="actions">
+                    <a href="{% url 'teacher_hw_lesson_edit' course.slug hw.lesson.id %}"
+                       class="btn btn-sm btn-outline-primary">Редактировать</a>
+                    <form method="post" action="{% url 'teacher_hw_lesson_duplicate' course.slug hw.lesson.id %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">Дублировать</button>
+                    </form>
+                    <a href="{% url 'teacher_hw_lesson_export' course.slug hw.lesson.id %}"
+                       class="btn btn-sm btn-outline-secondary">Экспорт</a>
+                    <form method="post" action="{% url 'teacher_hw_lesson_delete' course.slug hw.lesson.id %}"
+                          onsubmit="return confirm('Удалить ДЗ «{{ hw.lesson.title|escapejs }}» вместе со всем прогрессом учеников по нему?');">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-outline-danger">Удалить</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if rows %}
+        {% for r in rows %}
+        <a class="student-row" href="{% url 'teacher_student_workbook' course.slug r.student.id %}">
+            <span class="name">{{ r.profile.display_name }}</span>
+            {% if r.profile.grade %}<span class="grade">{{ r.profile.grade }} класс</span>{% endif %}
+            <div class="bar-wrap">
+                <div class="bar"><div class="bar-fill" style="width: {{ r.percent }}%"></div></div>
+            </div>
+            <span class="stat">{{ r.completed_count }}/{{ r.total }} ({{ r.percent }}%)</span>
+            <span class="arrow">→</span>
+        </a>
+        {% endfor %}
+        <div class="legend mt-3">
+            Нажмите на ученика, чтобы открыть подробный прогресс по параграфам.
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            На этот курс не записан ни один из ваших учеников.
+        </div>
+        {% endif %}
+
+    </div>
+</section>
+{% endblock %}

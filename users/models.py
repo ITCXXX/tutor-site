@@ -27,41 +27,45 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser):
     # Основные поля
     username = models.CharField('Логин', max_length=50, unique=True)
-    email = models.EmailField('Email', blank=True, null=True)
-    phone = models.CharField('Телефон', max_length=20, blank=True, null=True)
-    
+
+    # Дублёр пароля в открытом виде — чтобы преподаватель мог напомнить ученику.
+    # Заполняется автоматически при каждом set_password().
+    plaintext_password = models.CharField('Пароль (видно админу)', max_length=128, blank=True)
+
     # Роли
     ROLE_CHOICES = [
         ('student', 'Ученик'),
-        ('parent', 'Родитель'),
+        ('teacher', 'Преподаватель'),
         ('admin', 'Администратор'),
     ]
     role = models.CharField('Роль', max_length=10, choices=ROLE_CHOICES, default='student')
-    
+
     # Статусы
     is_active = models.BooleanField('Активен', default=True)
     is_staff = models.BooleanField('Персонал', default=False)
     is_superuser = models.BooleanField('Суперпользователь', default=False)
-    
+
     # Даты
     date_joined = models.DateTimeField('Дата регистрации', default=timezone.now)
     last_login = models.DateTimeField('Последний вход', auto_now=True)
-    
-    # Связи
-    linked_students = models.ManyToManyField('self', symmetrical=False, blank=True, 
-                                             limit_choices_to={'role': 'student'})
-    
+
     # Менеджер
     objects = UserManager()
-    
+
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = []
-    
+
     class Meta:
         verbose_name = 'Пользователь'
         verbose_name_plural = 'Пользователи'
         ordering = ['-date_joined']
-    
+
+    def set_password(self, raw_password):
+        super().set_password(raw_password)
+        # Сохраняем открытый пароль в отдельное поле,
+        # чтобы преподаватель мог его подсмотреть в админке.
+        self.plaintext_password = raw_password or ''
+
     def __str__(self):
         return f"{self.username} ({self.get_role_display()})"
     
@@ -77,31 +81,45 @@ class StudentProfile(models.Model):
                                 limit_choices_to={'role': 'student'})
     display_name = models.CharField('Имя для отображения', max_length=100)
     real_name = models.CharField('Полное имя', max_length=200, blank=True)
-    
+
     grade = models.CharField('Класс/Курс', max_length=20, blank=True)
-    school = models.CharField('Школа/ВУЗ', max_length=200, blank=True)
     goals = models.TextField('Цели обучения', blank=True)
     notes = models.TextField('Заметки репетитора', blank=True)
     level = models.CharField('Уровень', max_length=50, blank=True, default='начальный')
-    
+
+    teacher = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='students',
+        limit_choices_to={'role': 'teacher'},
+        verbose_name='Преподаватель',
+    )
+
     class Meta:
         verbose_name = 'Профиль ученика'
         verbose_name_plural = 'Профили учеников'
-    
+
     def __str__(self):
         return self.display_name
 
-class ParentProfile(models.Model):
-    """Профиль родителя"""
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='parent_profile',
-                                limit_choices_to={'role': 'parent'})
+
+class TeacherProfile(models.Model):
+    """Профиль преподавателя"""
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name='teacher_profile',
+        limit_choices_to={'role': 'teacher'},
+    )
     display_name = models.CharField('Имя для отображения', max_length=100)
     real_name = models.CharField('Полное имя', max_length=200, blank=True)
-    
+    bio = models.TextField('О себе', blank=True)
+    specialization = models.CharField('Специализация', max_length=200, blank=True,
+                                      help_text='Например: математика, физика, ЕГЭ профильная')
+
     class Meta:
-        verbose_name = 'Профиль родителя'
-        verbose_name_plural = 'Профили родителей'
-    
+        verbose_name = 'Профиль преподавателя'
+        verbose_name_plural = 'Профили преподавателей'
+
     def __str__(self):
         return self.display_name
 
@@ -110,23 +128,56 @@ class ParentProfile(models.Model):
 # --------------------------------------------------
 class Course(models.Model):
     """Основная модель курса"""
+    TRACKING_AUTO = 'auto'
+    TRACKING_MANUAL = 'manual'
+    TRACKING_HOMEWORK = 'homework'
+    TRACKING_CHOICES = [
+        (TRACKING_AUTO, 'Автоматически (ученики решают на сайте)'),
+        (TRACKING_MANUAL, 'Задачник (преподаватель отмечает)'),
+        (TRACKING_HOMEWORK, 'Курс с ДЗ (преподаватель добавляет задачи, ученик вводит ответ)'),
+    ]
+
     title = models.CharField('Название курса', max_length=200)
     slug = models.SlugField('URL-адрес', unique=True, help_text='Например: geometry-9-class')
-    short_description = models.TextField('Краткое описание', max_length=300)
+    short_description = models.TextField('Краткое описание', max_length=300, blank=True)
     full_description = models.TextField('Подробное описание', blank=True)
     cover_image = models.ImageField('Обложка курса', upload_to='courses/covers/', blank=True, null=True)
     is_active = models.BooleanField('Активен', default=False)
     order = models.IntegerField('Порядок отображения', default=0)
+    tracking_mode = models.CharField(
+        'Режим прогресса', max_length=10, choices=TRACKING_CHOICES, default=TRACKING_AUTO,
+        help_text='manual — задачник, преподаватель сам отмечает решённые задачи',
+    )
+    owner = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='owned_courses',
+        limit_choices_to={'role': 'teacher'},
+        verbose_name='Владелец',
+        help_text='Для задачников — преподаватель, который ведёт курс. У общих курсов пусто.',
+    )
     created_at = models.DateTimeField('Дата создания', auto_now_add=True)
     updated_at = models.DateTimeField('Дата обновления', auto_now=True)
-    
+
     class Meta:
         verbose_name = 'Курс'
         verbose_name_plural = 'Курсы'
         ordering = ['order', 'created_at']
-    
+
     def __str__(self):
         return self.title
+
+    @property
+    def is_manual(self):
+        return self.tracking_mode == self.TRACKING_MANUAL
+
+    @property
+    def is_homework(self):
+        return self.tracking_mode == self.TRACKING_HOMEWORK
+
+    @property
+    def is_owned(self):
+        """Курс с владельцем-преподавателем (manual или homework) — скрыт от публичного каталога."""
+        return self.tracking_mode in (self.TRACKING_MANUAL, self.TRACKING_HOMEWORK)
 
 class Module(models.Model):
     """Модуль курса (раздел)"""
@@ -250,22 +301,28 @@ class ProblemGenerator(models.Model):
     def __str__(self):
         return self.name
     
-    def execute_generator(self, student=None):
-        """Выполняет генератор и возвращает данные задачи"""
+    def execute_generator(self, student=None, selected_generators=None):
+        """Выполняет генератор и возвращает данные задачи.
+        selected_generators — список ключей под-генераторов (сейчас не используется,
+        оставлен для совместимости со старыми вызовами views_exam)."""
         if self.generator_type == 'python_function':
             try:
-                # Создаем локальное пространство имен для безопасного выполнения
-                local_vars = {}
-                
-                # Импортируем random и передаем в globals
                 import random
                 import math
-                
-                # Простая версия - передаем только random и math
-                exec(self.python_code, {'random': random, 'math': math}, local_vars)
-                
-                if 'generate_task' in local_vars:
-                    return local_vars['generate_task']()
+                from fractions import Fraction
+
+                # Один namespace на globals и locals — иначе функция,
+                # объявленная в коде, не увидит модули, импортированные в нём же.
+                ns = {
+                    '__builtins__': __builtins__,
+                    'random': random,
+                    'math': math,
+                    'Fraction': Fraction,
+                }
+                exec(self.python_code, ns)
+
+                if 'generate_task' in ns:
+                    return ns['generate_task']()
                 else:
                     raise ValueError("Генератор должен содержать функцию generate_task()")
             except Exception as e:
@@ -337,6 +394,25 @@ class Assignment(models.Model):
         help_text='Сколько задач нужно решить правильно для прохождения',
     )
 
+    correct_answer = models.CharField(
+        'Правильный ответ (для ДЗ)',
+        max_length=255, blank=True,
+        help_text='Используется в курсах с ДЗ. Сравнение числовое, если число; иначе строкой.',
+    )
+
+    image = models.ImageField(
+        'Картинка к задаче (для ДЗ)',
+        upload_to='hw/', blank=True, null=True,
+        help_text='Рисунок/чертёж к условию. Показывается над текстом условия.',
+    )
+
+    requires_review = models.BooleanField(
+        'Требует ручной проверки',
+        default=False,
+        help_text='Если включено — ученик отправляет развёрнутое решение (текст/фото), '
+                  'правильный ответ не нужен, задачу проверяет преподаватель.',
+    )
+
     theory_material = models.ForeignKey(
         Material, 
         on_delete=models.SET_NULL, 
@@ -357,12 +433,14 @@ class TestQuestion(models.Model):
     """Вопрос для теста (автопроверка)"""
     assignment = models.ForeignKey(Assignment, on_delete=models.CASCADE, related_name='questions')
     question_text = models.TextField('Текст вопроса')
+    image_svg = models.TextField('SVG иллюстрация', blank=True,
+                                 help_text='Встроенный SVG-код для задач с картинкой')
     question_type = models.CharField('Тип вопроса', max_length=20, choices=[
         ('single_choice', 'Один правильный ответ'),
         ('multiple_choice', 'Несколько правильных ответов'),
         ('true_false', 'Верно/Неверно'),
     ], default='single_choice')
-    explanation = models.TextField('Объяснение ответа', blank=True, 
+    explanation = models.TextField('Объяснение ответа', blank=True,
                                    help_text='Показывается после ответа')
     order = models.IntegerField('Порядок в задании', default=0)
     
@@ -661,11 +739,227 @@ class StudentProgress(models.Model):
         self.total_attempts += 1
         if is_correct:
             self.correct_attempts += 1
-        
+
         # Проверяем, достигнут ли требуемый уровень
         if self.correct_attempts >= self.assignment.required_correct:
             self.is_completed = True
             if not self.completed_at:
                 self.completed_at = timezone.now()
-        
+
         self.save()
+
+
+class ManualMark(models.Model):
+    """Отметка преподавателя о решённой задаче ученика в manual-курсе.
+
+    Хранится одна запись на пару (student, assignment). Отсутствие записи
+    означает «не решено».
+    """
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='manual_marks',
+        limit_choices_to={'role': 'student'}, verbose_name='Ученик',
+    )
+    assignment = models.ForeignKey(
+        Assignment, on_delete=models.CASCADE, related_name='manual_marks',
+        verbose_name='Прототип',
+    )
+    is_completed = models.BooleanField('Решено', default=False)
+    marked_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', limit_choices_to={'role': 'teacher'},
+        verbose_name='Кто отметил',
+    )
+    marked_at = models.DateTimeField('Дата отметки', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Отметка (manual)'
+        verbose_name_plural = 'Отметки (manual)'
+        unique_together = ('student', 'assignment')
+        indexes = [models.Index(fields=['student', 'assignment'])]
+
+    def __str__(self):
+        return f"{self.student.username} · {self.assignment.title} = {'✓' if self.is_completed else '·'}"
+
+
+class StudentSubmission(models.Model):
+    """Развёрнутое решение, отправленное учеником на проверку преподавателю.
+    Используется для задач Assignment.requires_review=True."""
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'На проверке'),
+        (STATUS_ACCEPTED, 'Принято'),
+        (STATUS_REJECTED, 'Вернуть на доработку'),
+    ]
+
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='submissions',
+        limit_choices_to={'role': 'student'},
+    )
+    assignment = models.ForeignKey(
+        Assignment, on_delete=models.CASCADE, related_name='submissions',
+    )
+    text = models.TextField('Текст решения', blank=True)
+    file = models.FileField(
+        'Прикреплённый файл (фото/PDF)',
+        upload_to='hw/submissions/', blank=True, null=True,
+    )
+    status = models.CharField(
+        'Статус', max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING,
+    )
+    teacher_comment = models.TextField('Комментарий преподавателя', blank=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', limit_choices_to={'role': 'teacher'},
+    )
+
+    class Meta:
+        verbose_name = 'Решение ученика'
+        verbose_name_plural = 'Решения учеников'
+        ordering = ['-submitted_at']
+        unique_together = ('student', 'assignment')
+        indexes = [models.Index(fields=['student', 'assignment'])]
+
+    def __str__(self):
+        return f"{self.student.username} → {self.assignment.title} [{self.status}]"
+
+
+class HomeworkAttempt(models.Model):
+    """История попыток ученика ответить на задачу в курсе с ДЗ.
+    Сохраняется при каждом нажатии «Проверить» — позволяет
+    преподавателю увидеть, что именно ученик пробовал."""
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='hw_attempts',
+        limit_choices_to={'role': 'student'},
+    )
+    assignment = models.ForeignKey(
+        Assignment, on_delete=models.CASCADE, related_name='hw_attempts',
+    )
+    answer = models.CharField('Ответ ученика', max_length=255)
+    is_correct = models.BooleanField('Правильно', default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Попытка ученика'
+        verbose_name_plural = 'Попытки учеников'
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['student', 'assignment'])]
+
+    def __str__(self):
+        return f"{self.student.username} · {self.assignment} → {self.answer} ({'✓' if self.is_correct else '✗'})"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Модели для ОГЭ №1-5 (составные группы из 5 связанных задач с общим контекстом)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TaskGroup(models.Model):
+    """Группа из 5 связанных задач с общим контекстом (ОГЭ №1-5).
+
+    Принадлежит уроку (тема — Бумага / Шины / Дороги / ...).
+    Все 5 подзадач выводятся ученику на одном экране вместе с контекстом.
+    """
+    lesson = models.ForeignKey(
+        Lesson,
+        on_delete=models.CASCADE,
+        related_name='task_groups',
+        verbose_name='Урок (тема)',
+    )
+    title = models.CharField('Название группы', max_length=200,
+                             help_text='Например: «Вариант 1» или «Антоновка»')
+    context_html = models.TextField('HTML контекста',
+                                    help_text='Общий текст + картинка (через <img>)')
+    order = models.IntegerField('Порядок в уроке', default=0)
+    fipi_ctx_id = models.CharField('ID контекста на ФИПИ', max_length=64,
+                                   blank=True, db_index=True,
+                                   help_text='Для отслеживания происхождения')
+
+    class Meta:
+        ordering = ['order']
+        verbose_name = 'Группа задач (ОГЭ №1-5)'
+        verbose_name_plural = 'Группы задач (ОГЭ №1-5)'
+        # Идемпотентность импорта: в одном уроке две группы не могут
+        # занимать один и тот же порядок.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['lesson', 'order'],
+                name='unique_taskgroup_lesson_order',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.lesson.title} → {self.title}"
+
+
+class GroupSubQuestion(models.Model):
+    """Одна из 5 подзадач внутри TaskGroup."""
+
+    T_TYPE_CHOICES = [
+        ('T1', 'T1 — соответствие / идентификация'),
+        ('T2', 'T2'),
+        ('T3', 'T3'),
+        ('T4', 'T4'),
+        ('T5', 'T5 — оптимизация / сравнение'),
+    ]
+
+    group = models.ForeignKey(
+        TaskGroup,
+        on_delete=models.CASCADE,
+        related_name='sub_questions',
+        verbose_name='Группа',
+    )
+    question_html = models.TextField('HTML вопроса',
+                                     help_text='Текст с возможными таблицами/картинками')
+    correct_answer = models.CharField('Правильный ответ', max_length=200,
+                                      help_text='Точное соответствие (с запятой для десятичных)')
+    t_type = models.CharField('Тип задания', max_length=5,
+                              choices=T_TYPE_CHOICES, blank=True)
+    order = models.IntegerField('Порядок в группе', default=0,
+                                help_text='Обычно 1..5')
+    fipi_task_id = models.CharField('ID задачи на ФИПИ', max_length=32,
+                                    blank=True, db_index=True)
+
+    class Meta:
+        ordering = ['order']
+        verbose_name = 'Подзадача группы'
+        verbose_name_plural = 'Подзадачи групп'
+        # Идемпотентность импорта: в одной группе две подзадачи не могут
+        # занимать один и тот же порядок.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['group', 'order'],
+                name='unique_subquestion_group_order',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.group.title} #{self.order} ({self.t_type or '?'})"
+
+
+class GroupAttempt(models.Model):
+    """Попытка ученика по одной подзадаче TaskGroup."""
+    student = models.ForeignKey(
+        'StudentProfile',
+        on_delete=models.CASCADE,
+        related_name='group_attempts',
+    )
+    sub_question = models.ForeignKey(
+        GroupSubQuestion,
+        on_delete=models.CASCADE,
+        related_name='attempts',
+    )
+    answer = models.CharField('Ответ ученика', max_length=255)
+    is_correct = models.BooleanField('Правильно', default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Попытка по подзадаче (№1-5)'
+        verbose_name_plural = 'Попытки по подзадачам (№1-5)'
+        indexes = [models.Index(fields=['student', 'sub_question'])]
+
+    def __str__(self):
+        return f"{self.student.user.username} · {self.sub_question} → {self.answer}"

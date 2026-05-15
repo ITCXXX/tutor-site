@@ -1,0 +1,146 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.tg-container {
+    max-width: 900px;
+    margin: 80px auto 40px;
+    padding: 0 1rem;
+}
+.tg-back {
+    display: inline-block;
+    margin-bottom: .8rem;
+    color: var(--c-text-muted);
+    text-decoration: none;
+    font-size: .9rem;
+}
+.tg-back:hover { color: var(--c-primary-600); }
+
+.result-summary {
+    background: var(--gradient-nav);
+    color: white;
+    padding: 1.4rem 1.6rem;
+    border-radius: var(--r-lg);
+    margin-bottom: 1.4rem;
+    text-align: center;
+}
+.result-summary h1 { color: white; margin: 0 0 .35rem; font-size: 1.5rem; }
+.result-score {
+    font-size: 2.4rem;
+    font-weight: 700;
+    margin: .35rem 0;
+}
+.result-meta { opacity: .9; font-size: .95rem; }
+
+.result-task {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-left: 5px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1rem 1.2rem;
+    margin-bottom: .9rem;
+}
+.result-task.correct { border-left-color: #16a34a; background: rgba(22,163,74,.04); }
+.result-task.wrong   { border-left-color: #dc2626; background: rgba(220,38,38,.04); }
+.result-head {
+    display: flex; align-items: center; gap: .7rem; margin-bottom: .5rem;
+}
+.result-num {
+    font-weight: 600;
+    color: var(--c-primary-700);
+}
+.result-badge {
+    font-size: .78rem;
+    font-weight: 600;
+    padding: .15rem .55rem;
+    border-radius: var(--r-sm);
+}
+.result-badge.ok { background: #16a34a; color: white; }
+.result-badge.no { background: #dc2626; color: white; }
+.result-body {
+    line-height: 1.5;
+    margin-bottom: .55rem;
+}
+.result-body img { max-width: 100%; height: auto; }
+.result-answers {
+    font-size: .92rem;
+    color: var(--c-text);
+}
+.result-answers .lbl {
+    color: var(--c-text-muted);
+    margin-right: .35rem;
+}
+.result-answers .yours.wrong-text { color: #dc2626; text-decoration: line-through; }
+.result-answers .correct-text { color: #16a34a; font-weight: 600; }
+.result-answers .msg {
+    display: block;
+    color: var(--c-text-muted);
+    font-size: .85rem;
+    margin-top: .2rem;
+    font-style: italic;
+}
+
+.tg-actions {
+    margin-top: 1.6rem;
+    display: flex;
+    gap: .8rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="tg-container">
+    <a href="{% url 'course_detail' group.lesson.module.course.slug %}" class="tg-back">← К курсу</a>
+
+    <div class="result-summary">
+        <h1>{{ group.title }}</h1>
+        <div class="result-score">{{ correct_count }} / {{ total }}</div>
+        <div class="result-meta">{{ percent }}% правильных ответов</div>
+    </div>
+
+    {% for r in results %}
+    <div class="result-task {% if r.is_correct %}correct{% else %}wrong{% endif %}">
+        <div class="result-head">
+            <span class="result-num">Задание {{ forloop.counter }}</span>
+            {% if r.sq.t_type %}
+            <span class="text-muted" style="font-size:.78rem;">{{ r.sq.t_type }}</span>
+            {% endif %}
+            <span class="result-badge {% if r.is_correct %}ok{% else %}no{% endif %}">
+                {% if r.is_correct %}Верно{% else %}Неверно{% endif %}
+            </span>
+        </div>
+        <div class="result-body">
+            {{ r.sq.question_html|safe }}
+        </div>
+        <div class="result-answers">
+            {% if r.user_answer %}
+                <span class="lbl">Ваш ответ:</span>
+                <span class="yours {% if not r.is_correct %}wrong-text{% endif %}">{{ r.user_answer }}</span>
+            {% else %}
+                <span class="lbl">Без ответа.</span>
+            {% endif %}
+            {% if not r.is_correct %}
+                <span class="lbl" style="margin-left:.6rem;">Правильно:</span>
+                <span class="correct-text">{{ r.sq.correct_answer }}</span>
+            {% endif %}
+            {% if r.message %}
+                <span class="msg">{{ r.message }}</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="tg-actions">
+        <a href="{% url 'task_group_practice' group.id %}" class="btn btn-primary">Решить ещё раз</a>
+        <a href="{% url 'course_detail' group.lesson.module.course.slug %}" class="btn btn-outline-secondary">К курсу</a>
+    </div>
+</div>
+
+<script>
+if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
+</script>
+{% endblock %}

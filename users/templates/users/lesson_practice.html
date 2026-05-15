@@ -1,0 +1,730 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ lesson.title }} — практика{% endblock %}
+
+{% block extra_css %}
+<style>
+.practice-wrap {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 1.5rem;
+    align-items: start;
+}
+.practice-main {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.5rem 1.75rem;
+    min-height: 320px;
+}
+.practice-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.25rem;
+}
+.practice-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.practice-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; display: inline-block; margin-bottom: 1rem; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.session-stats {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    font-size: .9rem;
+    color: var(--c-text-soft);
+    flex-wrap: wrap;
+}
+.session-stats .stat-correct strong { color: var(--c-success); font-weight: 700; }
+.session-stats .stat-total strong { color: var(--c-text); font-weight: 700; }
+.session-stats .stat-pct {
+    color: var(--c-primary-700);
+    font-weight: 600;
+    background: var(--c-primary-50);
+    padding: .15rem .55rem;
+    border-radius: var(--r-sm);
+    font-size: .82rem;
+}
+.session-stats .stat-reset {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-sm);
+    padding: .2rem .65rem;
+    color: var(--c-text-muted);
+    cursor: pointer;
+    font-size: .8rem;
+}
+.session-stats .stat-reset:hover { border-color: var(--c-primary-600); color: var(--c-primary-600); }
+
+.q-type {
+    font-size: .8rem;
+    color: var(--c-text-muted);
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    margin-bottom: .35rem;
+}
+.q-condition {
+    font-size: 1.05rem;
+    line-height: 1.6;
+    color: var(--c-text);
+    margin-bottom: 1.4rem;
+}
+
+.answer-row {
+    display: flex; gap: .65rem; flex-wrap: wrap; align-items: center;
+}
+.answer-row .form-control { max-width: 220px; }
+.answer-row .feedback { font-size: .9rem; }
+.answer-row .feedback.correct { color: var(--c-success); font-weight: 600; }
+.answer-row .feedback.wrong { color: var(--c-danger); font-weight: 500; }
+
+.btn-next {
+    margin-top: 1rem;
+    display: none;
+}
+.btn-next.show { display: inline-block; }
+
+/* Кнопки вариантов (single_choice) */
+.choices-container {
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+    margin-top: .5rem;
+}
+.choice-btn {
+    text-align: left;
+    padding: .75rem 1rem;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    color: var(--c-text);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+}
+.choice-btn:hover { border-color: var(--c-primary-600); }
+.choice-btn .choice-num {
+    display: inline-block;
+    font-weight: 600;
+    color: var(--c-text-muted);
+    margin-right: .55rem;
+    min-width: 1.2rem;
+}
+.choice-btn.choice-correct {
+    border-color: #2e7d32;
+    background: #e8f5e9;
+}
+.choice-btn.choice-wrong {
+    border-color: #c62828;
+    background: #ffebee;
+}
+.choice-btn.choice-reveal {
+    border-color: #1565c0;
+    background: #e3f2fd;
+}
+.choice-btn[disabled] { opacity: .85; cursor: default; }
+.choices-row { display: flex; flex-direction: column; gap: .35rem; align-items: flex-start; }
+.choices-row #reveal-btn-choices { margin-top: .35rem; }
+
+/* Сайдбар */
+.practice-sidebar {
+    position: sticky;
+    top: 80px;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    overflow: hidden;
+}
+.sidebar-summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    padding: .8rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    background: var(--c-bg-soft);
+    font-weight: 600;
+    color: var(--c-text);
+    font-size: .92rem;
+}
+.sidebar-summary::-webkit-details-marker { display: none; }
+.sidebar-summary::before {
+    content: "▸"; color: var(--c-text-muted); font-size: .9rem;
+    transition: transform .15s; flex: 0 0 auto;
+}
+details[open] > .sidebar-summary::before { transform: rotate(90deg); }
+.sidebar-summary .count {
+    margin-left: auto;
+    font-size: .78rem;
+    color: var(--c-text-muted);
+    font-weight: 500;
+}
+.sidebar-body { padding: .65rem 1rem 1rem; }
+.gen-item {
+    display: flex; align-items: center; gap: .55rem;
+    padding: .35rem 0; font-size: .88rem; cursor: pointer;
+}
+.gen-item input[type=checkbox] {
+    width: 16px; height: 16px; flex: 0 0 auto;
+}
+.gen-item.active-now { font-weight: 600; color: var(--c-primary-700); }
+
+/* Группы генераторов внутри сайдбара */
+.gen-group {
+    border-top: 1px solid var(--c-border);
+    padding: .35rem 0;
+}
+.gen-group:first-of-type { border-top: none; padding-top: 0; }
+.gen-group-summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .25rem 0;
+    font-size: .78rem;
+    color: var(--c-text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+.gen-group-summary::-webkit-details-marker { display: none; }
+.gen-group-summary::before {
+    content: "▸"; font-size: .75rem;
+    transition: transform .15s; flex: 0 0 auto;
+}
+.gen-group[open] > .gen-group-summary::before { transform: rotate(90deg); }
+.gen-group-count {
+    margin-left: auto;
+    font-size: .72rem;
+    color: var(--c-text-muted);
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.gen-group-body { padding: .15rem 0 .15rem .85rem; }
+
+.sidebar-actions {
+    margin-top: .5rem;
+    display: flex; gap: .35rem; font-size: .78rem;
+}
+.sidebar-actions button {
+    background: transparent; border: 1px solid var(--c-border);
+    border-radius: var(--r-sm); padding: .2rem .55rem;
+    color: var(--c-text-muted); cursor: pointer; font-size: .78rem;
+}
+.sidebar-actions button:hover { border-color: var(--c-primary-600); color: var(--c-primary-600); }
+
+@media (max-width: 900px) {
+    .practice-wrap { grid-template-columns: 1fr; }
+    .practice-sidebar { position: static; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 1100px;">
+        <a href="{% url 'course_detail' course.slug %}" class="btn-back">← К курсу</a>
+
+        <div class="practice-hero">
+            <h1>{{ lesson.title }}</h1>
+            <div class="meta">{{ course.title }}</div>
+        </div>
+
+        {% if not no_generators %}
+        <div class="session-stats" id="session-stats">
+            <span class="stat-correct">
+                Верно: <strong id="stat-correct">0</strong>
+            </span>
+            <span class="stat-total">
+                Всего: <strong id="stat-total">0</strong>
+            </span>
+            <span class="stat-pct" id="stat-pct">—</span>
+            <button type="button" class="stat-reset" id="stat-reset">Обнулить</button>
+        </div>
+        {% endif %}
+
+        {% if no_generators %}
+        <div class="alert alert-info">В этом уроке пока нет генераторов задач.</div>
+        {% else %}
+
+        <div class="practice-wrap">
+            <!-- Главная панель: задача -->
+            <div class="practice-main">
+                <div class="q-type" id="q-type">{{ chosen_assignment.title }}</div>
+                <div class="q-condition" id="q-condition">{{ task_data.condition_text|default:""|safe }}</div>
+
+                {# UI ввода: либо текстовый input, либо набор кнопок-вариантов. #}
+                <div class="answer-row" id="answer-row-input"
+                     {% if chosen_assignment.answer_type == 'single_choice' %}style="display:none"{% endif %}>
+                    <input type="text" id="answer-input" class="form-control"
+                           placeholder="Ваш ответ" autocomplete="off"
+                           {% if chosen_assignment.answer_type != 'single_choice' %}autofocus{% endif %}>
+                    <button type="button" id="check-btn" class="btn btn-primary">Проверить</button>
+                    {% if is_oge %}
+                    <button type="button" id="reveal-btn" class="btn btn-outline-secondary btn-sm">Узнать ответ</button>
+                    {% endif %}
+                    <span class="feedback" id="feedback"></span>
+                </div>
+
+                <div class="choices-row" id="answer-row-choices"
+                     {% if chosen_assignment.answer_type != 'single_choice' %}style="display:none"{% endif %}>
+                    <div id="choices-container" class="choices-container">
+                        {% if chosen_assignment.answer_type == 'single_choice' %}
+                        {% for choice in task_data.choices %}
+                        <button type="button" class="choice-btn" data-idx="{{ forloop.counter }}">
+                            <span class="choice-num">{{ forloop.counter }}.</span>
+                            <span class="choice-latex">{{ choice|safe }}</span>
+                        </button>
+                        {% endfor %}
+                        {% endif %}
+                    </div>
+                    {% if is_oge %}
+                    <button type="button" id="reveal-btn-choices" class="btn btn-outline-secondary btn-sm">Узнать ответ</button>
+                    {% endif %}
+                    <span class="feedback" id="feedback-choices"></span>
+                </div>
+
+                <button type="button" id="next-btn" class="btn btn-outline-primary btn-next">
+                    Следующая задача →
+                </button>
+
+                {% if problem %}
+                <input type="hidden" id="problem-id" value="{{ problem.id }}">
+                <input type="hidden" id="correct-answer" value="{{ task_data.correct_answer|default:'' }}">
+                {% else %}
+                <input type="hidden" id="problem-id" value="">
+                <input type="hidden" id="correct-answer" value="{{ task_data.correct_answer|default:'' }}">
+                {% endif %}
+            </div>
+
+            <!-- Сайдбар: список генераторов -->
+            <details class="practice-sidebar" open>
+                <summary class="sidebar-summary">
+                    Типы задач
+                    <span class="count" id="active-count">
+                        {{ active_ids|length }}/{{ generators|length }}
+                    </span>
+                </summary>
+                <div class="sidebar-body">
+                    {% if grouped_generators|length > 1 %}
+                    {# Несколько групп — рендерим вложенный аккордеон. #}
+                    {% for group_name, group_items in grouped_generators %}
+                    <details class="gen-group" open data-group="{{ group_name }}">
+                        <summary class="gen-group-summary">
+                            <span class="gen-group-title">{{ group_name }}</span>
+                            <span class="gen-group-count">
+                                <span class="gen-group-active">0</span>/{{ group_items|length }}
+                            </span>
+                        </summary>
+                        <div class="gen-group-body">
+                            {% for g in group_items %}
+                            <label class="gen-item" data-id="{{ g.id }}">
+                                <input type="checkbox" class="gen-check"
+                                       value="{{ g.id }}"
+                                       {% if g.id in active_ids %}checked{% endif %}>
+                                <span class="gen-title">{{ g.title }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                    {% endfor %}
+                    {% else %}
+                    {# Одна группа — рендерим плоский список без лишнего раскрывающегося уровня. #}
+                    {% for group_name, group_items in grouped_generators %}
+                    {% for g in group_items %}
+                    <label class="gen-item" data-id="{{ g.id }}">
+                        <input type="checkbox" class="gen-check"
+                               value="{{ g.id }}"
+                               {% if g.id in active_ids %}checked{% endif %}>
+                        <span class="gen-title">{{ g.title }}</span>
+                    </label>
+                    {% endfor %}
+                    {% endfor %}
+                    {% endif %}
+
+                    <div class="sidebar-actions">
+                        <button type="button" id="select-all">Все</button>
+                        <button type="button" id="select-none">Снять</button>
+                    </div>
+                </div>
+            </details>
+        </div>
+
+        {% csrf_token %}
+
+        <script>
+        (function() {
+            const csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
+            const lessonId = {{ lesson.id }};
+            const setActiveUrl = "{% url 'lesson_set_active_generators' lesson.id %}";
+            const nextUrl = "{% url 'lesson_next_problem' lesson.id %}";
+            const checkUrl = "{% url 'check_problem_answer' 0 %}".replace('0/', '');
+
+            const qType = document.getElementById('q-type');
+            const qCondition = document.getElementById('q-condition');
+            const input = document.getElementById('answer-input');
+            const checkBtn = document.getElementById('check-btn');
+            const nextBtn = document.getElementById('next-btn');
+            const feedback = document.getElementById('feedback');
+            const problemIdEl = document.getElementById('problem-id');
+            const correctAnswerEl = document.getElementById('correct-answer');
+            const activeCount = document.getElementById('active-count');
+            const inputRow = document.getElementById('answer-row-input');
+            const choicesRow = document.getElementById('answer-row-choices');
+            const choicesContainer = document.getElementById('choices-container');
+            const feedbackChoices = document.getElementById('feedback-choices');
+            const totalCount = {{ generators|length }};
+
+            // Тип ответа текущей задачи: 'single_choice' | 'decimal_input' | ...
+            let currentAnswerType = "{{ chosen_assignment.answer_type|default:'decimal_input' }}";
+
+            // Активный feedback-узел (зависит от UI-блока)
+            function activeFeedback() {
+                return currentAnswerType === 'single_choice' ? feedbackChoices : feedback;
+            }
+            function clearFeedback() {
+                feedback.textContent = ''; feedback.className = 'feedback';
+                feedbackChoices.textContent = ''; feedbackChoices.className = 'feedback';
+            }
+
+            function renderUIForAnswerType(answerType, choices) {
+                currentAnswerType = answerType || 'decimal_input';
+                if (currentAnswerType === 'single_choice') {
+                    inputRow.style.display = 'none';
+                    choicesRow.style.display = '';
+                    rebuildChoices(choices || []);
+                } else {
+                    inputRow.style.display = '';
+                    choicesRow.style.display = 'none';
+                    input.disabled = false;
+                    checkBtn.disabled = false;
+                    const rb = document.getElementById('reveal-btn');
+                    if (rb) rb.disabled = false;
+                }
+            }
+
+            function rebuildChoices(choices) {
+                choicesContainer.innerHTML = '';
+                choices.forEach((choice, i) => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'choice-btn';
+                    btn.dataset.idx = String(i + 1);
+                    btn.innerHTML = `<span class="choice-num">${i+1}.</span> <span class="choice-latex">${choice}</span>`;
+                    btn.addEventListener('click', () => onChoiceClick(btn));
+                    choicesContainer.appendChild(btn);
+                });
+                const rbc = document.getElementById('reveal-btn-choices');
+                if (rbc) rbc.disabled = false;
+            }
+
+            // ── Прогресс по сессии (sessionStorage) ────────────────────────
+            const STAT_KEY = `lesson_stats_${lessonId}`;
+            const elTotal = document.getElementById('stat-total');
+            const elCorrect = document.getElementById('stat-correct');
+            const elPct = document.getElementById('stat-pct');
+
+            function loadStats() {
+                try { return JSON.parse(sessionStorage.getItem(STAT_KEY)) || {total:0, correct:0}; }
+                catch (_) { return {total:0, correct:0}; }
+            }
+            function saveStats(s) { sessionStorage.setItem(STAT_KEY, JSON.stringify(s)); }
+            function renderStats() {
+                const s = loadStats();
+                elTotal.textContent = s.total;
+                elCorrect.textContent = s.correct;
+                elPct.textContent = s.total ? Math.round(s.correct / s.total * 100) + '%' : '—';
+            }
+            function bumpStats(isCorrect) {
+                const s = loadStats();
+                s.total += 1;
+                if (isCorrect) s.correct += 1;
+                saveStats(s);
+                renderStats();
+            }
+            document.getElementById('stat-reset').addEventListener('click', () => {
+                saveStats({total:0, correct:0});
+                renderStats();
+            });
+            renderStats();
+
+            // ── Сайдбар ───────────────────────────────────────────────────
+            function getActiveIds() {
+                return Array.from(document.querySelectorAll('.gen-check:checked'))
+                    .map(c => parseInt(c.value));
+            }
+            function updateCount() {
+                activeCount.textContent = `${getActiveIds().length}/${totalCount}`;
+                // Обновляем счётчики в каждой группе.
+                document.querySelectorAll('.gen-group').forEach(g => {
+                    const checked = g.querySelectorAll('.gen-check:checked').length;
+                    const counter = g.querySelector('.gen-group-active');
+                    if (counter) counter.textContent = checked;
+                });
+            }
+            function saveActive() {
+                const active = getActiveIds();
+                updateCount();
+                fetch(setActiveUrl, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                    body: JSON.stringify({active}),
+                });
+            }
+            // Инициализируем счётчики групп при загрузке страницы.
+            updateCount();
+            document.querySelectorAll('.gen-check').forEach(c => {
+                c.addEventListener('change', saveActive);
+            });
+            document.getElementById('select-all').addEventListener('click', () => {
+                document.querySelectorAll('.gen-check').forEach(c => c.checked = true);
+                saveActive();
+            });
+            document.getElementById('select-none').addEventListener('click', () => {
+                document.querySelectorAll('.gen-check').forEach(c => c.checked = false);
+                saveActive();
+            });
+
+            // ── Загрузка следующей задачи ─────────────────────────────────
+            // Был ли ответ уже зачтён в статистику для текущей задачи
+            let alreadyCounted = false;
+
+            async function loadNext() {
+                if (getActiveIds().length === 0) {
+                    activeFeedback().textContent = 'Выберите хотя бы один тип в сайдбаре';
+                    activeFeedback().className = 'feedback wrong';
+                    return;
+                }
+                clearFeedback();
+                input.value = '';
+                nextBtn.classList.remove('show');
+                alreadyCounted = false;
+
+                try {
+                    const r = await fetch(nextUrl);
+                    const data = await r.json();
+                    if (!r.ok) {
+                        activeFeedback().textContent = data.error || 'Ошибка';
+                        activeFeedback().className = 'feedback wrong';
+                        return;
+                    }
+                    qType.textContent = data.assignment_title;
+                    // condition_text может содержать inline <svg>, поэтому innerHTML.
+                    qCondition.innerHTML = data.condition_text || '';
+                    correctAnswerEl.value = data.correct_answer;
+                    problemIdEl.value = data.problem_id || '';
+
+                    renderUIForAnswerType(data.answer_type, data.choices);
+
+                    if (window.MathJax && MathJax.typesetPromise) {
+                        MathJax.typesetPromise([qType, qCondition, choicesContainer]);
+                    }
+                    if (currentAnswerType !== 'single_choice') input.focus();
+                } catch (e) {
+                    activeFeedback().textContent = 'Ошибка соединения';
+                    activeFeedback().className = 'feedback wrong';
+                }
+            }
+            nextBtn.addEventListener('click', loadNext);
+
+            // ── Проверка ответа ────────────────────────────────────────────
+            function localCheck(userVal, correctVal) {
+                // Возвращает {correct: bool, message: string|null}
+                function parse(s) {
+                    s = (s || '').trim().replace(/\s+/g, '');
+                    if (!s) return null;
+                    if (s.includes('/')) {
+                        const parts = s.split('/');
+                        if (parts.length !== 2) return null;
+                        const n = parseInt(parts[0], 10);
+                        const d = parseInt(parts[1], 10);
+                        if (isNaN(n) || isNaN(d) || d === 0) return null;
+                        return {value: n / d, isFrac: true, num: n, denom: d};
+                    }
+                    const v = parseFloat(s.replace(',', '.'));
+                    if (isNaN(v)) return null;
+                    return {value: v, isFrac: false};
+                }
+                function gcd(a, b) {
+                    a = Math.abs(a); b = Math.abs(b);
+                    while (b) { const t = b; b = a % b; a = t; }
+                    return a;
+                }
+                const u = parse(userVal);
+                const c = parse(correctVal);
+                if (!u || !c) {
+                    const eq = (userVal || '').trim().toLowerCase() === (correctVal || '').trim().toLowerCase();
+                    return {correct: eq, message: null};
+                }
+                if (Math.abs(u.value - c.value) > 0.001) return {correct: false, message: null};
+                if (u.isFrac) {
+                    if (u.num === 0) return {correct: false, message: 'Запишите ответ как 0 (без дроби)'};
+                    if (gcd(u.num, u.denom) !== 1) return {correct: false, message: 'Сократите дробь'};
+                }
+                return {correct: true, message: null};
+            }
+
+            async function checkAnswer() {
+                const userAnswer = input.value.trim();
+                if (!userAnswer) {
+                    feedback.textContent = 'Введите ответ';
+                    feedback.className = 'feedback wrong';
+                    return;
+                }
+                const problemId = problemIdEl.value;
+                let isCorrect;
+                let serverMsg = null;
+                if (problemId) {
+                    // Залогиненный ученик — проверка через сервер (пишет прогресс)
+                    try {
+                        const r = await fetch(`/exam/check/${problemId}/`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                            body: JSON.stringify({answer: userAnswer}),
+                        });
+                        const d = await r.json();
+                        isCorrect = !!d.correct;
+                        serverMsg = d.message || null;
+                    } catch (e) {
+                        feedback.textContent = 'Ошибка соединения';
+                        feedback.className = 'feedback wrong';
+                        return;
+                    }
+                } else {
+                    // Аноним — локальная проверка
+                    const local = localCheck(userAnswer, correctAnswerEl.value);
+                    isCorrect = local.correct;
+                    serverMsg = local.message;
+                }
+
+                if (!alreadyCounted) {
+                    bumpStats(isCorrect);
+                    alreadyCounted = true;
+                }
+
+                if (isCorrect) {
+                    feedback.textContent = 'Правильно!';
+                    feedback.className = 'feedback correct';
+                    input.disabled = true;
+                    checkBtn.disabled = true;
+                    nextBtn.classList.add('show');
+                    nextBtn.focus();
+                } else {
+                    feedback.textContent = serverMsg || 'Неверно. Попробуйте ещё раз.';
+                    feedback.className = 'feedback wrong';
+                    input.select();
+                }
+            }
+            checkBtn.addEventListener('click', checkAnswer);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    if (nextBtn.classList.contains('show')) loadNext();
+                    else checkAnswer();
+                }
+            });
+
+            // ── Single-choice: клик по кнопке варианта ──────────────────────
+            async function onChoiceClick(btn) {
+                if (btn.disabled) return;
+                const idx = btn.dataset.idx;
+                const correctVal = String(correctAnswerEl.value || '').trim();
+                const problemId = problemIdEl.value;
+
+                let isCorrect;
+                let serverMsg = null;
+                if (problemId) {
+                    try {
+                        const r = await fetch(`/exam/check/${problemId}/`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+                            body: JSON.stringify({answer: idx}),
+                        });
+                        const d = await r.json();
+                        isCorrect = !!d.correct;
+                        serverMsg = d.message || null;
+                    } catch (e) {
+                        feedbackChoices.textContent = 'Ошибка соединения';
+                        feedbackChoices.className = 'feedback wrong';
+                        return;
+                    }
+                } else {
+                    isCorrect = String(idx) === correctVal;
+                }
+
+                if (!alreadyCounted) {
+                    bumpStats(isCorrect);
+                    alreadyCounted = true;
+                }
+
+                btn.classList.add(isCorrect ? 'choice-correct' : 'choice-wrong');
+                if (isCorrect) {
+                    feedbackChoices.textContent = 'Правильно!';
+                    feedbackChoices.className = 'feedback correct';
+                    choicesContainer.querySelectorAll('.choice-btn').forEach(b => b.disabled = true);
+                    nextBtn.classList.add('show');
+                    nextBtn.focus();
+                } else {
+                    feedbackChoices.textContent = serverMsg || 'Неверно. Попробуйте ещё раз.';
+                    feedbackChoices.className = 'feedback wrong';
+                    btn.disabled = true;
+                }
+            }
+            // Подключаем обработчики для кнопок, которые отрендерены сервером
+            // (на первой загрузке страницы).
+            choicesContainer.querySelectorAll('.choice-btn').forEach(btn => {
+                btn.addEventListener('click', () => onChoiceClick(btn));
+            });
+
+            // ── «Узнать ответ» (только для ОГЭ) ────────────────────────────
+            const revealBtn = document.getElementById('reveal-btn');
+            if (revealBtn) {
+                revealBtn.addEventListener('click', () => {
+                    const correct = correctAnswerEl.value || '—';
+                    feedback.textContent = `Правильный ответ: ${correct}`;
+                    feedback.className = 'feedback wrong';
+                    if (!alreadyCounted) {
+                        bumpStats(false);
+                        alreadyCounted = true;
+                    }
+                    input.disabled = true;
+                    checkBtn.disabled = true;
+                    revealBtn.disabled = true;
+                    nextBtn.classList.add('show');
+                    nextBtn.focus();
+                });
+            }
+            const revealBtnChoices = document.getElementById('reveal-btn-choices');
+            if (revealBtnChoices) {
+                revealBtnChoices.addEventListener('click', () => {
+                    const correctIdx = String(correctAnswerEl.value || '').trim();
+                    const target = choicesContainer.querySelector(`.choice-btn[data-idx="${correctIdx}"]`);
+                    if (target) target.classList.add('choice-reveal');
+                    feedbackChoices.textContent = `Правильный вариант: ${correctIdx}`;
+                    feedbackChoices.className = 'feedback wrong';
+                    if (!alreadyCounted) { bumpStats(false); alreadyCounted = true; }
+                    choicesContainer.querySelectorAll('.choice-btn').forEach(b => b.disabled = true);
+                    revealBtnChoices.disabled = true;
+                    nextBtn.classList.add('show');
+                    nextBtn.focus();
+                });
+            }
+
+            updateCount();
+            // Запускаем MathJax если LaTeX в условии
+            if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
+        })();
+        </script>
+
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

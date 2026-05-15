@@ -17,7 +17,7 @@
         
         <!-- Заголовок категории -->
         <div class="mb-5">
-            <h1 class="display-5 fw-bold mb-3">{{ category.icon }} {{ category.title }}</h1>
+            <h1 class="display-5 fw-bold mb-3">{{ category.title }}</h1>
             {% if category.description %}
             <p class="lead">{{ category.description }}</p>
             {% endif %}
@@ -43,29 +43,29 @@
                         {% if material.file %}
                             {% if material.file.name|lower|slice:"-4:" == ".pdf" %}
                                 <!-- Для PDF: кнопки Просмотреть и Скачать -->
-                                <a href="{% url 'material_view' material.id %}" 
+                                <a href="{% url 'material_view' material.id %}"
                                    class="btn btn-primary">
-                                    👁️ Просмотреть
+                                    Просмотреть
                                 </a>
-                                <a href="{{ material.file.url }}" 
-                                   class="btn btn-outline-primary" 
+                                <a href="{{ material.file.url }}"
+                                   class="btn btn-outline-primary"
                                    download>
-                                    ⬇️
+                                    Скачать
                                 </a>
                             {% else %}
                                 <!-- Для других файлов: только скачивание -->
-                                <a href="{{ material.file.url }}" 
-                                   class="btn btn-primary" 
+                                <a href="{{ material.file.url }}"
+                                   class="btn btn-primary"
                                    download>
-                                    ⬇️ Скачать
+                                    Скачать
                                 </a>
                             {% endif %}
                         {% elif material.external_url %}
                             <!-- Внешние ссылки -->
-                            <a href="{{ material.external_url }}" 
-                               class="btn btn-primary" 
+                            <a href="{{ material.external_url }}"
+                               class="btn btn-primary"
                                target="_blank">
-                                🔗 Перейти
+                                Перейти
                             </a>
                         {% endif %}
                     </div>

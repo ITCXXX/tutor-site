@@ -1,0 +1,90 @@
+/* =========================================================================
+   Общие компоненты UI. Используются на нескольких страницах.
+   Подключается в visitor_base.html после tokens.css.
+   ========================================================================= */
+
+/* ── Hero-блок (фиолетовый градиентный заголовок страницы) ─────────────── */
+.app-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
+}
+.app-hero h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 .35rem; }
+.app-hero .meta { opacity: .9; font-size: .9rem; }
+.app-hero.compact { padding: 1.25rem 1.75rem; }
+.app-hero.compact h1 { font-size: 1.4rem; }
+
+/* ── Большой hero для дашборда (поплоче) ────────────────────────────────── */
+.app-hero.large { padding: 2rem; }
+.app-hero.large h1 { font-size: 1.75rem; margin-bottom: .5rem; }
+
+/* ── Карточка-форма ─────────────────────────────────────────────────────── */
+.app-form-card {
+    background: #fff;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.5rem;
+}
+.app-form-card label { font-weight: 500; font-size: .9rem; color: var(--c-text-soft); }
+.app-form-card .form-text { font-size: .78rem; color: var(--c-text-muted); }
+
+/* ── Разделённая «секция» с заголовком ──────────────────────────────────── */
+.app-section-card {
+    background: #fff;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.25rem;
+}
+.app-section-card h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 .85rem;
+    color: var(--c-text);
+}
+
+/* ── Ссылка «Назад» в actions-bar ───────────────────────────────────────── */
+.btn-back-link {
+    color: var(--c-text-muted);
+    text-decoration: none;
+    font-size: .9rem;
+    margin-bottom: 1rem;
+    display: inline-block;
+}
+.btn-back-link:hover { color: var(--c-primary-600); }
+
+/* ── Бейдж типа курса (задачник, курс с ДЗ и т.д.) ──────────────────────── */
+.app-badge {
+    display: inline-block;
+    font-size: .7rem;
+    font-weight: 600;
+    padding: .12rem .5rem;
+    border-radius: .25rem;
+    margin-left: .35rem;
+    vertical-align: middle;
+}
+.app-badge.workbook { background: var(--c-warning-soft); color: var(--c-warning-text); }
+.app-badge.homework { background: var(--c-primary-100); color: var(--c-primary-800); }
+
+/* ── Empty-state (плашка «нет данных») ──────────────────────────────────── */
+.app-empty-state {
+    background: var(--c-bg-soft);
+    border: 1px dashed var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 2rem;
+    text-align: center;
+    color: var(--c-text-muted);
+}
+.app-empty-state.compact { padding: 1rem; }
+
+/* ── Мобильная адаптация ──────────────────────────────────────────────── */
+@media (max-width: 640px) {
+    .app-hero, .app-hero.compact { padding: 1rem 1.1rem; }
+    .app-hero h1, .app-hero.compact h1 { font-size: 1.15rem; }
+    .app-hero.large { padding: 1.1rem 1.2rem; }
+    .app-hero.large h1 { font-size: 1.3rem; }
+    .app-section-card { padding: 1rem 1.1rem; }
+    .app-form-card { padding: 1.1rem; }
+}

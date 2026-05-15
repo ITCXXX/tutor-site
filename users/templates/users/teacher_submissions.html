@@ -1,0 +1,238 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.sub-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.sub-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.sub-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.sub-card {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.1rem 1.4rem;
+    margin-bottom: 1rem;
+}
+.sub-card .head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    align-items: baseline;
+    border-bottom: 1px solid var(--c-border);
+    padding-bottom: .55rem;
+    margin-bottom: .85rem;
+}
+.sub-card .head .student { font-weight: 600; }
+.sub-card .head .course { color: var(--c-text-muted); font-size: .85rem; }
+.sub-card .head .when { color: var(--c-text-muted); font-size: .82rem; margin-left: auto; }
+
+.sub-card .lesson-title { font-weight: 500; margin-bottom: .35rem; }
+.sub-card .condition {
+    background: var(--c-bg-soft);
+    padding: .55rem .8rem;
+    border-radius: var(--r-md);
+    margin-bottom: .65rem;
+    font-size: .9rem;
+    line-height: 1.55;
+    color: var(--c-text);
+}
+.sub-card .condition-image {
+    max-height: 200px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-sm);
+    margin-bottom: .5rem;
+    cursor: zoom-in;
+}
+
+.sub-card .student-text {
+    background: var(--c-primary-50);
+    border-left: 3px solid var(--c-primary-400);
+    padding: .65rem .9rem;
+    border-radius: var(--r-sm);
+    margin-bottom: .5rem;
+    white-space: pre-line;
+    font-size: .92rem;
+    line-height: 1.6;
+}
+.sub-card .student-file img,
+.sub-card .student-file a img {
+    max-height: 280px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    cursor: zoom-in;
+}
+.sub-card .student-file a { display: inline-block; }
+
+.review-form { margin-top: 1rem; padding-top: .85rem; border-top: 1px solid var(--c-border); }
+.review-form textarea {
+    font-size: .9rem;
+    margin-bottom: .55rem;
+    font-family: var(--font-sans);
+}
+.review-form .btn-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+.review-result {
+    margin-top: 1rem;
+    padding: .55rem .85rem;
+    border-radius: var(--r-md);
+    font-size: .9rem;
+}
+.review-result.accepted { background: var(--c-success-soft); color: var(--c-success-text); }
+.review-result.rejected { background: var(--c-danger-soft); color: var(--c-danger-text); }
+.review-result .when { color: var(--c-text-muted); font-size: .82rem; margin-left: .5rem; }
+.review-result .comment { display: block; margin-top: .25rem; font-style: italic; }
+
+.tabs {
+    display: flex;
+    gap: .25rem;
+    border-bottom: 1px solid var(--c-border);
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+}
+.tabs a {
+    padding: .55rem 1rem;
+    color: var(--c-text-muted);
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    font-size: .92rem;
+    font-weight: 500;
+    transition: color .12s, border-color .12s;
+}
+.tabs a:hover { color: var(--c-primary-700); }
+.tabs a.active {
+    color: var(--c-primary-700);
+    border-bottom-color: var(--c-primary-600);
+}
+.tabs a .count {
+    display: inline-block;
+    background: var(--c-bg-soft);
+    border-radius: 999px;
+    padding: 0 .45rem;
+    margin-left: .35rem;
+    font-size: .78rem;
+}
+.tabs a.active .count { background: var(--c-primary-100); color: var(--c-primary-800); }
+
+.empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--c-text-muted);
+}
+
+/* Лайтбокс — общий, подключён в visitor_base.html */
+
+@media (max-width: 640px) {
+    .sub-card { padding: .9rem 1rem; }
+    .sub-card .head { flex-direction: column; align-items: flex-start; gap: .15rem; }
+    .sub-card .head .when { margin-left: 0; }
+    .review-form .btn-row .btn { flex: 1 1 auto; }
+    .tabs { font-size: .85rem; }
+    .tabs a { padding: .45rem .7rem; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 900px;">
+
+        <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+
+        <div class="sub-hero">
+            <h1>Решения учеников</h1>
+            <div class="meta">{{ counts.pending }} на проверке · {{ counts.accepted }} принято · {{ counts.rejected }} возвращено</div>
+        </div>
+
+        <nav class="tabs">
+            <a href="?status=pending" class="{% if status == 'pending' %}active{% endif %}">
+                На проверке<span class="count">{{ counts.pending }}</span>
+            </a>
+            <a href="?status=accepted" class="{% if status == 'accepted' %}active{% endif %}">
+                Принятые<span class="count">{{ counts.accepted }}</span>
+            </a>
+            <a href="?status=rejected" class="{% if status == 'rejected' %}active{% endif %}">
+                Возвращённые<span class="count">{{ counts.rejected }}</span>
+            </a>
+            <a href="?status=all" class="{% if status == 'all' %}active{% endif %}">Все</a>
+        </nav>
+
+        {% if submissions %}
+        {% for s in submissions %}
+        <div class="sub-card">
+            <div class="head">
+                <span class="student">{{ s.student.student_profile.display_name }}</span>
+                <span class="course">{{ s.assignment.lesson.module.course.title }} · {{ s.assignment.lesson.title }} · задача {{ s.assignment.title }}</span>
+                <span class="when">{{ s.submitted_at|date:"d.m H:i" }}</span>
+            </div>
+
+            <div class="lesson-title">Условие</div>
+            {% if s.assignment.image %}
+            <img src="{{ s.assignment.image.url }}" alt=""
+                 class="condition-image" data-lightbox-src="{{ s.assignment.image.url }}">
+            {% endif %}
+            <div class="condition">{{ s.assignment.description|linebreaksbr }}</div>
+
+            <div class="lesson-title">Решение ученика</div>
+            {% if s.text %}
+            <div class="student-text">{{ s.text }}</div>
+            {% endif %}
+            {% if s.file %}
+            <div class="student-file">
+                {% if s.file.url|lower|slice:"-4:" == ".pdf" %}
+                <a href="{{ s.file.url }}" target="_blank">Открыть PDF</a>
+                {% else %}
+                <img src="{{ s.file.url }}" alt="" data-lightbox-src="{{ s.file.url }}">
+                {% endif %}
+            </div>
+            {% endif %}
+
+            {% if s.status == 'pending' %}
+            <form method="post" action="{% url 'teacher_review_submission' s.id %}" class="review-form">
+                {% csrf_token %}
+                <textarea name="comment" class="form-control" rows="2"
+                          placeholder="Комментарий ученику (опционально)"></textarea>
+                <div class="btn-row">
+                    <button type="submit" name="action" value="accept" class="btn btn-success btn-sm">Принять</button>
+                    <button type="submit" name="action" value="reject" class="btn btn-outline-danger btn-sm">Вернуть на доработку</button>
+                </div>
+            </form>
+            {% elif s.status == 'accepted' %}
+            <div class="review-result accepted">
+                <strong>Принято</strong>
+                <span class="when">{{ s.reviewed_at|date:"d.m H:i" }}</span>
+                {% if s.teacher_comment %}<span class="comment">{{ s.teacher_comment }}</span>{% endif %}
+            </div>
+            {% elif s.status == 'rejected' %}
+            <div class="review-result rejected">
+                <strong>Возвращено на доработку</strong>
+                <span class="when">{{ s.reviewed_at|date:"d.m H:i" }}</span>
+                {% if s.teacher_comment %}<span class="comment">{{ s.teacher_comment }}</span>{% endif %}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty">
+            <p class="mb-0">
+                {% if status == 'pending' %}Сейчас нет решений, ожидающих проверки.
+                {% elif status == 'accepted' %}Пока ничего не принято.
+                {% elif status == 'rejected' %}Возвращённых решений нет.
+                {% else %}Решений ещё нет.{% endif %}
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</section>
+
+{% endblock %}

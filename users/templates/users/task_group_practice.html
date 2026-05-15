@@ -1,0 +1,168 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.tg-container {
+    max-width: 900px;
+    margin: 80px auto 40px;
+    padding: 0 1rem;
+}
+.tg-back {
+    display: inline-block;
+    margin-bottom: .8rem;
+    color: var(--c-text-muted);
+    text-decoration: none;
+    font-size: .9rem;
+}
+.tg-back:hover { color: var(--c-primary-600); }
+
+.tg-header {
+    background: var(--gradient-nav);
+    color: white;
+    padding: 1.4rem 1.6rem;
+    border-radius: var(--r-lg);
+    margin-bottom: 1.4rem;
+}
+.tg-header h1 {
+    margin: 0 0 .35rem; font-size: 1.6rem;
+    color: white;
+}
+.tg-header .meta { opacity: .85; font-size: .92rem; }
+
+.tg-context {
+    background: var(--c-bg-soft);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.2rem 1.4rem;
+    margin-bottom: 1.6rem;
+    line-height: 1.55;
+}
+.tg-context img {
+    max-width: 100%;
+    height: auto;
+}
+.tg-context table {
+    border-collapse: collapse;
+    margin: .6rem 0;
+}
+.tg-context table td, .tg-context table th {
+    border: 1px solid var(--c-border);
+    padding: .35rem .8rem;
+    font-size: .92rem;
+}
+.tg-context table th {
+    background: rgba(0,0,0,.04);
+    font-weight: 600;
+}
+
+.sub-task {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1rem 1.2rem;
+    margin-bottom: .9rem;
+}
+.sub-task-header {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    margin-bottom: .55rem;
+}
+.sub-task-num {
+    font-weight: 600;
+    color: var(--c-primary-700);
+}
+.sub-task-type {
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: var(--c-text-muted);
+    background: var(--c-bg-soft);
+    padding: .15rem .5rem;
+    border-radius: var(--r-sm);
+}
+.sub-task-body {
+    line-height: 1.5;
+    margin-bottom: .8rem;
+}
+.sub-task-body img {
+    max-width: 100%;
+    height: auto;
+}
+.sub-task-answer {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    font-size: .92rem;
+}
+.sub-task-answer input {
+    max-width: 220px;
+    padding: .42rem .7rem;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-sm);
+    font-family: inherit;
+}
+
+.tg-actions {
+    margin-top: 1.6rem;
+    display: flex;
+    gap: .8rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="tg-container">
+    <a href="{% url 'course_detail' group.lesson.module.course.slug %}" class="tg-back">← К курсу</a>
+
+    <div class="tg-header">
+        <h1>{{ group.title }}</h1>
+        <div class="meta">{{ group.lesson.module.course.title }} → {{ group.lesson.title }}</div>
+    </div>
+
+    <div class="tg-context">
+        {{ group.context_html|safe }}
+    </div>
+
+    <form method="post" action="{% url 'task_group_submit' group.id %}">
+        {% csrf_token %}
+
+        {% for sq in sub_questions %}
+        <div class="sub-task">
+            <div class="sub-task-header">
+                <span class="sub-task-num">Задание {{ forloop.counter }}</span>
+                {% if sq.t_type %}
+                <span class="sub-task-type">{{ sq.t_type }}</span>
+                {% endif %}
+            </div>
+            <div class="sub-task-body">
+                {{ sq.question_html|safe }}
+            </div>
+            <div class="sub-task-answer">
+                <label for="answer-{{ sq.id }}">Ответ:</label>
+                <input type="text" id="answer-{{ sq.id }}"
+                       name="answer_{{ sq.id }}"
+                       autocomplete="off"
+                       inputmode="numeric">
+            </div>
+        </div>
+        {% endfor %}
+
+        <div class="tg-actions">
+            <button type="submit" class="btn btn-primary">Проверить все ответы</button>
+            <span class="text-muted" style="font-size:.85rem;">
+                Незаполненные считаются неверными.
+            </span>
+        </div>
+    </form>
+</div>
+
+<script>
+// MathJax повторно прогоняется на случай, если в условии есть LaTeX
+if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
+</script>
+{% endblock %}

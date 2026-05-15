@@ -1,0 +1,111 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.enroll-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.enroll-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.enroll-hero .meta { opacity: .9; font-size: .9rem; }
+
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.course-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: .85rem 1.1rem;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    margin-bottom: .55rem;
+    cursor: pointer;
+    transition: border-color .15s, box-shadow .15s;
+}
+.course-row:hover {
+    border-color: var(--c-primary-600);
+    box-shadow: 0 2px 8px rgba(124, 58, 237, .08);
+}
+.course-row input[type=checkbox] {
+    width: 20px; height: 20px;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+.course-row .info { flex: 1; min-width: 0; }
+.course-row .title { font-weight: 600; color: var(--c-text); }
+.course-row .desc { font-size: .82rem; color: var(--c-text-muted); margin-top: .15rem; }
+.course-row .badge-manual {
+    display: inline-block;
+    font-size: .7rem; font-weight: 600;
+    padding: .12rem .45rem;
+    border-radius: .25rem;
+    background: var(--c-warning-soft);
+    color: var(--c-warning-text);
+    margin-left: .3rem;
+}
+.course-row.checked { border-color: var(--c-primary-600); background: var(--c-primary-50); }
+
+.empty-state {
+    background: var(--c-bg-soft);
+    border: 1px dashed var(--c-border);
+    border-radius: .5rem;
+    padding: 2rem;
+    text-align: center;
+    color: var(--c-text-muted);
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 800px;">
+
+        <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+
+        <div class="enroll-hero">
+            <h1>{{ profile.display_name }}{% if profile.grade %} · {{ profile.grade }} класс{% endif %}</h1>
+            <div class="meta">Отметьте курсы, на которые ученик должен быть записан.</div>
+        </div>
+
+        {% if courses %}
+        <form method="post">
+            {% csrf_token %}
+
+            {% for c in courses %}
+            <label class="course-row {% if c.id in enrolled_ids %}checked{% endif %}">
+                <input type="checkbox" name="courses" value="{{ c.id }}"
+                       {% if c.id in enrolled_ids %}checked{% endif %}
+                       onchange="this.closest('.course-row').classList.toggle('checked', this.checked)">
+                <div class="info">
+                    <div class="title">
+                        {{ c.title }}
+                        {% if c.is_manual %}<span class="badge-manual">задачник</span>{% endif %}
+                    </div>
+                    {% if c.short_description %}
+                    <div class="desc">{{ c.short_description }}</div>
+                    {% endif %}
+                </div>
+            </label>
+            {% endfor %}
+
+            <div class="mt-4 d-flex justify-content-between">
+                <a href="{% url 'teacher_dashboard' %}" class="btn btn-outline-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">Сохранить записи</button>
+            </div>
+        </form>
+        {% else %}
+        <div class="empty-state">
+            Нет доступных курсов. Создайте задачник через «+ Новый задачник» в кабинете.
+        </div>
+        {% endif %}
+
+    </div>
+</section>
+{% endblock %}

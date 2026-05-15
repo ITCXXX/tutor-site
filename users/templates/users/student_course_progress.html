@@ -1,0 +1,512 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.workbook-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    margin-bottom: 1.5rem;
+}
+.workbook-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.workbook-hero .meta { opacity: .9; font-size: .9rem; }
+
+.actions-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.summary-line {
+    display: flex; align-items: center; gap: 1rem;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    padding: .8rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.summary-line .num { font-size: 1.4rem; font-weight: 700; color: var(--c-success); }
+.summary-line .lbl { font-size: .85rem; color: var(--c-text-muted); }
+.summary-line .bar-wrap { flex: 1; max-width: 400px; }
+.summary-line .bar { height: 8px; border-radius: 4px; background: var(--c-border); overflow: hidden; }
+.summary-line .bar-fill { height: 100%; background: var(--c-success); }
+
+.paragraph {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: .5rem;
+    margin-bottom: .75rem;
+    overflow: hidden;
+}
+.paragraph[open] { border-color: var(--c-primary-600); }
+.paragraph-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: .8rem 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: .8rem;
+    user-select: none;
+    background: var(--c-bg-soft);
+}
+.paragraph[open] > .paragraph-summary { background: var(--c-primary-50); }
+.paragraph-summary::-webkit-details-marker { display: none; }
+.paragraph-summary::before {
+    content: "▸";
+    color: var(--c-text-muted);
+    font-size: .9rem;
+    transition: transform .15s;
+    flex: 0 0 auto;
+}
+.paragraph[open] > .paragraph-summary::before { transform: rotate(90deg); }
+.paragraph-title { font-weight: 600; color: var(--c-text); flex: 1; min-width: 0; }
+.paragraph-stat {
+    font-size: .82rem;
+    color: var(--c-text-soft);
+    flex: 0 0 auto;
+    background: var(--c-surface);
+    border-radius: .3rem;
+    padding: .15rem .55rem;
+    border: 1px solid var(--c-border);
+}
+.paragraph-stat.full { background: var(--c-success-soft); color: var(--c-success-text); border-color: var(--c-success); }
+
+.task-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+    gap: 6px;
+    padding: .9rem 1.1rem 1rem;
+}
+.task-square {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 36px;
+    border: 1px solid var(--c-border);
+    border-radius: .3rem;
+    background: var(--c-surface);
+    color: var(--c-text-soft);
+    font-size: .85rem;
+    font-weight: 500;
+    user-select: none;
+    cursor: default;
+}
+.task-square.done {
+    background: var(--c-success);
+    border-color: var(--c-success);
+    color: #fff;
+    font-weight: 600;
+}
+.task-square.partial {
+    background: var(--c-primary-100);
+    border-color: var(--c-primary-300);
+    color: var(--c-primary-800);
+    font-weight: 600;
+}
+.task-square.clickable { cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.task-square.clickable:hover { border-color: var(--c-primary-600); box-shadow: 0 0 0 2px rgba(124,58,237,.15); }
+
+.legend {
+    margin-top: 1rem;
+    font-size: .82rem;
+    color: var(--c-text-muted);
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+.legend .key {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+}
+.legend .swatch {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 1px solid var(--c-border);
+    border-radius: .2rem;
+}
+.legend .swatch.done { background: var(--c-success); border-color: var(--c-success); }
+.legend .swatch.partial { background: var(--c-primary-100); border-color: var(--c-primary-300); }
+
+/* Курсы с ДЗ — задачи с условием и полем ответа */
+.hw-intro {
+    margin: .8rem 1.1rem 0;
+    padding: .85rem 1rem;
+    background: var(--c-primary-50);
+    border-left: 3px solid var(--c-primary-400);
+    border-radius: var(--r-md);
+    color: var(--c-text);
+    line-height: 1.6;
+    font-size: .95rem;
+}
+.hw-tasks { padding: 1rem 1.1rem; }
+.hw-task {
+    display: flex;
+    gap: .75rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--c-border);
+}
+.hw-task:last-child { border-bottom: none; }
+.hw-task-num {
+    flex: 0 0 auto;
+    font-weight: 700;
+    color: var(--c-primary-700);
+    min-width: 28px;
+}
+.hw-task-body { flex: 1; min-width: 0; }
+.hw-task-condition {
+    color: var(--c-text);
+    margin-bottom: .6rem;
+    line-height: 1.55;
+}
+.hw-task-image-link {
+    display: inline-block;
+    margin-bottom: .55rem;
+    cursor: zoom-in;
+}
+.hw-task-image {
+    max-width: 100%;
+    max-height: 360px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    background: var(--c-surface);
+    object-fit: contain;
+}
+
+/* Лайтбокс — общий, подключён в visitor_base.html */
+.hw-task-answer-row {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    flex-wrap: wrap;
+}
+.hw-task-answer-row .hw-answer-input { max-width: 220px; }
+.hw-task-answer-row.solved {
+    color: var(--c-success-text);
+    background: var(--c-success-soft);
+    padding: .5rem .8rem;
+    border-radius: var(--r-md);
+    font-weight: 500;
+    width: fit-content;
+}
+.hw-status-icon {
+    font-weight: 700;
+    color: var(--c-success);
+    font-size: 1.1rem;
+}
+.hw-feedback { font-size: .85rem; }
+.hw-feedback.warn { color: var(--c-warning-text); }
+.hw-feedback.wrong { color: var(--c-danger); font-weight: 500; }
+.hw-task.done .hw-task-condition { color: var(--c-text-muted); }
+
+/* Развёрнутые решения */
+.sub-form { margin-top: .35rem; }
+.sub-text { font-family: var(--font-sans); font-size: .92rem; }
+.sub-form-bottom {
+    display: flex; align-items: center; gap: .65rem;
+    margin-top: .5rem; flex-wrap: wrap;
+}
+.sub-file-input { font-size: .82rem; }
+.sub-status {
+    padding: .5rem .8rem;
+    border-radius: var(--r-md);
+    font-size: .9rem;
+    margin-bottom: .55rem;
+    width: fit-content;
+}
+.sub-status.pending {
+    background: var(--c-warning-soft);
+    color: var(--c-warning-text);
+    font-weight: 500;
+}
+.sub-status.rejected {
+    background: var(--c-danger-soft);
+    color: var(--c-danger-text);
+}
+.sub-text-display {
+    margin-top: .4rem;
+    padding: .5rem .8rem;
+    background: var(--c-bg-soft);
+    border-left: 3px solid var(--c-border);
+    border-radius: var(--r-sm);
+    font-size: .9rem;
+    line-height: 1.55;
+    white-space: pre-line;
+}
+.sub-file-link {
+    display: inline-block;
+    margin-top: .35rem;
+    font-size: .85rem;
+    color: var(--c-primary-700);
+    text-decoration: none;
+}
+.sub-file-link:hover { text-decoration: underline; }
+.sub-file-thumb-link {
+    display: inline-block;
+    margin-top: .4rem;
+    cursor: zoom-in;
+}
+.sub-file-thumb {
+    max-height: 200px;
+    max-width: 100%;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    background: var(--c-surface);
+    object-fit: contain;
+}
+.sub-comment { color: var(--c-text-muted); font-size: .85rem; margin-left: .25rem; }
+
+@media (max-width: 640px) {
+    .summary-line { flex-wrap: wrap; gap: .55rem; padding: .7rem 1rem; }
+    .summary-line .bar-wrap { order: 10; flex: 1 0 100%; max-width: none; }
+    .hw-tasks { padding: .8rem; }
+    .hw-task { gap: .55rem; }
+    .hw-task-num { min-width: 22px; }
+    .hw-task-answer-row { flex-wrap: wrap; gap: .4rem; }
+    .hw-task-answer-row .hw-answer-input { flex: 1 1 0; min-width: 130px; max-width: none; }
+    .hw-intro { margin: .65rem .8rem 0; padding: .65rem .8rem; }
+    .legend { gap: .8rem 1rem; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 1200px;">
+
+        <div class="actions-bar">
+            <a href="{% url 'student_courses' %}" class="btn-back">← К моим курсам</a>
+        </div>
+
+        <div class="workbook-hero">
+            <h1>{{ course.title }}</h1>
+            <div class="meta">Мой прогресс по курсу</div>
+        </div>
+
+        <div class="summary-line">
+            <span class="num">{{ total_done }}</span>
+            <span class="lbl">из {{ total_all }} {% if is_manual %}задач{% else %}прототипов{% endif %} решено</span>
+            <div class="bar-wrap">
+                <div class="bar"><div class="bar-fill" style="width: {{ overall_percent }}%"></div></div>
+            </div>
+            <span class="lbl"><strong>{{ overall_percent }}%</strong></span>
+        </div>
+
+        {% for p in paragraphs %}
+        <details class="paragraph">
+            <summary class="paragraph-summary">
+                <span class="paragraph-title">{{ p.lesson.title }}</span>
+                <span class="paragraph-stat {% if p.percent == 100 %}full{% endif %}">
+                    {{ p.done }} / {{ p.total }}
+                </span>
+            </summary>
+
+            {% if is_homework %}
+            {% if p.lesson.content %}
+            <div class="hw-intro">{{ p.lesson.content|linebreaksbr }}</div>
+            {% endif %}
+            <div class="hw-tasks">
+                {% for t in p.tasks %}
+                <div class="hw-task{% if t.is_done %} done{% endif %}" data-assignment-id="{{ t.id }}">
+                    <div class="hw-task-num">{{ forloop.counter }}.</div>
+                    <div class="hw-task-body">
+                        {% if t.image %}
+                        <span class="hw-task-image-link" data-lightbox-src="{{ t.image.url }}">
+                            <img src="{{ t.image.url }}" alt="" class="hw-task-image">
+                        </span>
+                        {% endif %}
+                        <div class="hw-task-condition">{{ t.description|linebreaksbr }}</div>
+
+                        {% if t.requires_review %}
+                            {# Развёрнутое решение #}
+                            {% if t.submission and t.submission.status == 'accepted' %}
+                            <div class="hw-task-answer-row solved">
+                                <span class="hw-status-text"><span class="hw-status-icon">✓</span> Принято</span>
+                                {% if t.submission.teacher_comment %}
+                                <span class="sub-comment">— {{ t.submission.teacher_comment }}</span>
+                                {% endif %}
+                            </div>
+                            {% if t.submission.text %}
+                            <div class="sub-text-display">{{ t.submission.text|linebreaksbr }}</div>
+                            {% endif %}
+                            {% if t.submission.file %}
+                                {% if t.submission.file.url|lower|slice:"-4:" == ".pdf" %}
+                                <a href="{{ t.submission.file.url }}" target="_blank" class="sub-file-link">Открыть PDF</a>
+                                {% else %}
+                                <span class="sub-file-thumb-link" data-lightbox-src="{{ t.submission.file.url }}">
+                                    <img src="{{ t.submission.file.url }}" alt="" class="sub-file-thumb">
+                                </span>
+                                {% endif %}
+                            {% endif %}
+                            {% elif t.submission and t.submission.status == 'pending' %}
+                            <div class="sub-status pending">На проверке у преподавателя…</div>
+                            {% if t.submission.text %}
+                            <div class="sub-text-display">{{ t.submission.text|linebreaksbr }}</div>
+                            {% endif %}
+                            {% if t.submission.file %}
+                                {% if t.submission.file.url|lower|slice:"-4:" == ".pdf" %}
+                                <a href="{{ t.submission.file.url }}" target="_blank" class="sub-file-link">Открыть PDF</a>
+                                {% else %}
+                                <span class="sub-file-thumb-link" data-lightbox-src="{{ t.submission.file.url }}">
+                                    <img src="{{ t.submission.file.url }}" alt="" class="sub-file-thumb">
+                                </span>
+                                {% endif %}
+                            {% endif %}
+                            {% else %}
+                            {# Нет submission'а или вернули на доработку #}
+                            {% if t.submission and t.submission.status == 'rejected' %}
+                            <div class="sub-status rejected">
+                                <strong>Возвращено на доработку.</strong>
+                                {% if t.submission.teacher_comment %} {{ t.submission.teacher_comment }}{% endif %}
+                            </div>
+                            {% endif %}
+                            <form method="post" enctype="multipart/form-data"
+                                  action="{% url 'submit_hw_solution' t.id %}" class="sub-form">
+                                {% csrf_token %}
+                                <textarea name="text" class="form-control sub-text"
+                                          placeholder="Опишите решение шагами или прикрепите фото…"
+                                          rows="3">{% if t.submission %}{{ t.submission.text }}{% endif %}</textarea>
+                                <div class="sub-form-bottom">
+                                    <input type="file" name="file" accept="image/*,application/pdf" class="sub-file-input">
+                                    <button type="submit" class="btn btn-primary btn-sm">Отправить на проверку</button>
+                                </div>
+                            </form>
+                            {% endif %}
+                        {% else %}
+                            {# Авто-ответ #}
+                            {% if t.is_done %}
+                            <div class="hw-task-answer-row solved">
+                                <input type="text" class="form-control hw-answer-input"
+                                       value="{{ t.correct_answer }}" disabled>
+                                <span class="hw-status-text"><span class="hw-status-icon">✓</span> Решено</span>
+                            </div>
+                            {% else %}
+                            <div class="hw-task-answer-row">
+                                <input type="text" class="form-control hw-answer-input"
+                                       placeholder="Ваш ответ" autocomplete="off">
+                                <button type="button" class="btn btn-primary btn-sm hw-check-btn">Проверить</button>
+                                <span class="hw-feedback"></span>
+                            </div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="task-grid">
+                {% for t in p.tasks %}
+                {% if is_manual %}
+                <div class="task-square{% if t.is_done %} done{% endif %}" title="{{ t.title }}">
+                    {{ forloop.counter }}
+                </div>
+                {% else %}
+                <a class="task-square clickable{% if t.is_done %} done{% elif t.percent > 0 %} partial{% endif %}"
+                   href="{% url 'assignment_practice' t.id %}"
+                   title="{{ t.title }}{% if t.percent > 0 and not t.is_done %} — {{ t.percent }}%{% endif %}">
+                    {{ forloop.counter }}
+                </a>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+        </details>
+        {% endfor %}
+
+        {% if not is_homework %}
+        <div class="legend">
+            <span class="key"><span class="swatch done"></span>задача сдана</span>
+            {% if not is_manual %}
+            <span class="key"><span class="swatch partial"></span>есть правильные ответы, но прототип не закрыт</span>
+            <span class="key">кликните на квадратик, чтобы порешать</span>
+            {% endif %}
+        </div>
+        {% endif %}
+
+    </div>
+</section>
+
+{% if is_homework %}
+{% csrf_token %}
+<script>
+(function() {
+    const csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+    document.querySelectorAll('.hw-check-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const taskEl = btn.closest('.hw-task');
+            const input = taskEl.querySelector('.hw-answer-input');
+            const fb = taskEl.querySelector('.hw-feedback');
+            const answer = input.value.trim();
+            if (!answer) { fb.textContent = 'Введите ответ'; fb.className = 'hw-feedback warn'; return; }
+
+            btn.disabled = true; fb.textContent = ''; fb.className = 'hw-feedback';
+
+            const fd = new FormData();
+            fd.append('answer', answer);
+            fd.append('csrfmiddlewaretoken', csrf);
+
+            const url = `/exam/hw-check/${taskEl.dataset.assignmentId}/`;
+            try {
+                const r = await fetch(url, { method: 'POST', body: fd });
+                const data = await r.json();
+                if (!r.ok) {
+                    fb.textContent = data.error || 'Ошибка';
+                    fb.className = 'hw-feedback warn';
+                } else if (data.correct) {
+                    // Оставляем ответ виден, но запираем поле и помечаем «Решено»
+                    const row = taskEl.querySelector('.hw-task-answer-row');
+                    row.classList.add('solved');
+                    input.disabled = true;
+                    btn.remove();
+                    fb.remove();
+                    const status = document.createElement('span');
+                    status.className = 'hw-status-text';
+                    status.innerHTML = '<span class="hw-status-icon">✓</span> Решено';
+                    row.appendChild(status);
+                    taskEl.classList.add('done');
+                    updateParagraphStat(taskEl);
+                    updateOverall();
+                } else {
+                    fb.textContent = data.message || 'Неверно. Попробуйте ещё раз.';
+                    fb.className = 'hw-feedback wrong';
+                    btn.disabled = false;
+                }
+            } catch (e) {
+                fb.textContent = 'Ошибка соединения';
+                fb.className = 'hw-feedback warn';
+                btn.disabled = false;
+            }
+        });
+    });
+
+    function updateParagraphStat(taskEl) {
+        const list = taskEl.closest('.hw-tasks');
+        const stat = list.parentElement.querySelector('.paragraph-stat');
+        const all = list.querySelectorAll('.hw-task');
+        const done = list.querySelectorAll('.hw-task.done');
+        stat.textContent = `${done.length} / ${all.length}`;
+        stat.classList.toggle('full', done.length === all.length);
+    }
+
+    function updateOverall() {
+        const all = document.querySelectorAll('.hw-task');
+        const done = document.querySelectorAll('.hw-task.done');
+        const pct = all.length ? Math.round(done.length / all.length * 100) : 0;
+        const sl = document.querySelector('.summary-line');
+        if (sl) {
+            sl.querySelector('.num').textContent = done.length;
+            sl.querySelector('.lbl strong').textContent = pct + '%';
+            sl.querySelector('.bar-fill').style.width = pct + '%';
+        }
+    }
+})();
+</script>
+{% endif %}
+{% endblock %}

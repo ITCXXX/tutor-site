@@ -1,0 +1,245 @@
+/* =========================================================================
+   Дизайн-токены сайта — единый источник цветов, отступов, типографики.
+   Меняйте здесь — меняется везде, где используются var(--…).
+   ========================================================================= */
+
+:root {
+    /* ── Палитра: violet (Tailwind violet) ─────────────────────────────── */
+    --c-primary-50:  #f5f3ff;
+    --c-primary-100: #ede9fe;
+    --c-primary-200: #ddd6fe;
+    --c-primary-300: #c4b5fd;
+    --c-primary-400: #a78bfa;
+    --c-primary-500: #8b5cf6;
+    --c-primary-600: #7c3aed;   /* основной */
+    --c-primary-700: #6d28d9;   /* hover / тёмный */
+    --c-primary-800: #5b21b6;   /* текст на светлом фоне */
+    --c-primary-900: #4c1d95;
+
+    --c-primary:       var(--c-primary-600);
+    --c-primary-hover: var(--c-primary-700);
+    --c-primary-soft:  var(--c-primary-100);
+    --c-primary-text:  var(--c-primary-800);
+
+    /* ── Семантика ─────────────────────────────────────────────────────── */
+    --c-success:        #16a34a;
+    --c-success-soft:   #dcfce7;
+    --c-success-text:   #14532d;
+
+    --c-warning:        #f59e0b;
+    --c-warning-soft:   #fef3c7;
+    --c-warning-text:   #92400e;
+
+    --c-danger:         #dc2626;
+    --c-danger-soft:    #fee2e2;
+    --c-danger-text:    #7f1d1d;
+
+    --c-info-soft:      var(--c-primary-100);
+    --c-info-text:      var(--c-primary-800);
+
+    /* ── Серые (slate) ─────────────────────────────────────────────────── */
+    --c-white:    #ffffff;
+    --c-gray-50:  #f8fafc;
+    --c-gray-100: #f1f5f9;
+    --c-gray-200: #e2e8f0;
+    --c-gray-300: #cbd5e1;
+    --c-gray-400: #94a3b8;
+    --c-gray-500: #64748b;
+    --c-gray-600: #475569;
+    --c-gray-700: #334155;
+    --c-gray-800: #1e293b;
+    --c-gray-900: #0f172a;
+
+    /* ── Поверхности ───────────────────────────────────────────────────── */
+    --c-bg:           var(--c-white);
+    --c-bg-soft:      var(--c-gray-50);
+    --c-surface:      var(--c-white);
+    --c-border:       var(--c-gray-200);
+    --c-border-strong: var(--c-gray-300);
+    --c-text:         var(--c-gray-900);
+    --c-text-muted:   var(--c-gray-500);
+    --c-text-soft:    var(--c-gray-600);
+
+    /* ── Градиент hero/шапок ───────────────────────────────────────────── */
+    --gradient-hero: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+    --gradient-nav:  linear-gradient(135deg, #5b21b6 0%, #4c1d95 100%);
+
+    /* ── Типографика ───────────────────────────────────────────────────── */
+    --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont,
+                 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular,
+                 Menlo, Consolas, monospace;
+
+    /* ── Радиусы ───────────────────────────────────────────────────────── */
+    --r-sm: .25rem;
+    --r-md: .375rem;
+    --r-lg: .5rem;
+    --r-xl: .75rem;
+    --r-2xl: 1rem;
+    --r-pill: 999px;
+
+    /* ── Тени ──────────────────────────────────────────────────────────── */
+    --shadow-sm:  0 1px 2px rgba(15, 23, 42, .04);
+    --shadow-md:  0 2px 8px rgba(15, 23, 42, .06);
+    --shadow-lg:  0 8px 24px rgba(15, 23, 42, .10);
+    --shadow-primary: 0 8px 24px rgba(124, 58, 237, .25);
+
+    /* ── Совместимость со старыми переменными visitor_base.html ────────── */
+    --primary-color:   var(--c-primary-800);
+    --secondary-color: var(--c-primary-600);
+    --accent-color:    var(--c-primary-500);
+
+    /* ── Переопределение Bootstrap 5 ───────────────────────────────────── */
+    --bs-primary:    #7c3aed;
+    --bs-primary-rgb: 124, 58, 237;
+    --bs-link-color: var(--c-primary-600);
+    --bs-link-hover-color: var(--c-primary-700);
+}
+
+/* ── Базовая типографика ───────────────────────────────────────────────── */
+html, body {
+    font-family: var(--font-sans);
+    color: var(--c-text);
+}
+
+a { color: var(--c-primary-600); }
+a:hover { color: var(--c-primary-700); }
+
+/* ── Bootstrap-кнопки и алерты переопределяем под violet ───────────────── */
+.btn-primary {
+    background-color: var(--c-primary-600);
+    border-color: var(--c-primary-600);
+}
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary:active {
+    background-color: var(--c-primary-700) !important;
+    border-color: var(--c-primary-700) !important;
+}
+
+.btn-outline-primary {
+    color: var(--c-primary-600);
+    border-color: var(--c-primary-600);
+}
+.btn-outline-primary:hover,
+.btn-outline-primary:focus,
+.btn-outline-primary:active {
+    background-color: var(--c-primary-600) !important;
+    border-color: var(--c-primary-600) !important;
+    color: #fff !important;
+}
+
+.bg-primary { background-color: var(--c-primary-600) !important; }
+.text-primary { color: var(--c-primary-600) !important; }
+.border-primary { border-color: var(--c-primary-600) !important; }
+
+.alert-info,
+.alert-primary {
+    background-color: var(--c-primary-50);
+    color: var(--c-primary-text);
+    border-color: var(--c-primary-200);
+}
+
+/* ── Прогресс-бар Bootstrap ────────────────────────────────────────────── */
+.progress-bar { background-color: var(--c-primary-600); }
+
+/* ── Focus-ring (свечение вокруг сфокусированных элементов) ─────────────
+   Bootstrap по умолчанию рисует голубой ореол. Перекрашиваем в violet. */
+.btn-primary:focus,
+.btn-primary:focus-visible,
+.btn-primary.focus,
+.btn-primary:active:focus,
+.btn-check:focus + .btn-primary {
+    box-shadow: 0 0 0 .25rem rgba(124, 58, 237, .35) !important;
+}
+.btn-outline-primary:focus,
+.btn-outline-primary:focus-visible,
+.btn-outline-primary.focus {
+    box-shadow: 0 0 0 .25rem rgba(124, 58, 237, .35) !important;
+}
+.btn-outline-light:focus,
+.btn-outline-light:focus-visible,
+.btn-outline-light.focus {
+    box-shadow: 0 0 0 .25rem rgba(255, 255, 255, .25) !important;
+}
+/* На всякий случай — общий «синий» :focus у любых .btn заменим на нейтральный */
+.btn:focus,
+.btn:focus-visible {
+    outline: none;
+}
+
+/* ── Поля ввода: фокус-обводка тоже фиолетовая ─────────────────────────── */
+.form-control:focus,
+.form-select:focus,
+.form-check-input:focus {
+    border-color: var(--c-primary-400) !important;
+    box-shadow: 0 0 0 .25rem rgba(124, 58, 237, .20) !important;
+}
+.form-check-input:checked {
+    background-color: var(--c-primary-600) !important;
+    border-color: var(--c-primary-600) !important;
+}
+
+/* ── Лайтбокс (используется через _lightbox.html + lightbox.js) ────────── */
+.lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, .9);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 2rem;
+}
+.lightbox.open { display: flex; }
+.lightbox img {
+    max-width: 100%;
+    max-height: calc(100vh - 4rem);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+    border-radius: var(--r-md);
+    background: #fff;
+}
+.lightbox .close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .15);
+    border: none;
+    color: #fff;
+    font-size: 1.5rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s;
+}
+.lightbox .close:hover { background: rgba(255, 255, 255, .3); }
+
+[data-lightbox-src] { cursor: zoom-in; }
+
+/* ── Мобильные общие правила ───────────────────────────────────────────── */
+@media (max-width: 640px) {
+    /* Сжимаем фирменные «герои» — у них во всех шаблонах +/- одинаковая структура */
+    .teacher-hero, .progress-page-hero, .student-hero, .form-hero,
+    .workbook-form-hero, .workbook-hero, .sub-hero, .enroll-hero {
+        padding: 1rem 1.1rem !important;
+    }
+    .teacher-hero h1, .progress-page-hero h1, .student-hero h1,
+    .form-hero h1, .workbook-form-hero h1, .workbook-hero h1,
+    .sub-hero h1, .enroll-hero h1 {
+        font-size: 1.15rem !important;
+    }
+
+    /* Display-классы Bootstrap — большие 4rem заголовки на телефоне выглядят гипертрофированно */
+    .display-4, .display-5 { font-size: 1.6rem !important; }
+    .lead { font-size: 1rem !important; }
+
+    /* Action-bar обычно flex с кнопками — чтобы не вылезали за экран */
+    .actions-bar { gap: .5rem !important; }
+
+    /* Hero на главной — поджимаем */
+    .hero-section { padding: 60px 0 !important; }
+}
