@@ -78,14 +78,21 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **opts):
+        # Django's dumpdata --output на Windows пишет файл в кодировке системы
+        # (cp1251 для русской Windows), а не в UTF-8. Это ломает JSON
+        # для loaddata на Linux-сервере. Чтобы это обойти, открываем файл
+        # сами и направляем туда stdout dumpdata вручную.
         kwargs = {
             "exclude": EXCLUDE,
             "indent": opts["indent"],
         }
         if opts["output"]:
-            kwargs["output"] = opts["output"]
             self.stdout.write(f"Дампим в {opts['output']}…")
-        # call_command сам пишет в stdout, если output=None
-        call_command("dumpdata", **kwargs)
-        if opts["output"]:
+            with open(opts["output"], "w", encoding="utf-8") as f:
+                call_command("dumpdata", stdout=f, **kwargs)
             self.stdout.write(self.style.SUCCESS(f"Готово → {opts['output']}"))
+        else:
+            # call_command сам пишет в stdout, если output не задан.
+            # На Windows может ломать кодировку при редиректе через `>`.
+            # Рекомендуется всегда использовать -o/--output.
+            call_command("dumpdata", **kwargs)

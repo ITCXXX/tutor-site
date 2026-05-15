@@ -39,7 +39,7 @@ server {
 
     # Всё остальное — на gunicorn (через unix-сокет).
     location / {
-        proxy_pass http://unix:/run/tutor.sock;
+        proxy_pass http://unix:/run/tutor/tutor.sock;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

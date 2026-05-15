@@ -20,11 +20,13 @@ WorkingDirectory=/opt/tutor
 EnvironmentFile=/opt/tutor/.env
 
 # unix-сокет для общения с nginx (быстрее tcp).
+# Сокет лежит ВНУТРИ /run/tutor/, потому что ProtectSystem=strict делает
+# сам /run/ read-only — а /run/tutor/ создаётся через RuntimeDirectory ниже.
 ExecStart=/opt/tutor/venv/bin/gunicorn \
     --workers 3 \
     --worker-class sync \
     --timeout 60 \
-    --bind unix:/run/tutor.sock \
+    --bind unix:/run/tutor/tutor.sock \
     --umask 007 \
     --access-logfile - \
     --error-logfile - \
@@ -34,7 +36,9 @@ ExecStart=/opt/tutor/venv/bin/gunicorn \
 Restart=on-failure
 RestartSec=3
 
-# systemd создаст /run/tutor.sock с правами `tutor:tutor`.
+# systemd создаёт /run/tutor/ с правами `tutor:tutor`.
+# Чтобы nginx (от www-data) мог стучаться в сокет, добавить www-data в группу tutor:
+#   usermod -aG tutor www-data && systemctl reload nginx
 RuntimeDirectory=tutor
 RuntimeDirectoryMode=0755
 
@@ -42,7 +46,9 @@ RuntimeDirectoryMode=0755
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/tutor/media /opt/tutor/staticfiles /opt/tutor/db.sqlite3 /run/tutor
+# Не включаем /opt/tutor/db.sqlite3 — если у тебя PostgreSQL, файла нет
+# и systemd упадёт с status=226/NAMESPACE.
+ReadWritePaths=/opt/tutor/media /opt/tutor/staticfiles /run/tutor
 
 [Install]
 WantedBy=multi-user.target

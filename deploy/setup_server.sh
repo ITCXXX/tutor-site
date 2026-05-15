@@ -114,6 +114,13 @@ rm -f /etc/nginx/sites-enabled/default
 mkdir -p /var/www/letsencrypt
 chown -R www-data:www-data /var/www/letsencrypt
 
+# Чтобы nginx (www-data) мог стучаться в unix-сокет gunicorn,
+# добавим www-data в группу tutor.
+usermod -aG tutor www-data
+
+# Папки, в которые писать tutor должен иметь право — заранее создаём.
+sudo -u "${APP_USER}" mkdir -p "${APP_DIR}/media" "${APP_DIR}/staticfiles"
+
 systemctl daemon-reload
 nginx -t
 systemctl reload nginx

@@ -62,9 +62,14 @@ class User(AbstractBaseUser):
 
     def set_password(self, raw_password):
         super().set_password(raw_password)
-        # Сохраняем открытый пароль в отдельное поле,
-        # чтобы преподаватель мог его подсмотреть в админке.
-        self.plaintext_password = raw_password or ''
+        # plaintext-копия пароля нужна только для УЧЕНИКОВ:
+        # преподаватель может подсмотреть в админке, если ученик забыл.
+        # Для админов/преподавателей хранить открытый пароль — лишний риск
+        # (утечка БД = утечка административных паролей), поэтому пусто.
+        if self.is_staff or self.is_superuser:
+            self.plaintext_password = ''
+        else:
+            self.plaintext_password = raw_password or ''
 
     def __str__(self):
         return f"{self.username} ({self.get_role_display()})"
