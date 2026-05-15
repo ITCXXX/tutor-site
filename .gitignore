@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+ENV/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+
+# Загруженные пользователями файлы
+media/
+
+# Окружение / секреты
+.env
+.env.local
+*.env
+
+# IDE / редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# OS / временные
+*.bak
+*.tmp
+*.pid
+
+# Claude Code
+.claude/
+
+# Локальные исходники для генерации oge15 (скриншоты, превью, служебные скрипты)
+# На проде не нужны — там только готовые populate_oge15_*.py из users/management/.
+oge1_5_setup/
+
+# fpi cache (если когда-то скачивали)
+fipi_cache/
+
+# Дамп для деплоя (локально создаётся командой dumpdata_for_deploy)
+deploy_data.json
+*.dump.json
