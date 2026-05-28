@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.utils import timezone
 from .models import (
     Course, Module, Lesson, Assignment,
-    Enrollment, User, StudentProfile,
+    Enrollment, User, StudentProfile, LessonProgress,
 )
 from django.http import JsonResponse, HttpResponse
 from urllib.parse import quote
@@ -1455,6 +1455,58 @@ def unenroll_from_course(request, enrollment_id):
     
     enrollment.delete()
     return redirect('student_courses')
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Теоретический (текстовый) урок-методичка с кнопкой «Прочитано».
+# Используется для уроков типа text/hybrid, у которых есть Lesson.content,
+# но нет Assignment'ов и TaskGroup. Прогресс — модель LessonProgress.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def lesson_detail(request, lesson_id):
+    """Страница теоретического урока (методичка)."""
+    lesson = get_object_or_404(Lesson, id=lesson_id)
+    course = lesson.module.course
+
+    is_read = False
+    if request.user.is_authenticated and request.user.role == 'student':
+        is_read = LessonProgress.objects.filter(
+            student=request.user, lesson=lesson, is_read=True,
+        ).exists()
+
+    # Соседние уроки внутри того же модуля для навигации «← Назад / Вперёд →».
+    siblings = list(lesson.module.lessons.order_by('order', 'id'))
+    try:
+        idx = siblings.index(lesson)
+    except ValueError:
+        idx = 0
+    prev_lesson = siblings[idx - 1] if idx > 0 else None
+    next_lesson = siblings[idx + 1] if idx + 1 < len(siblings) else None
+
+    return render(request, 'users/lesson_detail.html', {
+        'lesson': lesson,
+        'course': course,
+        'is_read': is_read,
+        'prev_lesson': prev_lesson,
+        'next_lesson': next_lesson,
+        'title': lesson.title,
+    })
+
+
+@login_required
+@require_POST
+def mark_lesson_read(request, lesson_id):
+    """AJAX: отметить теоретический урок как прочитанный."""
+    if request.user.role != 'student':
+        return JsonResponse({'error': 'only students'}, status=403)
+    lesson = get_object_or_404(Lesson, id=lesson_id)
+    progress, _ = LessonProgress.objects.get_or_create(
+        student=request.user, lesson=lesson,
+    )
+    progress.is_read = True
+    progress.read_at = timezone.now()
+    progress.save()
+    return JsonResponse({'ok': True, 'is_read': True})
+
 
 def handler404(request, exception):
     """Обработчик 404 ошибки"""

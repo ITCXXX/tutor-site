@@ -1,0 +1,219 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ lesson.title }} — {{ course.title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.lesson-article {
+    background: var(--c-surface, #fff);
+    border-radius: .5rem;
+    padding: 2rem 2.25rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    line-height: 1.65;
+    font-size: 1.02rem;
+    color: var(--c-text, #1f2937);
+}
+.lesson-article h2 {
+    margin-top: 1.5rem;
+    font-weight: 600;
+    font-size: 1.4rem;
+    border-bottom: 1px solid var(--c-border, #e5e7eb);
+    padding-bottom: .4rem;
+}
+.lesson-article h3 {
+    margin-top: 1.25rem;
+    font-weight: 600;
+    font-size: 1.15rem;
+}
+.lesson-article table {
+    border-collapse: collapse;
+    margin: 1rem 0;
+    width: 100%;
+    font-size: .95rem;
+}
+.lesson-article th,
+.lesson-article td {
+    border: 1px solid var(--c-border, #e5e7eb);
+    padding: .4rem .65rem;
+    text-align: left;
+    vertical-align: top;
+}
+.lesson-article th {
+    background: var(--c-bg-soft, #f3f4f6);
+    font-weight: 600;
+}
+.lesson-article code,
+.lesson-article .pinyin {
+    font-family: "JetBrains Mono", Consolas, monospace;
+    background: #f1f5f9;
+    padding: .05rem .35rem;
+    border-radius: .2rem;
+    font-size: .92em;
+}
+.lesson-article .arrow { color: #94a3b8; padding: 0 .25rem; }
+.lesson-article .pld { color: #1d4ed8; font-weight: 600; }
+.lesson-article .ex {
+    background: #fffbeb;
+    border-left: 3px solid #f59e0b;
+    padding: .65rem .9rem;
+    margin: .75rem 0;
+    border-radius: .25rem;
+}
+.lesson-article .note {
+    background: #eff6ff;
+    border-left: 3px solid #3b82f6;
+    padding: .65rem .9rem;
+    margin: .75rem 0;
+    border-radius: .25rem;
+}
+.lesson-article .warn {
+    background: #fef2f2;
+    border-left: 3px solid #ef4444;
+    padding: .65rem .9rem;
+    margin: .75rem 0;
+    border-radius: .25rem;
+}
+
+.lesson-nav {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+.lesson-nav a {
+    flex: 1;
+    padding: .65rem 1rem;
+    border-radius: .375rem;
+    text-decoration: none;
+    background: var(--c-bg-soft, #f3f4f6);
+    color: var(--c-text, #1f2937);
+    border: 1px solid var(--c-border, #e5e7eb);
+}
+.lesson-nav a:hover { background: #e5e7eb; }
+.lesson-nav .placeholder { visibility: hidden; }
+.lesson-nav .nav-next { text-align: right; }
+
+.read-btn {
+    background: var(--c-primary-600, #2563eb);
+    color: #fff;
+    border: none;
+    padding: .6rem 1.4rem;
+    border-radius: .375rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+}
+.read-btn:hover { background: var(--c-primary-700, #1d4ed8); }
+.read-btn[disabled] {
+    background: #10b981;
+    cursor: default;
+    opacity: 1;
+}
+.read-status {
+    color: #10b981;
+    font-weight: 600;
+    margin-left: .75rem;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px; padding-bottom: 3rem;">
+    <div class="container" style="max-width: 860px;">
+        <nav aria-label="breadcrumb" class="mb-3">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'home' %}">Главная</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'courses_list' %}">Курсы</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'course_detail' course.slug %}">{{ course.title }}</a></li>
+                <li class="breadcrumb-item active" aria-current="page">{{ lesson.title }}</li>
+            </ol>
+        </nav>
+
+        <h1 class="fw-bold mb-1">{{ lesson.title }}</h1>
+        <p class="text-muted mb-3" style="font-size:.9rem;">
+            Модуль: {{ lesson.module.title }}
+        </p>
+
+        <article class="lesson-article">
+            {{ lesson.content|safe }}
+        </article>
+
+        {% if user.is_authenticated and user.role == 'student' %}
+        <div class="text-center mt-4">
+            <button id="read-btn" class="read-btn"
+                    data-url="{% url 'mark_lesson_read' lesson.id %}"
+                    {% if is_read %}disabled{% endif %}>
+                {% if is_read %}Прочитано ✓{% else %}Отметить как прочитанное{% endif %}
+            </button>
+            <span id="read-status" class="read-status" style="{% if not is_read %}display:none;{% endif %}">
+                Отмечено
+            </span>
+        </div>
+        {% endif %}
+
+        <div class="lesson-nav">
+            {% if prev_lesson %}
+                <a href="{% url 'lesson_detail' prev_lesson.id %}" class="nav-prev">
+                    ← {{ prev_lesson.title }}
+                </a>
+            {% else %}
+                <span class="placeholder"></span>
+            {% endif %}
+
+            <a href="{% url 'course_detail' course.slug %}"
+               style="flex:0 0 auto; padding:.65rem 1rem; text-decoration:none;
+                      color:var(--c-text-muted, #6b7280);">
+                К содержанию курса
+            </a>
+
+            {% if next_lesson %}
+                <a href="{% url 'lesson_detail' next_lesson.id %}" class="nav-next">
+                    {{ next_lesson.title }} →
+                </a>
+            {% else %}
+                <span class="placeholder"></span>
+            {% endif %}
+        </div>
+    </div>
+</section>
+
+<script>
+(function() {
+    var btn = document.getElementById('read-btn');
+    if (!btn || btn.disabled) return;
+    var status = document.getElementById('read-status');
+    btn.addEventListener('click', function() {
+        var url = btn.getAttribute('data-url');
+        var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
+        var csrfToken = csrf ? csrf.value : (
+            document.cookie.split('; ').find(c => c.startsWith('csrftoken='))
+                || ''
+        ).replace('csrftoken=', '');
+        btn.disabled = true;
+        btn.textContent = 'Сохраняем…';
+        fetch(url, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': csrfToken,
+                'Content-Type': 'application/json',
+            },
+            credentials: 'same-origin',
+        }).then(r => r.json()).then(data => {
+            if (data.ok) {
+                btn.textContent = 'Прочитано ✓';
+                if (status) status.style.display = '';
+            } else {
+                btn.disabled = false;
+                btn.textContent = 'Ошибка, повторить';
+            }
+        }).catch(() => {
+            btn.disabled = false;
+            btn.textContent = 'Ошибка, повторить';
+        });
+    });
+})();
+</script>
+{# CSRF на странице для fetch #}
+<form style="display:none;">{% csrf_token %}</form>
+{% endblock %}

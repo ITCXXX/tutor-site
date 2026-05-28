@@ -186,6 +186,18 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
                                 {{ lesson.assignments.count }} тип. → к практике
                             </span>
                         </a>
+                        {% elif lesson.content and not lesson.assignments.all and not lesson.task_groups.all %}
+                        {# Теоретический урок-методичка — клик ведёт на отдельную страницу #}
+                        <a href="{% url 'lesson_detail' lesson.id %}" class="lesson-collapse"
+                           style="display:flex; padding:.65rem .9rem; text-decoration:none;
+                                  color:inherit; align-items:center; gap:.6rem; background:var(--c-bg-soft);
+                                  border:1px solid var(--c-border); border-radius:.375rem;
+                                  margin-bottom:.6rem;">
+                            <span class="lesson-title">{{ lesson.title }}</span>
+                            <span class="lesson-meta" style="margin-left:auto;">
+                                📖 теория → читать
+                            </span>
+                        </a>
                         {% else %}
                         <details class="lesson-collapse">
                             <summary class="lesson-summary">

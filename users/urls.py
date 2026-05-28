@@ -72,6 +72,10 @@ urlpatterns = [
     # --- ОТПИСКА ОТ КУРСА ---
     path('unenroll/<int:enrollment_id>/', views.unenroll_from_course, name='unenroll_from_course'),
     
+    # --- ТЕОРЕТИЧЕСКИЙ УРОК (методичка) ---
+    path('lesson/<int:lesson_id>/', views.lesson_detail, name='lesson_detail'),
+    path('lesson/<int:lesson_id>/mark-read/', views.mark_lesson_read, name='mark_lesson_read'),
+
     # ===== НОВЫЕ МАРШРУТЫ ДЛЯ ЭКЗАМЕНАЦИОННОЙ ПОДГОТОВКИ =====
     path('assignment/<int:assignment_id>/practice/', views_exam.assignment_practice, name='assignment_practice'),
     path('exam/check/<int:problem_id>/', views_exam.check_problem_answer, name='check_problem_answer'),

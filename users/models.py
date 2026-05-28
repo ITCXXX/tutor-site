@@ -754,6 +754,35 @@ class StudentProgress(models.Model):
         self.save()
 
 
+class LessonProgress(models.Model):
+    """Отметка ученика «урок прочитан» для теоретических (текстовых) уроков.
+
+    Используется в курсах-методичках: ученик открывает Lesson.content,
+    нажимает кнопку «Прочитано», создаётся запись. Прогресс по теории
+    отображается рядом с уроком на странице курса.
+    """
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='lesson_progress',
+        limit_choices_to={'role': 'student'}, verbose_name='Ученик',
+    )
+    lesson = models.ForeignKey(
+        Lesson, on_delete=models.CASCADE, related_name='read_progress',
+        verbose_name='Урок',
+    )
+    is_read = models.BooleanField('Прочитан', default=False)
+    read_at = models.DateTimeField('Дата отметки', null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Прогресс по уроку (теория)'
+        verbose_name_plural = 'Прогресс по урокам (теория)'
+        unique_together = ('student', 'lesson')
+        indexes = [models.Index(fields=['student', 'lesson'])]
+
+    def __str__(self):
+        mark = '✓' if self.is_read else '·'
+        return f"{self.student.username} · {self.lesson.title} {mark}"
+
+
 class ManualMark(models.Model):
     """Отметка преподавателя о решённой задаче ученика в manual-курсе.
 
