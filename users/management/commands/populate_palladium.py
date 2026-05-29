@@ -266,10 +266,14 @@ LESSON_JUNCTIONS = """
 <span class="pld">шицзинь</span>
 </div>
 
-<h2>Правило 2. -ng + гласная: разделительный ъ</h2>
-<p>Если первый слог в пиньине оканчивается на <span class="pinyin">-ng</span>
-(а в Палладии — на твёрдое <b>-н</b>), а следующий слог начинается с гласной,
-между ними ставится <b>твёрдый знак ъ</b>.</p>
+<h2>Правило 2. Твёрдая согласная + гласная: разделительный ъ</h2>
+<p>Если первый палладий-слог оканчивается на <b>твёрдую согласную</b>
+(их в системе всего две — <b>«н»</b> от пиньинь-финали <span class="pinyin">-ng</span>
+и <b>«р»</b> от слога <span class="pinyin">er</span>),
+а следующий слог в Палладии начинается с гласной — между ними ставится
+<b>твёрдый знак ъ</b>.</p>
+
+<h3>2.1. -ng + гласная</h3>
 <div class="ex">
 <span class="pinyin">chang + an</span> <span class="arrow">→</span>
 <span class="pld">чан + ань</span> <span class="arrow">→</span>
@@ -279,7 +283,35 @@ LESSON_JUNCTIONS = """
 <span class="pld">пэнъю</span><br>
 <span class="pinyin">dong + e</span> <span class="arrow">→</span>
 <span class="pld">дун + э</span> <span class="arrow">→</span>
-<span class="pld">дунъэ</span>
+<span class="pld">дунъэ</span><br>
+<span class="pinyin">chang + yao</span> <span class="arrow">→</span>
+<span class="pld">чан + яо</span> <span class="arrow">→</span>
+<span class="pld">чанъяо</span>
+</div>
+
+<h3>2.2. er + гласная (то же правило)</h3>
+<p>Слог <span class="pinyin">er</span> даёт твёрдое <b>«эр»</b>, поэтому
+работает то же правило: перед гласной следующего слога ставится ъ.
+Логика та же, что в русских словах «подъезд», «съел».</p>
+<div class="ex">
+<span class="pinyin">er + yao</span> <span class="arrow">→</span>
+<span class="pld">эр + яо</span> <span class="arrow">→</span>
+<span class="pld">эръяо</span><br>
+<span class="pinyin">er + yue</span> <span class="arrow">→</span>
+<span class="pld">эр + юэ</span> <span class="arrow">→</span>
+<span class="pld">эръюэ</span> &nbsp;(二月 «февраль»)<br>
+<span class="pinyin">er + yi</span> <span class="arrow">→</span>
+<span class="pld">эр + и</span> <span class="arrow">→</span>
+<span class="pld">эръи</span>
+</div>
+<p>Но если после <span class="pinyin">er</span> идёт согласная — никакого ъ:</p>
+<div class="ex">
+<span class="pinyin">er + shi</span> <span class="arrow">→</span>
+<span class="pld">эрши</span> &nbsp;(二十 «двадцать»)<br>
+<span class="pinyin">er + duo</span> <span class="arrow">→</span>
+<span class="pld">эрдо</span> &nbsp;(耳朵 «ухо»)<br>
+<span class="pinyin">er + hou</span> <span class="arrow">→</span>
+<span class="pld">эрхоу</span> &nbsp;(而后 «после того как»)
 </div>
 
 <h2>Правило 3. -n + гласная: ничего не вставляем</h2>
@@ -323,14 +355,16 @@ LESSON_JUNCTIONS = """
 
 <h2>Сводная схема (главная развилка)</h2>
 <table>
-<tr><th>Конец 1-го слога (пиньинь)</th><th>Начало 2-го слога</th><th>Что вставляем</th><th>Пример</th></tr>
-<tr><td><span class="pinyin">-ng</span></td><td>гласная (a/e/o/i/u)</td><td><b>ъ</b></td>
+<tr><th>Конец 1-го палладий-слога</th><th>Начало 2-го</th><th>Что вставляем</th><th>Пример</th></tr>
+<tr><td>твёрдое <b>«н»</b> (от пиньинь -ng)</td><td>гласная</td><td><b>ъ</b></td>
     <td><span class="pinyin">chang+an</span> → <span class="pld">чан<b>ъ</b>ань</span></td></tr>
-<tr><td><span class="pinyin">-n</span></td><td>гласная</td><td>—</td>
+<tr><td>твёрдое <b>«р»</b> (от пиньинь er)</td><td>гласная</td><td><b>ъ</b></td>
+    <td><span class="pinyin">er+yao</span> → <span class="pld">эр<b>ъ</b>яо</span></td></tr>
+<tr><td>мягкое <b>«нь»</b> (от пиньинь -n)</td><td>гласная</td><td>—</td>
     <td><span class="pinyin">tian+an</span> → <span class="pld">тяньань</span></td></tr>
-<tr><td>любая гласная</td><td>любая гласная</td><td>—</td>
+<tr><td>гласная</td><td>гласная</td><td>—</td>
     <td><span class="pinyin">xi+an</span> → <span class="pld">сиань</span></td></tr>
-<tr><td>любая</td><td>согласная</td><td>—</td>
+<tr><td>любое</td><td>согласная</td><td>—</td>
     <td><span class="pinyin">xie+zhang</span> → <span class="pld">сечжан</span></td></tr>
 </table>
 
@@ -499,8 +533,9 @@ ASSIGNMENT_DESCRIPTION = (
     'Тренажёр генерирует случайные пары слогов мандарина и просит записать '
     'двусложное слово по правилам системы Палладия. Ответ вводите строчными '
     'буквами, слитно, без пробелов и без тонов. '
-    'Если первый слог оканчивается на -ng, а второй начинается с гласной — '
-    'между ними ставится твёрдый знак ъ (например, chang an → чанъань).'
+    'Если первый слог в Палладии оканчивается на твёрдую согласную '
+    '(н от -ng или р от er), а второй начинается с гласной — между ними '
+    'ставится твёрдый знак ъ (chang an → чанъань, er yao → эръяо).'
 )
 
 

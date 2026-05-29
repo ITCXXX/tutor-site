@@ -244,8 +244,20 @@ def starts_with_vowel(palladium_syllable):
     return bool(palladium_syllable) and palladium_syllable[0] in _PLD_VOWELS
 
 
+# Твёрдые согласные на конце палладий-слога. Их в системе всего две:
+#   • «н» — от пиньинь-финали -ng (chang → чан, peng → пэн)
+#   • «р» — от пиньинь-слога er (er → эр)
+# Если r1 кончается на «нь» — это мягкий знак от -n, последняя буква 'ь',
+# и в проверку ниже она не попадает (что и нужно: мягкий уже разделяет).
+_HARD_TAIL = set('нр')
+
+
 def join_palladium(pinyin1, pinyin2):
     """Склеить два слога пиньиня в одно двусложное слово по правилам Палладия.
+
+    Правило: если первый палладий-слог оканчивается на твёрдую согласную
+    («н» от -ng или «р» от er), а второй начинается с гласной — между ними
+    ставится разделительный ъ. В остальных случаях — простая конкатенация.
 
     >>> join_palladium('chang', 'an')
     'чанъань'
@@ -257,14 +269,15 @@ def join_palladium(pinyin1, pinyin2):
     'сечжан'
     >>> join_palladium('peng', 'you')
     'пэнъю'
+    >>> join_palladium('er', 'yao')
+    'эръяо'
+    >>> join_palladium('er', 'shi')
+    'эрши'
     """
-    s1 = (pinyin1 or '').strip().lower()
-    s2 = (pinyin2 or '').strip().lower()
-    r1 = to_palladium(s1)
-    r2 = to_palladium(s2)
+    r1 = to_palladium((pinyin1 or '').strip().lower())
+    r2 = to_palladium((pinyin2 or '').strip().lower())
 
-    # Главное правило: -ng + гласная начала второго слога → разделитель 'ъ'.
-    if s1.endswith('ng') and starts_with_vowel(r2):
+    if r1 and r1[-1] in _HARD_TAIL and starts_with_vowel(r2):
         return r1 + 'ъ' + r2
     return r1 + r2
 
