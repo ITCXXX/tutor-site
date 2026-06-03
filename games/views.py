@@ -17,7 +17,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from .engine import apply_move
+from .engine import apply_move, ALL_VARIANTS, VARIANT_CLASSIC
 from .models import Game, SiteSetting
 from .utils import display_for_games
 
@@ -86,9 +86,33 @@ def games_list(request):
 @games_section_required
 @require_POST
 def game_create(request):
-    """Создать новую партию. Создатель = X. Соперник присоединится по ссылке."""
-    game = Game.create_for(request.user)
+    """Создать новую партию. Параметры (опциональны):
+       variant=classic|long, mode=online|local."""
+    variant = request.POST.get('variant', VARIANT_CLASSIC)
+    if variant not in ALL_VARIANTS:
+        variant = VARIANT_CLASSIC
+    is_local = (request.POST.get('mode') == 'local')
+    game = Game.create_for(
+        x_player=request.user,
+        variant=variant,
+        is_local=is_local,
+    )
     return redirect('games:detail', code=game.code)
+
+
+@login_required
+@games_section_required
+@require_POST
+def game_rematch(request, code):
+    """Создать партию-реванш на основе завершённой партии. Стороны меняются."""
+    prev = get_object_or_404(Game, code=code)
+    if prev.status != Game.STATUS_FINISHED:
+        return redirect('games:detail', code=code)
+    # Только участники могут просить реванш.
+    if not prev.is_participant(request.user):
+        return HttpResponseForbidden('Только участники могут запросить реванш.')
+    new_game = prev.make_rematch(request.user)
+    return redirect('games:detail', code=new_game.code)
 
 
 @login_required
@@ -112,6 +136,8 @@ def game_detail(request, code):
         'can_join': can_join,
         'x_label': game.label_for('X'),
         'o_label': game.label_for('O'),
+        'score_x': game.score_x,
+        'score_o': game.score_o,
     })
 
 
@@ -150,6 +176,10 @@ def game_state(request, code):
         'my_side': game.player_side(user),
         'x_label': game.label_for('X'),
         'o_label': game.label_for('O'),
+        'variant': game.variant,
+        'is_local': game.is_local,
+        'score_x': game.score_x,
+        'score_o': game.score_o,
         'updated_at': game.updated_at.isoformat(),
     })
 
@@ -176,7 +206,9 @@ def game_move(request, code):
     except (ValueError, TypeError, json.JSONDecodeError):
         return JsonResponse({'error': 'Неверный формат хода.'}, status=400)
 
-    new_state, err = apply_move(game.state_dict(), side, big, small)
+    new_state, err = apply_move(
+        game.state_dict(), side, big, small, variant=game.variant,
+    )
     if err:
         return JsonResponse({'error': err}, status=400)
 
@@ -191,6 +223,8 @@ def game_move(request, code):
         'big_board': game.big_board,
         'board': game.board,
         'last_move': game.last_move,
+        'score_x': game.score_x,
+        'score_o': game.score_o,
     })
 
 

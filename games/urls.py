@@ -11,4 +11,5 @@ urlpatterns = [
     path('<str:code>/join/', views.game_join, name='join'),
     path('<str:code>/state/', views.game_state, name='state'),
     path('<str:code>/move/', views.game_move, name='move'),
+    path('<str:code>/rematch/', views.game_rematch, name='rematch'),
 ]

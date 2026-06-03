@@ -110,16 +110,52 @@
         </div>
         {% endif %}
 
-        <form method="post" action="{% url 'games:create' %}" class="mb-4">
+        <form method="post" action="{% url 'games:create' %}" class="mb-4 create-form">
             {% csrf_token %}
+            <div class="create-options">
+                <fieldset>
+                    <legend>Режим</legend>
+                    <label><input type="radio" name="mode" value="online" checked>
+                        Онлайн (соперник зайдёт по ссылке)</label>
+                    <label><input type="radio" name="mode" value="local">
+                        Локально (hot-seat, оба на одном экране)</label>
+                </fieldset>
+                <fieldset>
+                    <legend>Правила</legend>
+                    <label><input type="radio" name="variant" value="classic" checked>
+                        Классика (стандартный UTTT)</label>
+                    <label><input type="radio" name="variant" value="long">
+                        Долгая дорога (после выигрыша малого — общая очистка
+                        ещё не закрытых полей)</label>
+                </fieldset>
+            </div>
             <button type="submit" class="create-btn"
                     {% if not has_nickname %}disabled title="Сначала задайте ник"{% endif %}>
                 + Новая партия
             </button>
-            <span class="text-muted ms-3" style="font-size:.9rem;">
-                после создания скопируйте ссылку и отправьте сопернику
-            </span>
         </form>
+
+        <style>
+            .create-form fieldset {
+                border: 1px solid #e2e8f0;
+                border-radius: .375rem;
+                padding: .65rem 1rem;
+                margin: 0 0 .75rem 0;
+            }
+            .create-form legend {
+                padding: 0 .5rem;
+                font-size: .85rem;
+                font-weight: 600;
+                color: #475569;
+            }
+            .create-form label {
+                display: block;
+                padding: .25rem 0;
+                font-size: .95rem;
+                cursor: pointer;
+            }
+            .create-form input[type=radio] { margin-right: .5rem; }
+        </style>
 
         <h2 class="fw-bold mt-4" style="font-size:1.2rem;">Мои партии</h2>
         {% if my_games %}

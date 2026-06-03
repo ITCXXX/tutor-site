@@ -34,6 +34,11 @@ WINNING_LINES = (
     (0, 4, 8), (2, 4, 6),               # диагонали
 )
 
+# Поддерживаемые варианты правил.
+VARIANT_CLASSIC = "classic"
+VARIANT_LONG = "long"
+ALL_VARIANTS = (VARIANT_CLASSIC, VARIANT_LONG)
+
 
 def initial_state():
     """Стартовое состояние пустой партии. X ходит первым, в любое поле."""
@@ -46,6 +51,13 @@ def initial_state():
         "winner": "",
         "last_move": None,
     }
+
+
+def score(big_board):
+    """Возвращает (score_x, score_o) — количество малых полей, выигранных X и O."""
+    sx = sum(1 for v in big_board if v == "X")
+    so = sum(1 for v in big_board if v == "O")
+    return sx, so
 
 
 def _opponent(player):
@@ -89,11 +101,21 @@ def _board_resolved(big_board, idx):
     return big_board[idx] in ("X", "O", "D")
 
 
-def apply_move(state, player, big, small):
+def apply_move(state, player, big, small, variant=VARIANT_CLASSIC):
     """Применить ход и вернуть (new_state, error).
 
     Не мутирует входной state — возвращает новый словарь. При ошибке
     возвращает (state, "сообщение об ошибке").
+
+    variant:
+      - "classic": стандартный UTTT.
+      - "long":   при выигрыше малого поля в нём как обычно закрепляется
+                  победитель, а все остальные ещё-не-закрытые малые поля
+                  очищаются. Партия идёт до 3 в ряд в большом поле.
+
+    Тиебрейк при большой ничьей (применяется в обоих вариантах): если общее
+    количество малых побед у X и O различается — побеждает тот, у кого больше.
+    Если поровну — настоящая ничья (winner = "D").
     """
     # 0. Партия уже завершена?
     if state["status"] != "active":
@@ -108,6 +130,9 @@ def apply_move(state, player, big, small):
         return state, "Неверный индекс большого поля"
     if not (isinstance(small, int) and 0 <= small <= 8):
         return state, "Неверный индекс клетки"
+
+    if variant not in ALL_VARIANTS:
+        return state, f"Неизвестный вариант правил: {variant}"
 
     big_board = list(state["big_board"])
     next_local = state["next_local"]
@@ -133,21 +158,46 @@ def apply_move(state, player, big, small):
     if small_winner is not None:
         big_board[big] = small_winner
 
-    # 7. Проверить выигрыш партии.
-    big_winner = check_big_winner(big_board)
+        # «Долгая дорога»: при выигрыше малого поля все остальные ещё-не-закрытые
+        # малые поля очищаются. Закрытые (X/O/D в big_board) трогать нельзя.
+        if variant == VARIANT_LONG:
+            for i in range(9):
+                if i == big:
+                    continue
+                if _board_resolved(big_board, i):
+                    continue
+                board[i] = [""] * 9
 
-    # 8. Определить, в каком поле обязан ходить соперник.
-    #    Координата следующего поля = индекс только что сыгранной клетки.
-    if big_winner is not None:
-        new_next_local = None
-        status = "finished"
-    else:
-        target = small
-        if _board_resolved(big_board, target):
-            new_next_local = None   # целевое поле закрыто → свободный выбор
-        else:
-            new_next_local = target
+    # 7. Проверить выигрыш партии (по большому полю).
+    big_outcome = check_big_winner(big_board)
+
+    # 8. Определить итог и обязательное малое поле для следующего хода.
+    if big_outcome is None:
         status = "active"
+        winner = ""
+        # Если в long после общего очищения — следующий ход свободный.
+        if variant == VARIANT_LONG and small_winner is not None:
+            new_next_local = None
+        else:
+            target = small
+            new_next_local = (
+                None if _board_resolved(big_board, target) else target
+            )
+    elif big_outcome in ("X", "O"):
+        status = "finished"
+        winner = big_outcome
+        new_next_local = None
+    else:
+        # Большая ничья по доске: смотрим тиебрейк по числу малых побед.
+        sx, so = score(big_board)
+        status = "finished"
+        if sx > so:
+            winner = "X"
+        elif so > sx:
+            winner = "O"
+        else:
+            winner = "D"
+        new_next_local = None
 
     return {
         "board": board,
@@ -155,7 +205,7 @@ def apply_move(state, player, big, small):
         "next_local": new_next_local,
         "current": _opponent(player) if status == "active" else state["current"],
         "status": status,
-        "winner": big_winner or "",
+        "winner": winner,
         "last_move": {"big": big, "small": small, "by": player},
     }, None
 
@@ -185,5 +235,7 @@ __all__ = [
     "check_small_winner",
     "check_big_winner",
     "legal_moves",
+    "score",
     "WINNING_LINES",
+    "VARIANT_CLASSIC", "VARIANT_LONG", "ALL_VARIANTS",
 ]

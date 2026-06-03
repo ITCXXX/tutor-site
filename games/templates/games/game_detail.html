@@ -38,6 +38,56 @@
     font-size: .8rem;
     margin-left: .35rem;
 }
+.players .score {
+    display: inline-block;
+    margin-left: .35rem;
+    padding: .05rem .45rem;
+    background: #f1f5f9;
+    color: #334155;
+    font-family: monospace;
+    border-radius: .25rem;
+    font-size: .85rem;
+    font-weight: 700;
+    min-width: 1.5em;
+    text-align: center;
+}
+
+.badges {
+    display: flex;
+    justify-content: center;
+    gap: .5rem;
+    margin-bottom: .65rem;
+    flex-wrap: wrap;
+}
+.badge-pill {
+    padding: .15rem .6rem;
+    border-radius: 999px;
+    font-size: .78rem;
+    font-weight: 600;
+}
+.badge-variant { background: #ede9fe; color: #5b21b6; }
+.badge-local { background: #fef3c7; color: #92400e; }
+.badge-code {
+    background: #f1f5f9;
+    color: #475569;
+    font-family: monospace;
+}
+
+.rematch-box {
+    text-align: center;
+    margin: 1rem 0;
+}
+.rematch-btn {
+    padding: .65rem 1.4rem;
+    background: #2563eb;
+    color: #fff;
+    border-radius: .375rem;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 1rem;
+}
+.rematch-btn:hover { background: #1d4ed8; }
 
 .status-banner {
     text-align: center;
@@ -186,14 +236,25 @@
     <div class="container game-wrap">
         <a href="{% url 'games:list' %}" class="back-link">← К моим партиям</a>
 
+        <div class="badges">
+            <span class="badge-pill badge-variant">
+                {% if game.variant == 'long' %}Долгая дорога{% else %}Классика{% endif %}
+            </span>
+            {% if game.is_local %}
+            <span class="badge-pill badge-local">Локальная (hot-seat)</span>
+            {% endif %}
+            <span class="badge-pill badge-code">#{{ game.code }}</span>
+        </div>
+
         <div class="players">
             <div>
                 <span class="side-x">X</span>: <b id="label-x">{{ x_label }}</b>
+                <span class="score" id="score-x">{{ score_x }}</span>
                 <span class="active-turn" id="turn-x" style="display:none;">ходит</span>
             </div>
-            <div style="color:#6b7280;">партия #{{ game.code }}</div>
             <div>
                 <span class="side-o">O</span>: <b id="label-o">{{ o_label }}</b>
+                <span class="score" id="score-o">{{ score_o }}</span>
                 <span class="active-turn" id="turn-o" style="display:none;">ходит</span>
             </div>
         </div>
@@ -210,12 +271,21 @@
         </div>
         {% endif %}
 
-        {% if game.status == 'waiting' and game.x_player_id == user.id %}
+        {% if game.status == 'waiting' and game.x_player_id == user.id and not game.is_local %}
         <div class="share-box">
             Ждём соперника. Пришлите ему эту ссылку:<br>
             <input id="share-url" type="text" readonly
                    value="{{ request.scheme }}://{{ request.get_host }}{% url 'games:detail' game.code %}">
             <button type="button" onclick="copyShare()">Скопировать</button>
+        </div>
+        {% endif %}
+
+        {% if game.status == 'finished' %}
+        <div class="rematch-box">
+            <form method="post" action="{% url 'games:rematch' game.code %}">
+                {% csrf_token %}
+                <button type="submit" class="rematch-btn">↻ Реванш (стороны меняются)</button>
+            </form>
         </div>
         {% endif %}
 
@@ -244,6 +314,8 @@
     const turnOEl = document.getElementById('turn-o');
     const labelXEl = document.getElementById('label-x');
     const labelOEl = document.getElementById('label-o');
+    const scoreXEl = document.getElementById('score-x');
+    const scoreOEl = document.getElementById('score-o');
 
     let currentState = null;
     let mySide = null;       // 'X' / 'O' / null
@@ -276,6 +348,10 @@
         mySide = state.my_side;
         if (state.x_label) labelXEl.textContent = state.x_label;
         if (state.o_label) labelOEl.textContent = state.o_label;
+
+        // Счёт малых побед
+        if (typeof state.score_x === 'number' && scoreXEl) scoreXEl.textContent = state.score_x;
+        if (typeof state.score_o === 'number' && scoreOEl) scoreOEl.textContent = state.score_o;
 
         // Подсветка чьего хода
         turnXEl.style.display = (state.current === 'X' && state.status === 'active') ? '' : 'none';
