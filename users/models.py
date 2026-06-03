@@ -45,6 +45,18 @@ class User(AbstractBaseUser):
     is_staff = models.BooleanField('Персонал', default=False)
     is_superuser = models.BooleanField('Суперпользователь', default=False)
 
+    # Доступ к разделу игр (UTTT и т.п.)
+    can_play_games = models.BooleanField(
+        'Доступ к разделу игр', default=False,
+        help_text='Если включено, пользователь видит /games/ и может создавать/'
+                  'играть партии. Не влияет на учебные курсы.',
+    )
+    gamer_nickname = models.CharField(
+        'Ник для игр', max_length=30, blank=True, default='',
+        help_text='Имя, под которым пользователь будет виден сопернику в '
+                  'разделе игр. Если пусто — используется username.',
+    )
+
     # Даты
     date_joined = models.DateTimeField('Дата регистрации', default=timezone.now)
     last_login = models.DateTimeField('Последний вход', auto_now=True)

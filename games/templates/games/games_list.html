@@ -1,0 +1,163 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Игры — Ultimate Tic Tac Toe{% endblock %}
+
+{% block extra_css %}
+<style>
+.games-wrap { max-width: 720px; }
+.nick-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: .5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+}
+.nick-card input[type=text] {
+    padding: .4rem .65rem;
+    border: 1px solid #cbd5e1;
+    border-radius: .3rem;
+    font-size: 1rem;
+    width: 240px;
+}
+.nick-card button {
+    padding: .4rem 1rem;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: .3rem;
+    cursor: pointer;
+    margin-left: .5rem;
+}
+.nick-card button:hover { background: #1d4ed8; }
+
+.create-btn {
+    display: inline-block;
+    padding: .65rem 1.4rem;
+    background: #10b981;
+    color: #fff;
+    border-radius: .375rem;
+    text-decoration: none;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+}
+.create-btn:hover { background: #059669; color: #fff; }
+.create-btn[disabled] { background: #9ca3af; cursor: not-allowed; }
+
+.game-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: .75rem 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: .375rem;
+    margin-bottom: .5rem;
+    background: #fff;
+    text-decoration: none;
+    color: #1f2937;
+}
+.game-row:hover { background: #f8fafc; color: #1f2937; text-decoration: none; }
+.game-row .code {
+    font-family: "JetBrains Mono", Consolas, monospace;
+    font-weight: 600;
+    background: #f1f5f9;
+    padding: .15rem .5rem;
+    border-radius: .2rem;
+}
+.game-row .vs { color: #6b7280; font-size: .9rem; }
+.game-row .status {
+    margin-left: auto;
+    font-size: .8rem;
+    padding: .15rem .5rem;
+    border-radius: .25rem;
+    background: #e0e7ff;
+    color: #3730a3;
+}
+.game-row .status.waiting { background: #fef3c7; color: #92400e; }
+.game-row .status.finished { background: #dcfce7; color: #166534; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px; padding-bottom: 3rem;">
+    <div class="container games-wrap">
+        <h1 class="fw-bold mb-3">Игры — Ultimate Tic Tac Toe</h1>
+
+        {% if not has_nickname %}
+        <div class="nick-card">
+            <p class="mb-2"><b>Выберите ник для игр.</b> Под этим именем вас увидят соперники.</p>
+            <form method="post" action="{% url 'games:nickname' %}">
+                {% csrf_token %}
+                <input type="text" name="nickname" maxlength="30"
+                       placeholder="например: Иван или БезжалостныйКрестик"
+                       autofocus required>
+                <button type="submit">Сохранить</button>
+            </form>
+        </div>
+        {% else %}
+        <p class="text-muted mb-3" style="font-size:.9rem;">
+            Ваш ник: <b>{{ display_name }}</b>
+            <a href="#" id="change-nick-link" style="margin-left:.5rem; font-size:.85rem;">сменить</a>
+        </p>
+        <div class="nick-card" id="change-nick-form" style="display:none;">
+            <form method="post" action="{% url 'games:nickname' %}">
+                {% csrf_token %}
+                <input type="text" name="nickname" maxlength="30"
+                       value="{{ nickname }}" required>
+                <button type="submit">Сохранить</button>
+            </form>
+        </div>
+        {% endif %}
+
+        <form method="post" action="{% url 'games:create' %}" class="mb-4">
+            {% csrf_token %}
+            <button type="submit" class="create-btn"
+                    {% if not has_nickname %}disabled title="Сначала задайте ник"{% endif %}>
+                + Новая партия
+            </button>
+            <span class="text-muted ms-3" style="font-size:.9rem;">
+                после создания скопируйте ссылку и отправьте сопернику
+            </span>
+        </form>
+
+        <h2 class="fw-bold mt-4" style="font-size:1.2rem;">Мои партии</h2>
+        {% if my_games %}
+            {% for g in my_games %}
+            <a class="game-row" href="{% url 'games:detail' g.code %}">
+                <span class="code">{{ g.code }}</span>
+                <span class="vs">
+                    {% if g.x_player_id == user.id %}
+                        вы (X) ×
+                        {% if g.o_player %}
+                            {{ g.o_player.gamer_nickname|default:g.o_player.username }} (O)
+                        {% else %}
+                            ждёт соперника
+                        {% endif %}
+                    {% else %}
+                        {{ g.x_player.gamer_nickname|default:g.x_player.username }} (X) ×
+                        вы (O)
+                    {% endif %}
+                </span>
+                <span class="status {{ g.status }}">{{ g.get_status_display }}</span>
+            </a>
+            {% endfor %}
+        {% else %}
+            <p class="text-muted">Пока нет партий. Создайте новую — выше.</p>
+        {% endif %}
+    </div>
+</section>
+
+<script>
+(function() {
+    var link = document.getElementById('change-nick-link');
+    var form = document.getElementById('change-nick-form');
+    if (link && form) {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            form.style.display = (form.style.display === 'none') ? '' : 'none';
+        });
+    }
+})();
+</script>
+{% endblock %}

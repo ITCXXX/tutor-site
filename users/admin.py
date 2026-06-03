@@ -28,6 +28,11 @@ class CustomUserAdmin(DjangoUserAdmin, ModelAdmin):
         ('Разрешения', {
             'fields': ('is_active', 'is_staff', 'is_superuser'),
         }),
+        ('Игры', {
+            'fields': ('can_play_games', 'gamer_nickname'),
+            'description': 'Доступ к разделу /games/ (UTTT и т.п.) и '
+                           'отображаемое имя для соперников.',
+        }),
         ('Важные даты', {
             'fields': ('last_login', 'date_joined'),
         }),

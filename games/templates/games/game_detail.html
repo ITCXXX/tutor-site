@@ -1,0 +1,403 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Партия {{ game.code }} — UTTT{% endblock %}
+
+{% block extra_css %}
+<style>
+:root {
+    --uttt-line: #1f2937;
+    --uttt-x: #2563eb;
+    --uttt-o: #dc2626;
+    --uttt-active: #fef3c7;
+    --uttt-won-x: rgba(37, 99, 235, 0.12);
+    --uttt-won-o: rgba(220, 38, 38, 0.12);
+    --uttt-won-d: rgba(107, 114, 128, 0.12);
+}
+
+.game-wrap { max-width: 720px; margin: 0 auto; }
+
+.players {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: .5rem;
+    padding: .85rem 1.25rem;
+    margin-bottom: 1rem;
+    font-size: 1rem;
+}
+.players .side-x { color: var(--uttt-x); font-weight: 600; }
+.players .side-o { color: var(--uttt-o); font-weight: 600; }
+.players .active-turn {
+    background: #fbbf24;
+    color: #78350f;
+    padding: .15rem .5rem;
+    border-radius: .25rem;
+    font-size: .8rem;
+    margin-left: .35rem;
+}
+
+.status-banner {
+    text-align: center;
+    margin-bottom: 1rem;
+    padding: .5rem;
+    font-weight: 600;
+    border-radius: .375rem;
+}
+.status-banner.win-x { background: #dbeafe; color: var(--uttt-x); }
+.status-banner.win-o { background: #fee2e2; color: var(--uttt-o); }
+.status-banner.draw { background: #f3f4f6; color: #374151; }
+.status-banner.waiting { background: #fef3c7; color: #92400e; }
+.status-banner.info { background: #eff6ff; color: #1e40af; }
+
+/* Большая доска 3×3 из малых */
+.big-board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    background: var(--uttt-line);
+    padding: 6px;
+    border-radius: .5rem;
+    aspect-ratio: 1 / 1;
+    width: 100%;
+    max-width: 540px;
+    margin: 0 auto;
+}
+.small-board {
+    background: #fff;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    padding: 2px;
+    border-radius: .25rem;
+    position: relative;
+    aspect-ratio: 1 / 1;
+}
+.small-board.active { background: var(--uttt-active); }
+.small-board.won-X { background: var(--uttt-won-x); }
+.small-board.won-O { background: var(--uttt-won-o); }
+.small-board.won-D { background: var(--uttt-won-d); }
+
+.small-board.won-X::after,
+.small-board.won-O::after,
+.small-board.won-D::after {
+    content: attr(data-winner);
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 4rem;
+    font-weight: 700;
+    pointer-events: none;
+    opacity: .35;
+}
+.small-board.won-X::after { color: var(--uttt-x); content: 'X'; }
+.small-board.won-O::after { color: var(--uttt-o); content: 'O'; }
+.small-board.won-D::after { color: #6b7280; content: '—'; }
+
+.cell {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: .15rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.25rem;
+    cursor: pointer;
+    user-select: none;
+    aspect-ratio: 1 / 1;
+}
+.cell:hover:not(.filled):not(.disabled) { background: #e0e7ff; }
+.cell.disabled { cursor: not-allowed; background: #f9fafb; }
+.cell.disabled:hover { background: #f9fafb; }
+.cell.x-mark { color: var(--uttt-x); }
+.cell.o-mark { color: var(--uttt-o); }
+.cell.last-move {
+    box-shadow: inset 0 0 0 2px #fbbf24;
+}
+
+.share-box {
+    background: #f1f5f9;
+    border: 1px dashed #94a3b8;
+    border-radius: .375rem;
+    padding: .75rem 1rem;
+    margin: 1rem 0;
+    text-align: center;
+}
+.share-box input {
+    width: 100%;
+    padding: .35rem .55rem;
+    border: 1px solid #cbd5e1;
+    border-radius: .25rem;
+    font-family: monospace;
+    text-align: center;
+    background: #fff;
+}
+.share-box button {
+    margin-top: .5rem;
+    padding: .35rem 1rem;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: .25rem;
+    cursor: pointer;
+}
+
+.join-btn {
+    padding: .65rem 1.4rem;
+    background: #10b981;
+    color: #fff;
+    border-radius: .375rem;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+}
+.join-btn:hover { background: #059669; }
+
+.back-link {
+    display: inline-block;
+    margin-bottom: 1rem;
+    color: #6b7280;
+    font-size: .9rem;
+    text-decoration: none;
+}
+.back-link:hover { color: #1f2937; }
+
+.flash {
+    background: #fee2e2;
+    color: #991b1b;
+    padding: .5rem;
+    border-radius: .25rem;
+    margin: .5rem 0;
+    font-size: .9rem;
+    text-align: center;
+    min-height: 1.6em;
+}
+.flash:empty { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px; padding-bottom: 3rem;">
+    <div class="container game-wrap">
+        <a href="{% url 'games:list' %}" class="back-link">← К моим партиям</a>
+
+        <div class="players">
+            <div>
+                <span class="side-x">X</span>: <b id="label-x">{{ x_label }}</b>
+                <span class="active-turn" id="turn-x" style="display:none;">ходит</span>
+            </div>
+            <div style="color:#6b7280;">партия #{{ game.code }}</div>
+            <div>
+                <span class="side-o">O</span>: <b id="label-o">{{ o_label }}</b>
+                <span class="active-turn" id="turn-o" style="display:none;">ходит</span>
+            </div>
+        </div>
+
+        <div id="status-banner" class="status-banner info">Загрузка…</div>
+        <div id="flash" class="flash"></div>
+
+        {% if can_join %}
+        <div class="text-center mb-3">
+            <form method="post" action="{% url 'games:join' game.code %}">
+                {% csrf_token %}
+                <button type="submit" class="join-btn">Присоединиться (играть за O)</button>
+            </form>
+        </div>
+        {% endif %}
+
+        {% if game.status == 'waiting' and game.x_player_id == user.id %}
+        <div class="share-box">
+            Ждём соперника. Пришлите ему эту ссылку:<br>
+            <input id="share-url" type="text" readonly
+                   value="{{ request.scheme }}://{{ request.get_host }}{% url 'games:detail' game.code %}">
+            <button type="button" onclick="copyShare()">Скопировать</button>
+        </div>
+        {% endif %}
+
+        <div class="big-board" id="big-board"></div>
+
+        <div class="text-muted text-center mt-3" style="font-size:.85rem;">
+            Подсветка жёлтым — то малое поле, куда обязан ходить соперник.
+            Если оно уже закрыто — он ходит куда угодно.
+        </div>
+    </div>
+</section>
+
+<form style="display:none;">{% csrf_token %}</form>
+
+<script>
+(function() {
+    const CODE = "{{ game.code|escapejs }}";
+    const STATE_URL = "{% url 'games:state' game.code %}";
+    const MOVE_URL  = "{% url 'games:move'  game.code %}";
+    const POLL_MS = 1500;
+
+    const big = document.getElementById('big-board');
+    const banner = document.getElementById('status-banner');
+    const flash = document.getElementById('flash');
+    const turnXEl = document.getElementById('turn-x');
+    const turnOEl = document.getElementById('turn-o');
+    const labelXEl = document.getElementById('label-x');
+    const labelOEl = document.getElementById('label-o');
+
+    let currentState = null;
+    let mySide = null;       // 'X' / 'O' / null
+
+    function csrf() {
+        const m = document.cookie.match(/csrftoken=([^;]+)/);
+        return m ? m[1] : '';
+    }
+
+    function buildBoard() {
+        big.innerHTML = '';
+        for (let b = 0; b < 9; b++) {
+            const sb = document.createElement('div');
+            sb.className = 'small-board';
+            sb.dataset.big = b;
+            for (let s = 0; s < 9; s++) {
+                const c = document.createElement('div');
+                c.className = 'cell';
+                c.dataset.big = b;
+                c.dataset.small = s;
+                c.addEventListener('click', onCellClick);
+                sb.appendChild(c);
+            }
+            big.appendChild(sb);
+        }
+    }
+
+    function render(state) {
+        currentState = state;
+        mySide = state.my_side;
+        if (state.x_label) labelXEl.textContent = state.x_label;
+        if (state.o_label) labelOEl.textContent = state.o_label;
+
+        // Подсветка чьего хода
+        turnXEl.style.display = (state.current === 'X' && state.status === 'active') ? '' : 'none';
+        turnOEl.style.display = (state.current === 'O' && state.status === 'active') ? '' : 'none';
+
+        // Малые поля и клетки
+        const lastBig = state.last_move ? state.last_move.big : -1;
+        const lastSmall = state.last_move ? state.last_move.small : -1;
+        for (let b = 0; b < 9; b++) {
+            const sb = big.children[b];
+            sb.classList.remove('active', 'won-X', 'won-O', 'won-D');
+            const bw = state.big_board[b];
+            if (bw === 'X') sb.classList.add('won-X');
+            else if (bw === 'O') sb.classList.add('won-O');
+            else if (bw === 'D') sb.classList.add('won-D');
+            // Подсветка активного поля (куда обязан ходить current)
+            if (state.status === 'active'
+                && !bw
+                && (state.next_local === null || state.next_local === b)) {
+                sb.classList.add('active');
+            }
+            for (let s = 0; s < 9; s++) {
+                const c = sb.children[s];
+                const v = state.board[b][s];
+                c.textContent = v;
+                c.classList.remove('x-mark', 'o-mark', 'filled', 'disabled', 'last-move');
+                if (v === 'X') c.classList.add('x-mark', 'filled');
+                if (v === 'O') c.classList.add('o-mark', 'filled');
+                if (b === lastBig && s === lastSmall) c.classList.add('last-move');
+
+                // Доступность клика
+                const canClick = (
+                    state.status === 'active'
+                    && !v
+                    && !bw
+                    && mySide === state.current
+                    && (state.next_local === null || state.next_local === b)
+                );
+                if (!canClick) c.classList.add('disabled');
+            }
+        }
+
+        // Статус-баннер
+        banner.className = 'status-banner';
+        if (state.status === 'waiting') {
+            banner.classList.add('waiting');
+            banner.textContent = 'Ждём, пока соперник присоединится…';
+        } else if (state.status === 'finished') {
+            if (state.winner === 'X') {
+                banner.classList.add('win-x');
+                banner.textContent = 'Победа X — ' + (state.x_label || 'X');
+            } else if (state.winner === 'O') {
+                banner.classList.add('win-o');
+                banner.textContent = 'Победа O — ' + (state.o_label || 'O');
+            } else {
+                banner.classList.add('draw');
+                banner.textContent = 'Ничья';
+            }
+        } else {
+            banner.classList.add('info');
+            if (mySide === state.current) {
+                banner.textContent = 'Ваш ход (' + mySide + ')';
+            } else if (mySide) {
+                banner.textContent = 'Ход соперника…';
+            } else {
+                banner.textContent = 'Наблюдаете партию';
+            }
+        }
+    }
+
+    function onCellClick(e) {
+        if (e.currentTarget.classList.contains('disabled')) return;
+        const big_idx = parseInt(e.currentTarget.dataset.big, 10);
+        const small_idx = parseInt(e.currentTarget.dataset.small, 10);
+        flash.textContent = '';
+        e.currentTarget.classList.add('disabled');
+        fetch(MOVE_URL, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': csrf(),
+                'Content-Type': 'application/json',
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({big: big_idx, small: small_idx}),
+        }).then(r => r.json().then(d => ({status: r.status, body: d})))
+          .then(({status, body}) => {
+              if (status !== 200) {
+                  flash.textContent = body.error || 'Ошибка';
+                  poll();   // подтянем актуальное состояние
+                  return;
+              }
+              // Локально обновим состояние из ответа.
+              const merged = Object.assign({}, currentState, body, {my_side: mySide});
+              render(merged);
+          })
+          .catch(() => { flash.textContent = 'Сеть упала, повторите ход.'; });
+    }
+
+    function poll() {
+        fetch(STATE_URL, {credentials: 'same-origin'})
+            .then(r => r.json())
+            .then(state => render(state))
+            .catch(() => {});
+    }
+
+    buildBoard();
+    poll();
+    setInterval(poll, POLL_MS);
+})();
+</script>
+
+<script>
+function copyShare() {
+    const el = document.getElementById('share-url');
+    if (!el) return;
+    el.select();
+    el.setSelectionRange(0, 99999);
+    navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy'));
+    const btn = event.target;
+    const old = btn.textContent;
+    btn.textContent = 'Скопировано ✓';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+}
+</script>
+{% endblock %}
