@@ -102,51 +102,67 @@
 .status-banner.waiting { background: #fef3c7; color: #92400e; }
 .status-banner.info { background: #eff6ff; color: #1e40af; }
 
-/* Большая доска 3×3 из малых */
+/* Большая доска 3×3 из малых.
+   Ключевые правила, чтобы ничего не «скакало»:
+   - aspect-ratio только на корневой .big-board (один раз → весь грид квадратный);
+   - в гридах 3×3 явно задаём строки и колонки через 1fr (без aspect-ratio
+     внутри ячеек — иначе браузеры расходятся в расчётах);
+   - min-width/min-height: 0 на всех потомках грида — без этого содержимое
+     может «выпучивать» ячейку наружу;
+   - box-sizing: border-box везде — иначе padding выезжает за aspect-ratio;
+   - overflow: hidden + line-height: 1 у клеток — крупный текст X/O не
+     растягивает высоту;
+   - ::after с буквой-победителем тоже отрисовывается через inset:0 без
+     влияния на размер; font-size через clamp() — не вырывается за границы. */
 .big-board {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
+    grid-template-rows: repeat(3, 1fr);
+    gap: 10px;                 /* увеличено с 6 → 10 — место под обводки */
     background: var(--uttt-line);
-    padding: 6px;
+    padding: 10px;
     border-radius: .5rem;
     aspect-ratio: 1 / 1;
     width: 100%;
     max-width: 540px;
     margin: 0 auto;
+    box-sizing: border-box;
 }
 .small-board {
     background: #fff;
     display: grid;
     grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
     gap: 2px;
     padding: 2px;
     border-radius: .25rem;
     position: relative;
-    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 0;
 }
 .small-board.active { background: var(--uttt-active); }
-.small-board.won-X { background: var(--uttt-won-x); }
-.small-board.won-O { background: var(--uttt-won-o); }
-.small-board.won-D { background: var(--uttt-won-d); }
 
+/* Выигранное малое поле обозначается цветной обводкой через ::after.
+   ::after лежит абсолютно по периметру (inset:0) поверх клеток,
+   pointer-events:none — клик проходит на клетки под ним.
+   Не сдвигает сетку, не меняет размер. */
 .small-board.won-X::after,
 .small-board.won-O::after,
 .small-board.won-D::after {
-    content: attr(data-winner);
+    content: '';
     position: absolute;
     inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 4rem;
-    font-weight: 700;
+    border: 6px solid;
+    border-radius: .25rem;
     pointer-events: none;
-    opacity: .35;
+    box-sizing: border-box;
+    z-index: 2;
 }
-.small-board.won-X::after { color: var(--uttt-x); content: 'X'; }
-.small-board.won-O::after { color: var(--uttt-o); content: 'O'; }
-.small-board.won-D::after { color: #6b7280; content: '—'; }
+.small-board.won-X::after { border-color: var(--uttt-x); }
+.small-board.won-O::after { border-color: var(--uttt-o); }
+.small-board.won-D::after { border-color: #9ca3af; }
 
 .cell {
     background: #f9fafb;
@@ -156,10 +172,14 @@
     align-items: center;
     justify-content: center;
     font-weight: 700;
-    font-size: 1.25rem;
+    font-size: clamp(.85rem, 2.4vw, 1.35rem);
+    line-height: 1;
     cursor: pointer;
     user-select: none;
-    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 0;
 }
 .cell:hover:not(.filled):not(.disabled) { background: #e0e7ff; }
 .cell.disabled { cursor: not-allowed; background: #f9fafb; }

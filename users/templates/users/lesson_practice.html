@@ -307,7 +307,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
             </div>
 
             <!-- Сайдбар: список генераторов -->
-            <details class="practice-sidebar" open>
+            <details class="practice-sidebar">
                 <summary class="sidebar-summary">
                     Типы задач
                     <span class="count" id="active-count">
@@ -318,7 +318,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     {% if grouped_generators|length > 1 %}
                     {# Несколько групп — рендерим вложенный аккордеон. #}
                     {% for group_name, group_items in grouped_generators %}
-                    <details class="gen-group" open data-group="{{ group_name }}">
+                    <details class="gen-group" data-group="{{ group_name }}">
                         <summary class="gen-group-summary">
                             <span class="gen-group-title">{{ group_name }}</span>
                             <span class="gen-group-count">
@@ -724,6 +724,42 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
         })();
         </script>
 
+        {% endif %}
+
+        {# Навигация между уроками внутри одного модуля. #}
+        {% if prev_lesson or next_lesson %}
+        <div class="lesson-nav-bottom mt-5 mb-3 d-flex flex-wrap justify-content-between align-items-center gap-3">
+            {% if prev_lesson %}
+                <a href="{% url 'lesson_practice' prev_lesson.id %}"
+                   class="btn btn-outline-primary btn-lg flex-grow-1"
+                   style="max-width: 320px;">
+                    ← {{ prev_lesson.title }}
+                </a>
+            {% else %}
+                <span class="btn btn-outline-secondary btn-lg disabled flex-grow-1"
+                      style="max-width: 320px;">
+                    ← Это первое
+                </span>
+            {% endif %}
+
+            <a href="{% url 'course_detail' course.slug %}"
+               class="btn btn-link text-muted">
+                К содержанию курса
+            </a>
+
+            {% if next_lesson %}
+                <a href="{% url 'lesson_practice' next_lesson.id %}"
+                   class="btn btn-primary btn-lg flex-grow-1"
+                   style="max-width: 320px; text-align: right;">
+                    {{ next_lesson.title }} →
+                </a>
+            {% else %}
+                <span class="btn btn-outline-secondary btn-lg disabled flex-grow-1"
+                      style="max-width: 320px; text-align: right;">
+                    Это последнее →
+                </span>
+            {% endif %}
+        </div>
         {% endif %}
     </div>
 </section>

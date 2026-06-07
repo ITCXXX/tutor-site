@@ -1393,6 +1393,46 @@ def course_detail(request, slug):
         ).first()
         user_enrolled = enrollment is not None
     
+    # ── Контекст для блока «Создать вариант» (только для курсов с TaskGroup) ──
+    exam_constructor = None
+    block_1_5_module = course.modules.filter(title='Задания 1-5').first()
+    if block_1_5_module:
+        # Темы 1-5: уроки этого модуля, у которых есть TaskGroup
+        themes = []
+        for l in block_1_5_module.lessons.order_by('order'):
+            tg_count = l.task_groups.count()
+            if tg_count > 0:
+                themes.append({
+                    'lesson_id': l.id,
+                    'title': l.title,
+                    'tg_count': tg_count,
+                    'tg_ids': list(l.task_groups.values_list('id', flat=True)),
+                })
+
+        # Задания 6-19: уроки из модуля «Первая часть»
+        tasks = []
+        first_module = course.modules.filter(title='Первая часть').first()
+        if first_module:
+            for n in range(6, 20):
+                l = first_module.lessons.filter(title=f'Задание {n}').first()
+                if l is None:
+                    continue
+                assignments = list(l.assignments.order_by('order'))
+                if not assignments:
+                    continue
+                tasks.append({
+                    'n': n,
+                    'lesson_id': l.id,
+                    'assignments': [
+                        {'id': a.id, 'title': a.title or f'Прототип {a.order}',
+                         'order': a.order}
+                        for a in assignments
+                    ],
+                })
+
+        if themes or tasks:
+            exam_constructor = {'themes': themes, 'tasks': tasks}
+
     return render(request, 'users/course_detail.html', {
         'course': course,
         'modules': modules,
@@ -1403,6 +1443,7 @@ def course_detail(request, slug):
         'user_enrolled': user_enrolled,
         'enrollment': enrollment,
         'generator_lesson_ids': generator_lesson_ids,
+        'exam_constructor': exam_constructor,
     })
 
 @login_required

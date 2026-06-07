@@ -985,6 +985,97 @@ class GroupSubQuestion(models.Model):
         return f"{self.group.title} #{self.order} ({self.t_type or '?'})"
 
 
+class ExamVariant(models.Model):
+    """Сохранённый вариант экзамена ОГЭ, собранный конструктором.
+
+    Содержит ссылки на слоты задач (ExamVariantSlot). Для слотов 1-5 хранит
+    общий контекст (картинка/таблица) и ссылку на исходный TaskGroup.
+    Слоты 6-19 — отдельные задачи с зафиксированным условием и ответом.
+    """
+    KIND_FULL = 'full'
+    KIND_SHORT = 'short'
+    KIND_CHOICES = [
+        (KIND_FULL, 'Полный вариант (1–19)'),
+        (KIND_SHORT, 'Только задания 1–5'),
+    ]
+
+    code = models.CharField('Код варианта', max_length=10, unique=True, db_index=True)
+    owner = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='exam_variants', verbose_name='Создатель',
+    )
+    kind = models.CharField('Тип', max_length=10, choices=KIND_CHOICES, default=KIND_FULL)
+
+    # Общий контекст для слотов 1-5 (HTML — картинка/таблица).
+    block_1_5_context_html = models.TextField('Контекст 1–5', blank=True)
+    block_1_5_source = models.ForeignKey(
+        TaskGroup, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', verbose_name='Исходная группа 1–5',
+    )
+
+    created_at = models.DateTimeField('Создан', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Вариант экзамена'
+        verbose_name_plural = 'Варианты экзамена'
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['code'])]
+
+    def __str__(self):
+        return f'Вариант {self.code} ({self.get_kind_display()})'
+
+
+class ExamVariantSlot(models.Model):
+    """Один слот (задача) в варианте.
+
+    Хранит зафиксированное условие и правильный ответ — чтобы при возврате
+    к варианту по ссылке ученик видел те же задачи, даже если генераторы
+    эволюционировали.
+    """
+    variant = models.ForeignKey(
+        ExamVariant, on_delete=models.CASCADE, related_name='slots',
+        verbose_name='Вариант',
+    )
+    slot = models.IntegerField('Номер слота (1..19)')
+
+    question_html = models.TextField('HTML условия')
+    correct_answer = models.CharField('Правильный ответ', max_length=255)
+    # Для задач с выбором (single_choice): 4 варианта ответа.
+    # Пусто для decimal_input и TaskGroup-подзадач.
+    choices = models.JSONField('Варианты ответа (для single_choice)',
+                               default=list, blank=True)
+    # Тип ответа: text / single_choice — определяет рендер.
+    answer_type = models.CharField('Тип ответа', max_length=20, blank=True, default='')
+    # Номер задания ОГЭ (1..19). Для слотов 1-5 это и есть номер вопроса;
+    # для пользовательских вариантов с count>1 — номер задания, к которому
+    # относится этот слот.
+    task_number = models.IntegerField('Номер задания ОГЭ', null=True, blank=True)
+
+    sub_question = models.ForeignKey(
+        GroupSubQuestion, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', verbose_name='Источник: подзадача (для 1–5)',
+    )
+    assignment = models.ForeignKey(
+        Assignment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', verbose_name='Источник: задание (для 6–19)',
+    )
+
+    # Ответ ученика и результат
+    user_answer = models.CharField('Ответ ученика', max_length=255, blank=True)
+    is_correct = models.BooleanField('Верно', null=True, blank=True)
+    answered_at = models.DateTimeField('Время ответа', null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Слот варианта'
+        verbose_name_plural = 'Слоты вариантов'
+        unique_together = ('variant', 'slot')
+        ordering = ['slot']
+        indexes = [models.Index(fields=['variant', 'slot'])]
+
+    def __str__(self):
+        return f'{self.variant.code} #{self.slot}'
+
+
 class GroupAttempt(models.Model):
     """Попытка ученика по одной подзадаче TaskGroup."""
     student = models.ForeignKey(

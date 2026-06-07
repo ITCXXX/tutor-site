@@ -126,15 +126,6 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
                 <h1 class="display-5 fw-bold mb-3">{{ course.title }}</h1>
                 <p class="lead">{{ course.short_description }}</p>
 
-                <div class="d-flex flex-wrap gap-3 mb-4">
-                    <span class="badge bg-primary fs-6 p-2">
-                        {{ modules.count }} модулей
-                    </span>
-                    <span class="badge bg-success fs-6 p-2">
-                        {{ total_lessons }} уроков
-                    </span>
-                </div>
-
                 {% if course.full_description %}
                 <div class="mt-4">
                     <h5>О курсе</h5>
@@ -154,19 +145,16 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
             {% for module in modules %}
             <div class="accordion-item mb-3">
                 <h2 class="accordion-header" id="heading{{ module.id }}">
-                    <button class="accordion-button {% if not forloop.first %}collapsed{% endif %}"
+                    <button class="accordion-button collapsed"
                             type="button"
                             data-bs-toggle="collapse"
                             data-bs-target="#collapse{{ module.id }}">
-                        <div>
-                            <strong>Модуль {{ forloop.counter }}:</strong> {{ module.title }}
-                            <span class="badge bg-secondary ms-2">{{ module.lessons.count }} уроков</span>
-                        </div>
+                        <div>{{ module.title }}</div>
                     </button>
                 </h2>
 
                 <div id="collapse{{ module.id }}"
-                     class="accordion-collapse collapse {% if forloop.first %}show{% endif %}"
+                     class="accordion-collapse collapse"
                      data-bs-parent="#courseAccordion">
                     <div class="accordion-body">
                         {% if module.description %}
@@ -265,6 +253,263 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
         </div>
         {% endif %}
 
+        {% if exam_constructor %}
+        <!-- Конструктор вариантов экзамена -->
+        <details class="exam-constructor mt-5 mb-5">
+            <summary class="ec-top-summary">
+                <span class="ec-top-title">Создать вариант экзамена</span>
+                <span class="ec-top-hint">кликните, чтобы открыть настройки</span>
+            </summary>
+
+            <p class="text-muted mt-3" style="font-size:.92rem;">
+                По умолчанию каждое задание включено по одной задаче.
+                Поставьте 0, чтобы убрать задание из варианта. Можно ввести
+                любое число (с возвратом — повторы прототипов разрешены).
+                Раскрывающийся список «темы / прототипы» позволяет ограничить
+                источник задач.
+            </p>
+
+            <form method="post" action="{% url 'exam_constructor_build' %}"
+                  class="ec-form">
+                {% csrf_token %}
+
+                {% if exam_constructor.themes %}
+                <details class="ec-row">
+                    <summary class="ec-summary">
+                        <label class="ec-checkbox">
+                            <input type="checkbox" name="block_1_5_enabled"
+                                   checked id="block_1_5_enabled">
+                        </label>
+                        <span class="ec-title">Блок 1–5 (составная задача из 5 связанных вопросов)</span>
+                        <span class="ec-meta">{{ exam_constructor.themes|length }} тем</span>
+                    </summary>
+                    <div class="ec-body">
+                        <p class="text-muted" style="font-size:.85rem; margin-bottom:.5rem;">
+                            Выберите темы, из которых разрешено брать вариант:
+                        </p>
+                        {% for t in exam_constructor.themes %}
+                        {% for tg_id in t.tg_ids %}
+                            <input type="hidden" name="block_1_5_tg"
+                                   value="{{ tg_id }}"
+                                   data-theme="{{ t.lesson_id }}"
+                                   data-active="1">
+                        {% endfor %}
+                        <label class="ec-pill">
+                            <input type="checkbox" checked
+                                   class="ec-theme-toggle"
+                                   data-theme="{{ t.lesson_id }}">
+                            {{ t.title }}
+                            <span class="ec-pill-count">{{ t.tg_count }} групп</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </details>
+                {% endif %}
+
+                {% for task in exam_constructor.tasks %}
+                <details class="ec-row">
+                    <summary class="ec-summary">
+                        <span class="ec-title">Задание {{ task.n }}</span>
+                        <span class="ec-counter">
+                            <button type="button" class="ec-dec"
+                                    data-target="task_{{ task.n }}_count">−</button>
+                            <input type="number" min="0" max="50" value="1"
+                                   name="task_{{ task.n }}_count"
+                                   id="task_{{ task.n }}_count"
+                                   class="ec-count-input">
+                            <button type="button" class="ec-inc"
+                                    data-target="task_{{ task.n }}_count">+</button>
+                        </span>
+                        <span class="ec-meta">{{ task.assignments|length }} прот.</span>
+                    </summary>
+                    <div class="ec-body">
+                        <p class="text-muted" style="font-size:.85rem; margin-bottom:.5rem;">
+                            Из каких прототипов брать задачи:
+                        </p>
+                        {% for a in task.assignments %}
+                        <label class="ec-pill">
+                            <input type="checkbox" checked
+                                   name="task_{{ task.n }}_assignments"
+                                   value="{{ a.id }}">
+                            {{ a.order }}. {{ a.title|truncatechars:42 }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </details>
+                {% endfor %}
+
+                <div class="ec-submit-row">
+                    <button type="submit" class="btn btn-primary btn-lg px-5">
+                        Сгенерировать вариант
+                    </button>
+                    <span class="ec-summary-text text-muted ms-3" id="ec-total-hint">
+                        всего задач в варианте: <b id="ec-total">{{ exam_constructor.tasks|length|add:5 }}</b>
+                    </span>
+                </div>
+            </form>
+        </details>
+
+        <style>
+        .exam-constructor {
+            max-width: 860px;
+            margin-left: auto; margin-right: auto;
+            border: 1px solid var(--c-border, #e5e7eb);
+            border-radius: .5rem;
+            background: var(--c-surface, #fff);
+            padding: 0;
+        }
+        .exam-constructor[open] {
+            padding: 0 1.25rem 1.5rem;
+        }
+        .ec-top-summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            user-select: none;
+            background: var(--c-bg-soft, #f8f9fa);
+            border-radius: .5rem;
+        }
+        .exam-constructor[open] > .ec-top-summary {
+            border-bottom: 1px solid var(--c-border, #e5e7eb);
+            border-radius: .5rem .5rem 0 0;
+            margin: 0 -1.25rem 0 -1.25rem;
+            padding-left: 1.25rem;
+            padding-right: 1.25rem;
+        }
+        .ec-top-summary::-webkit-details-marker { display: none; }
+        .ec-top-summary::before {
+            content: "▸";
+            color: var(--c-text-muted, #6b7280);
+            font-size: 1rem;
+            transition: transform .15s;
+            flex: 0 0 auto;
+        }
+        .exam-constructor[open] > .ec-top-summary::before {
+            transform: rotate(90deg);
+        }
+        .ec-top-title {
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--c-text, #1f2937);
+            flex: 1;
+        }
+        .ec-top-hint {
+            font-size: .85rem;
+            color: var(--c-text-muted, #6b7280);
+        }
+        .exam-constructor[open] > .ec-top-summary .ec-top-hint { display: none; }
+        .ec-form { display: flex; flex-direction: column; gap: .5rem; }
+        .ec-row {
+            border: 1px solid var(--c-border, #e5e7eb);
+            border-radius: .375rem;
+            background: var(--c-surface, #fff);
+        }
+        .ec-row[open] { box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+        .ec-summary {
+            list-style: none;
+            cursor: pointer;
+            padding: .65rem .9rem;
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            user-select: none;
+            background: var(--c-bg-soft, #f8f9fa);
+            border-radius: .375rem;
+        }
+        .ec-summary::-webkit-details-marker { display: none; }
+        .ec-row[open] > .ec-summary {
+            border-bottom: 1px solid var(--c-border, #e5e7eb);
+            border-radius: .375rem .375rem 0 0;
+        }
+        .ec-title { font-weight: 600; color: var(--c-text, #1f2937); flex: 1; }
+        .ec-meta {
+            font-size: .8rem; color: var(--c-text-muted, #6b7280);
+        }
+        .ec-counter {
+            display: inline-flex; align-items: center; gap: .25rem;
+        }
+        .ec-counter button {
+            width: 28px; height: 28px;
+            border: 1px solid var(--c-border, #d1d5db);
+            background: #fff;
+            border-radius: .25rem; cursor: pointer;
+            font-weight: 700; line-height: 1;
+        }
+        .ec-counter button:hover { background: #eef2ff; }
+        .ec-count-input {
+            width: 56px; text-align: center;
+            border: 1px solid var(--c-border, #d1d5db);
+            border-radius: .25rem; padding: .25rem;
+        }
+        .ec-body { padding: .85rem .9rem; }
+        .ec-pill {
+            display: inline-flex; align-items: center; gap: .35rem;
+            padding: .25rem .65rem;
+            border: 1px solid var(--c-border, #e5e7eb);
+            border-radius: 999px;
+            font-size: .85rem;
+            background: #fff;
+            margin: 0 .35rem .35rem 0;
+            cursor: pointer;
+        }
+        .ec-pill input[type=checkbox] { accent-color: #2563eb; }
+        .ec-pill-count {
+            font-size: .7rem; color: var(--c-text-muted, #6b7280);
+            margin-left: .15rem;
+        }
+        .ec-submit-row { margin-top: 1rem; }
+        .ec-summary-text { font-size: .9rem; }
+        </style>
+
+        <script>
+        (function() {
+            // Кнопки +/− у счётчиков.
+            document.querySelectorAll('.ec-inc, .ec-dec').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const input = document.getElementById(btn.dataset.target);
+                    if (!input) return;
+                    let v = parseInt(input.value, 10) || 0;
+                    v += btn.classList.contains('ec-inc') ? 1 : -1;
+                    if (v < 0) v = 0;
+                    input.value = v;
+                    updateTotal();
+                });
+            });
+            // Темы блока 1-5: чекбокс темы переключает скрытые tg-input'ы.
+            document.querySelectorAll('.ec-theme-toggle').forEach(cb => {
+                cb.addEventListener('change', () => {
+                    const themeId = cb.dataset.theme;
+                    document.querySelectorAll(
+                        `input[name="block_1_5_tg"][data-theme="${themeId}"]`
+                    ).forEach(hid => {
+                        hid.disabled = !cb.checked;
+                    });
+                });
+            });
+            // Считаем общий итог: блок 1-5 (5 задач если включён) + сумма count'ов.
+            function updateTotal() {
+                let total = 0;
+                const blockEnabled = document.getElementById('block_1_5_enabled');
+                if (blockEnabled && blockEnabled.checked) total += 5;
+                document.querySelectorAll('.ec-count-input').forEach(inp => {
+                    total += Math.max(0, parseInt(inp.value, 10) || 0);
+                });
+                const el = document.getElementById('ec-total');
+                if (el) el.textContent = total;
+            }
+            document.querySelectorAll('.ec-count-input').forEach(inp => {
+                inp.addEventListener('input', updateTotal);
+            });
+            const be = document.getElementById('block_1_5_enabled');
+            if (be) be.addEventListener('change', updateTotal);
+            updateTotal();
+        })();
+        </script>
+        {% endif %}
+
         <!-- Кнопки действий -->
         <div class="text-center mt-5">
             {% if user.is_authenticated %}
@@ -276,11 +521,6 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
                                 Записаться на курс
                             </button>
                         </form>
-                    {% else %}
-                        <div class="alert alert-info">
-                            Вы уже записаны на этот курс.
-                            <a href="{% url 'student_courses' %}" class="alert-link">Перейти к изучению</a>
-                        </div>
                     {% endif %}
                 {% else %}
                     <a href="{% url 'login' %}" class="btn btn-primary btn-lg px-5">

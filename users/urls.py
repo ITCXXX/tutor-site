@@ -91,6 +91,12 @@ urlpatterns = [
     path('lesson/<int:lesson_id>/set-active-generators/',
          views_exam.lesson_set_active_generators, name='lesson_set_active_generators'),
 
+    # --- Конструктор вариантов ОГЭ ---
+    path('exam/constructor/build/', views_exam.exam_constructor_build, name='exam_constructor_build'),
+    path('exam/variant/<str:code>/', views_exam.exam_variant_detail, name='exam_variant_detail'),
+    path('exam/variant/<str:code>/check/<int:slot>/',
+         views_exam.exam_variant_check, name='exam_variant_check'),
+
     # --- ОГЭ №1-5: блочные группы (TaskGroup) ---
     path('task-group/<int:group_id>/',
          views_oge1_5.task_group_practice, name='task_group_practice'),

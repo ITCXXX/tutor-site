@@ -601,6 +601,15 @@ def lesson_practice(request, lesson_id):
         elif chosen.questions.exists():
             task_data = _task_data_from_db_question(chosen)
 
+    # Соседние уроки в этом же модуле — для навигации «предыдущее / следующее задание».
+    siblings = list(lesson.module.lessons.order_by('order', 'id'))
+    try:
+        idx = siblings.index(lesson)
+    except ValueError:
+        idx = 0
+    prev_lesson = siblings[idx - 1] if idx > 0 else None
+    next_lesson = siblings[idx + 1] if idx + 1 < len(siblings) else None
+
     return render(request, 'users/lesson_practice.html', {
         'lesson': lesson,
         'course': course,
@@ -613,6 +622,8 @@ def lesson_practice(request, lesson_id):
         'no_generators': False,
         'is_oge': (course.slug or '').startswith('oge'),
         'title': lesson.title,
+        'prev_lesson': prev_lesson,
+        'next_lesson': next_lesson,
     })
 
 
@@ -635,6 +646,274 @@ def lesson_set_active_generators(request, lesson_id):
     request.session[_lesson_session_key(lesson.id)] = cleaned
     request.session.modified = True
     return JsonResponse({'ok': True, 'active': cleaned})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Конструктор вариантов ОГЭ
+# ──────────────────────────────────────────────────────────────────────────────
+
+import random as _rnd
+import secrets as _secrets
+
+
+def _gen_variant_code(length=6):
+    """Короткий читаемый код варианта."""
+    import string
+    alphabet = ''.join(
+        c for c in (string.ascii_lowercase + string.digits) if c not in '01lo'
+    )
+    return ''.join(_secrets.choice(alphabet) for _ in range(length))
+
+
+def _generate_slot_from_assignment(a, owner):
+    """Возвращает dict с полями для ExamVariantSlot, сгенерированный из одного
+    Assignment'а (через problem_generator или БД-вопросы)."""
+    text = ''
+    correct = ''
+    choices = []
+
+    if a.problem_generator:
+        try:
+            data = a.problem_generator.execute_generator(student=owner)
+        except Exception:
+            data = {}
+        text = data.get('condition_text') or '(условие недоступно)'
+        correct = str(data.get('correct_answer', ''))
+        choices = list(data.get('choices') or [])
+    elif a.questions.exists():
+        from .models import TestQuestion
+        q = _rnd.choice(list(a.questions.prefetch_related('answers').all()))
+        text = q.question_text or ''
+        if a.answer_type == 'decimal_input':
+            opt = q.answers.filter(is_correct=True).first()
+            correct = (opt.text if opt else '0')
+        else:
+            opts = list(q.answers.order_by('order'))
+            correct_idx = next((i for i, o in enumerate(opts) if o.is_correct), 0)
+            # Сохраняем 1-based, чтобы в шаблоне ученик вводил 1..N.
+            correct = str(correct_idx + 1)
+            choices = [o.text for o in opts]
+    else:
+        text = '(нет источника задач)'
+
+    # Нормализация для single_choice: переводим 0-based индекс в 1-based,
+    # если генератор отдал индекс < len(choices). Если генератор уже 1-based
+    # или вернул нестандартное — не трогаем.
+    if a.answer_type == 'single_choice' and choices and correct:
+        try:
+            idx = int(correct)
+            if 0 <= idx < len(choices):
+                correct = str(idx + 1)
+        except ValueError:
+            pass
+
+    return {
+        'question_html': text,
+        'correct_answer': correct,
+        'choices': choices,
+        'answer_type': a.answer_type or '',
+        'assignment': a,
+    }
+
+
+def _build_variant(owner, kind, spec=None):
+    """Создаёт ExamVariant + слоты.
+
+    spec — None: «обычная» генерация (full/short).
+    spec — dict:
+        {
+            'block_1_5': {'enabled': True, 'tg_pool_ids': [...]},  # tg_pool пуст → все
+            'tasks': {
+                '6': {'count': 1, 'assignment_ids': [...]},   # пусто → все прототипы
+                '7': {'count': 2, 'assignment_ids': [...]},
+                ...
+            }
+        }
+    """
+    from .models import (
+        ExamVariant, ExamVariantSlot, TaskGroup, Lesson,
+    )
+
+    for _ in range(20):
+        code = _gen_variant_code()
+        if not ExamVariant.objects.filter(code=code).exists():
+            break
+
+    # Готовим параметры из spec / kind.
+    if spec is None:
+        block_enabled = True
+        block_tg_ids = None
+        tasks_spec = {}
+        if kind == ExamVariant.KIND_FULL:
+            tasks_spec = {n: {'count': 1, 'assignment_ids': None} for n in range(6, 20)}
+        # Для KIND_SHORT tasks_spec пустой.
+    else:
+        b = spec.get('block_1_5') or {}
+        block_enabled = bool(b.get('enabled', True))
+        block_tg_ids = b.get('tg_pool_ids') or None
+        tasks_spec = {}
+        for n_str, item in (spec.get('tasks') or {}).items():
+            try:
+                n = int(n_str)
+            except (TypeError, ValueError):
+                continue
+            count = int(item.get('count') or 0)
+            if count <= 0:
+                continue
+            aids = item.get('assignment_ids') or None
+            tasks_spec[n] = {'count': count, 'assignment_ids': aids}
+
+    # ── Блок 1-5 ─────────────────────────────────────────────────────────
+    block_1_5_context = ''
+    block_1_5_source = None
+    if block_enabled:
+        tg_qs = TaskGroup.objects.filter(lesson__module__title='Задания 1-5')
+        if block_tg_ids:
+            tg_qs = tg_qs.filter(id__in=block_tg_ids)
+        tg_pool = list(tg_qs)
+        if tg_pool:
+            tg = _rnd.choice(tg_pool)
+            block_1_5_context = tg.context_html
+            block_1_5_source = tg
+
+    variant = ExamVariant.objects.create(
+        code=code,
+        owner=owner if (owner and owner.is_authenticated) else None,
+        kind=kind,
+        block_1_5_context_html=block_1_5_context,
+        block_1_5_source=block_1_5_source,
+    )
+
+    next_slot = 1
+    if block_1_5_source:
+        for sq in block_1_5_source.sub_questions.order_by('order'):
+            ExamVariantSlot.objects.create(
+                variant=variant,
+                slot=next_slot,
+                task_number=next_slot,    # 1..5 — это номер задания ОГЭ
+                question_html=sq.question_html,
+                correct_answer=sq.correct_answer,
+                answer_type='decimal_input',
+                sub_question=sq,
+            )
+            next_slot += 1
+
+    # ── Задания 6-19 (по spec) ───────────────────────────────────────────
+    for n in sorted(tasks_spec.keys()):
+        cfg = tasks_spec[n]
+        lesson = Lesson.objects.filter(
+            module__course__slug='oge-maths',
+            title=f'Задание {n}',
+        ).first()
+        if lesson is None:
+            continue
+        aqs = lesson.assignments.all()
+        if cfg['assignment_ids']:
+            aqs = aqs.filter(id__in=cfg['assignment_ids'])
+        assignments = list(aqs)
+        if not assignments:
+            continue
+        # count повторов; каждый раз случайный Assignment (с возвратом).
+        for _i in range(cfg['count']):
+            a = _rnd.choice(assignments)
+            data = _generate_slot_from_assignment(a, owner)
+            ExamVariantSlot.objects.create(
+                variant=variant,
+                slot=next_slot,
+                task_number=n,
+                **data,
+            )
+            next_slot += 1
+
+    return variant
+
+
+@require_POST
+def exam_constructor_build(request):
+    """POST из формы конструктора на странице курса. Принимает spec и создаёт
+    вариант, редиректит на /exam/variant/<code>/.
+
+    Body — обычная form-data (НЕ JSON), потому что форма у нас простая HTML.
+    Поля:
+        block_1_5_enabled      'on' (чекбокс) — включать ли блок 1-5
+        block_1_5_tg[]         id выбранных тем (TaskGroup)
+        task_<N>_count         число задач для задания N (6..19)
+        task_<N>_assignments[] id выбранных прототипов задания N
+    """
+    from .models import ExamVariant
+    POST = request.POST
+
+    spec = {
+        'block_1_5': {
+            'enabled': bool(POST.get('block_1_5_enabled')),
+            'tg_pool_ids': [int(x) for x in POST.getlist('block_1_5_tg') if x.isdigit()],
+        },
+        'tasks': {},
+    }
+    for n in range(6, 20):
+        cnt_raw = (POST.get(f'task_{n}_count') or '').strip()
+        try:
+            cnt = max(0, int(cnt_raw))
+        except ValueError:
+            cnt = 0
+        if cnt == 0:
+            continue
+        aids = [int(x) for x in POST.getlist(f'task_{n}_assignments') if x.isdigit()]
+        spec['tasks'][str(n)] = {'count': cnt, 'assignment_ids': aids}
+
+    variant = _build_variant(
+        owner=request.user, kind=ExamVariant.KIND_FULL, spec=spec,
+    )
+    return redirect('exam_variant_detail', code=variant.code)
+
+
+def exam_variant_detail(request, code):
+    """Страница прохождения варианта."""
+    from .models import ExamVariant
+    variant = get_object_or_404(ExamVariant, code=code)
+    slots = list(variant.slots.order_by('slot'))
+    return render(request, 'users/exam_variant.html', {
+        'variant': variant,
+        'slots': slots,
+        'title': f'Вариант {variant.code}',
+    })
+
+
+@require_POST
+def exam_variant_check(request, code, slot):
+    """AJAX: проверка ответа в конкретном слоте варианта.
+
+    Body: {"answer": "..."}.
+    Ответ: {"correct": bool, "correct_answer": "..."}.
+    """
+    from .models import ExamVariant, ExamVariantSlot
+    from .answer_check import check_answer
+
+    variant = get_object_or_404(ExamVariant, code=code)
+    sl = get_object_or_404(ExamVariantSlot, variant=variant, slot=int(slot))
+
+    try:
+        data = json.loads(request.body or '{}')
+        ua = (data.get('answer') or '').strip()
+    except (ValueError, json.JSONDecodeError):
+        return JsonResponse({'error': 'bad json'}, status=400)
+    if not ua:
+        return JsonResponse({'error': 'empty'}, status=400)
+
+    is_correct, _ = check_answer(ua, sl.correct_answer)
+
+    sl.user_answer = ua
+    sl.is_correct = is_correct
+    sl.answered_at = timezone.now()
+    sl.save(update_fields=['user_answer', 'is_correct', 'answered_at'])
+
+    return JsonResponse({
+        'correct': bool(is_correct),
+        'correct_answer': sl.correct_answer,
+    })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def lesson_next_problem(request, lesson_id):

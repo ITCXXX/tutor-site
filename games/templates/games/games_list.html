@@ -163,7 +163,9 @@
             <a class="game-row" href="{% url 'games:detail' g.code %}">
                 <span class="code">{{ g.code }}</span>
                 <span class="vs">
-                    {% if g.x_player_id == user.id %}
+                    {% if g.is_local %}
+                        локальная партия
+                    {% elif g.x_player_id == user.id %}
                         вы (X) ×
                         {% if g.o_player %}
                             {{ g.o_player.gamer_nickname|default:g.o_player.username }} (O)
@@ -175,6 +177,9 @@
                         вы (O)
                     {% endif %}
                 </span>
+                {% if g.variant == 'long' %}
+                <span class="vs" style="font-size:.75rem; background:#ede9fe; color:#5b21b6; padding:.1rem .45rem; border-radius:.25rem;">долгая</span>
+                {% endif %}
                 <span class="status {{ g.status }}">{{ g.get_status_display }}</span>
             </a>
             {% endfor %}

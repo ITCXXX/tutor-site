@@ -1,0 +1,337 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.exam-wrap { max-width: 860px; }
+
+.exam-header {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: .5rem;
+    padding: .9rem 1.25rem;
+    margin-bottom: 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .75rem;
+}
+.exam-header .code {
+    font-family: monospace;
+    background: #f1f5f9;
+    padding: .2rem .55rem;
+    border-radius: .25rem;
+    font-weight: 600;
+}
+.exam-summary {
+    font-size: .92rem;
+    color: #4b5563;
+}
+.exam-summary b.correct { color: #10b981; }
+.exam-summary b.wrong { color: #dc2626; }
+
+.context-block {
+    background: #fffbeb;
+    border-left: 4px solid #f59e0b;
+    padding: 1rem 1.25rem;
+    border-radius: .35rem;
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+.context-block img,
+.context-block svg {
+    max-width: 100%;
+    height: auto;
+    margin-top: .75rem;
+}
+.context-block table {
+    border-collapse: collapse;
+    margin-top: .5rem;
+}
+.context-block th,
+.context-block td {
+    border: 1px solid #d4d4d4;
+    padding: .35rem .55rem;
+    text-align: center;
+}
+
+.slot {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: .5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+    transition: border-color .15s;
+}
+.slot.correct { border-color: #10b981; background: #f0fdf4; }
+.slot.wrong   { border-color: #dc2626; background: #fef2f2; }
+
+.slot-header {
+    display: flex;
+    align-items: baseline;
+    gap: .65rem;
+    margin-bottom: .6rem;
+}
+.slot-num {
+    font-weight: 700;
+    color: #1f2937;
+    font-size: 1.05rem;
+}
+.slot-status {
+    font-size: .85rem;
+    font-weight: 600;
+    margin-left: auto;
+}
+.slot-status.ok { color: #10b981; }
+.slot-status.no { color: #dc2626; }
+
+.slot-question {
+    color: #374151;
+    line-height: 1.55;
+    margin-bottom: .65rem;
+}
+.slot-question img,
+.slot-question svg { max-width: 100%; height: auto; }
+.slot-question table {
+    border-collapse: collapse;
+    margin: .5rem 0;
+}
+.slot-question th,
+.slot-question td {
+    border: 1px solid #d4d4d4;
+    padding: .3rem .55rem;
+    text-align: center;
+}
+
+.answer-row {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex-wrap: wrap;
+}
+.answer-row label { color: #6b7280; font-size: .9rem; }
+.answer-row input[type=text] {
+    padding: .4rem .65rem;
+    border: 1px solid #cbd5e1;
+    border-radius: .3rem;
+    font-size: 1rem;
+    width: 180px;
+    font-family: monospace;
+}
+.answer-row input[type=text]:disabled {
+    background: #f9fafb;
+    color: #4b5563;
+}
+.correct-hint {
+    color: #dc2626;
+    font-size: .9rem;
+    margin-left: .5rem;
+}
+
+.slot-choices {
+    margin: .65rem 0 .85rem 1.25rem;
+    padding-left: 0;
+}
+.slot-choices li {
+    padding: .25rem .5rem;
+    border-radius: .2rem;
+}
+.slot-choices li:hover { background: #f8fafc; }
+.correct-hint .label { color: #6b7280; }
+.correct-hint .ans {
+    background: #fee2e2;
+    padding: .1rem .45rem;
+    border-radius: .2rem;
+    font-family: monospace;
+    font-weight: 600;
+}
+
+.back-link {
+    display: inline-block;
+    color: #6b7280;
+    text-decoration: none;
+    font-size: .9rem;
+    margin-bottom: 1rem;
+}
+.back-link:hover { color: #1f2937; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px; padding-bottom: 3rem;">
+    <div class="container exam-wrap">
+        <a href="{% url 'course_detail' 'oge-maths' %}" class="back-link">← К курсу</a>
+
+        <div class="exam-header">
+            <div>
+                <b>Вариант</b>
+                <span class="code">{{ variant.code }}</span>
+                <span class="text-muted ms-2">{{ variant.get_kind_display }}</span>
+            </div>
+            <div class="exam-summary" id="summary">
+                Решено: <b class="correct" id="cnt-correct">0</b> /
+                <b id="cnt-total">{{ slots|length }}</b>
+                · Ошибок: <b class="wrong" id="cnt-wrong">0</b>
+            </div>
+        </div>
+
+        {% if variant.block_1_5_context_html %}
+        <div class="context-block">
+            <b>Условие для задач 1–5</b>
+            <div class="mt-2">{{ variant.block_1_5_context_html|safe }}</div>
+        </div>
+        {% endif %}
+
+        {% for slot in slots %}
+        <div class="slot"
+             id="slot-{{ slot.slot }}"
+             data-slot="{{ slot.slot }}"
+             data-correct-answer="{{ slot.correct_answer }}"
+             {% if slot.is_correct is not None %}
+                data-already="{{ slot.user_answer }}"
+                data-is-correct="{{ slot.is_correct|yesno:'1,0' }}"
+             {% endif %}>
+            <div class="slot-header">
+                <span class="slot-num">Задание {{ slot.slot }}</span>
+                <span class="slot-status"></span>
+            </div>
+            <div class="slot-question">{{ slot.question_html|safe }}</div>
+
+            {% if slot.choices %}
+            <ol class="slot-choices">
+                {% for ch in slot.choices %}
+                <li>{{ ch|safe }}</li>
+                {% endfor %}
+            </ol>
+            <div class="answer-row">
+                <label>Номер ответа (1–{{ slot.choices|length }}):</label>
+                <input type="text" class="answer-input"
+                       data-slot="{{ slot.slot }}"
+                       data-choice-mode="1"
+                       value="{{ slot.user_answer }}"
+                       inputmode="numeric"
+                       style="width: 90px;"
+                       {% if slot.is_correct is not None %}disabled{% endif %}>
+                <span class="correct-hint" style="display:none;">
+                    <span class="label">правильный:</span>
+                    <span class="ans"></span>
+                </span>
+            </div>
+            {% else %}
+            <div class="answer-row">
+                <label>Ответ:</label>
+                <input type="text" class="answer-input"
+                       data-slot="{{ slot.slot }}"
+                       value="{{ slot.user_answer }}"
+                       {% if slot.is_correct is not None %}disabled{% endif %}>
+                <span class="correct-hint" style="display:none;">
+                    <span class="label">правильный:</span>
+                    <span class="ans"></span>
+                </span>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<form style="display:none;">{% csrf_token %}</form>
+
+<script>
+(function() {
+    const CHECK_URL_TPL = "{% url 'exam_variant_check' variant.code 0 %}";
+    function urlFor(slot) {
+        return CHECK_URL_TPL.replace(/\/0\/?$/, '/' + slot + '/');
+    }
+
+    function csrf() {
+        const m = document.cookie.match(/csrftoken=([^;]+)/);
+        return m ? m[1] : '';
+    }
+
+    const total = document.getElementById('cnt-total');
+    const cntCorrect = document.getElementById('cnt-correct');
+    const cntWrong = document.getElementById('cnt-wrong');
+
+    function recountSummary() {
+        let c = 0, w = 0;
+        document.querySelectorAll('.slot').forEach(el => {
+            if (el.classList.contains('correct')) c++;
+            else if (el.classList.contains('wrong')) w++;
+        });
+        cntCorrect.textContent = c;
+        cntWrong.textContent = w;
+    }
+
+    function applyResult(slotEl, isCorrect, correctAns) {
+        const status = slotEl.querySelector('.slot-status');
+        const input = slotEl.querySelector('.answer-input');
+        input.disabled = true;
+        if (isCorrect) {
+            slotEl.classList.add('correct');
+            status.textContent = '✓ верно';
+            status.classList.add('ok');
+        } else {
+            slotEl.classList.add('wrong');
+            status.textContent = '✗ ошибка';
+            status.classList.add('no');
+            const hint = slotEl.querySelector('.correct-hint');
+            hint.querySelector('.ans').textContent = correctAns;
+            hint.style.display = '';
+        }
+        recountSummary();
+    }
+
+    // Восстановление уже отвеченных слотов после перезагрузки
+    document.querySelectorAll('.slot').forEach(el => {
+        if (el.dataset.alreadyHas !== undefined) return;
+        if (el.dataset.isCorrect === '1') {
+            applyResult(el, true, '');
+        } else if (el.dataset.isCorrect === '0') {
+            applyResult(el, false, el.dataset.correctAnswer);
+        }
+    });
+
+    function submitAnswer(slotEl) {
+        const input = slotEl.querySelector('.answer-input');
+        const val = (input.value || '').trim();
+        if (!val || input.disabled) return;
+        input.disabled = true;
+        fetch(urlFor(slotEl.dataset.slot), {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': csrf(),
+                'Content-Type': 'application/json',
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({answer: val}),
+        }).then(r => r.json()).then(data => {
+            if (data.error) {
+                input.disabled = false;
+                return;
+            }
+            applyResult(slotEl, data.correct, data.correct_answer);
+        }).catch(() => { input.disabled = false; });
+    }
+
+    document.querySelectorAll('.answer-input').forEach(inp => {
+        inp.addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const slotEl = inp.closest('.slot');
+                submitAnswer(slotEl);
+            }
+        });
+        inp.addEventListener('blur', () => {
+            const slotEl = inp.closest('.slot');
+            submitAnswer(slotEl);
+        });
+    });
+
+    if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
+})();
+</script>
+{% endblock %}
