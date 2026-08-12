@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Сложные дороги — финал + новые мосты</title>
+<style>
+  body {
+    font-family: Cambria, Georgia, serif;
+    background: #f5f5f5;
+    color: #1f1f1f;
+    padding: 30px;
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 1.8rem 0 1.2rem; }
+  h2 { font-size: 1rem; margin: 0 0 .8rem; }
+  .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: .5rem;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  .card p { color: #6b7280; font-size: .85rem; margin-top: .5rem; }
+  svg { display: block; margin: 0 auto; background: #fff; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+  }
+  .grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 900px) { .grid, .grid-4 { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Финальные варианты (выбранные ранее)</h1>
+<div class="grid-4">
+  <div class="card"><h2>Шоссе — В</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" width="200" height="60" id="hw_fin"></svg>
+    <p>Тёмно-серая широкая полоса + белая пунктирная разметка по центру.</p>
+  </div>
+  <div class="card"><h2>Просёлочная — Г</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" width="200" height="40" id="rd_fin"></svg>
+    <p>Частая штриховка dasharray «3,2», толщина 2.</p>
+  </div>
+  <div class="card"><h2>Река — Б</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120" width="200" height="120" id="rv_fin"></svg>
+    <p>Двойной изгиб снизу-слева → верх-справа, толщина 4.</p>
+  </div>
+  <div class="card"><h2>Конюшня — Г</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 100" width="140" height="100" id="st_fin"></svg>
+    <p>Прямоугольник + надпись «конюшня».</p>
+  </div>
+</div>
+
+<h1>Мост — 5 новых вариантов (скобки ВДОЛЬ шоссе по бокам)</h1>
+<div class="grid">
+  <div class="card"><h2>А — П-образные, параллельные шоссе</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 90" width="180" height="90" id="br1"></svg>
+    <p>Сверху ⌐──¬ открыта вниз, снизу ⌐──¬ открыта вверх — обнимают шоссе.</p></div>
+  <div class="card"><h2>Б — короткие угловые засечки</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 90" width="180" height="90" id="br2"></svg>
+    <p>Четыре уголка по углам моста — только засечки, без перекладин.</p></div>
+  <div class="card"><h2>В — две длинные горизонтальные линии</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 90" width="180" height="90" id="br3"></svg>
+    <p>Сплошные перила сверху и снизу + засечки на концах.</p></div>
+  <div class="card"><h2>Г — толстые перила</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 90" width="180" height="90" id="br4"></svg>
+    <p>Толстые чёрные перила сверху и снизу с короткими засечками.</p></div>
+  <div class="card"><h2>Д — двойные скобки</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 90" width="180" height="90" id="br5"></svg>
+    <p>По две тонкие линии сверху и снизу с засечками — как сдвоенные перила.</p></div>
+</div>
+
+<script>
+function E(id) { return document.getElementById(id); }
+function N(svg, tag, attrs = {}, text) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  svg.appendChild(n);
+  return n;
+}
+
+// =================================================
+//   ФИНАЛЬНЫЕ ВЫБРАННЫЕ
+// =================================================
+
+// Шоссе В
+(function() {
+  const s = E('hw_fin');
+  N(s, 'rect', {x: 10, y: 18, width: 180, height: 24, fill: '#888'});
+  N(s, 'line', {x1: 10, y1: 18, x2: 190, y2: 18, stroke: '#000', 'stroke-width': 1});
+  N(s, 'line', {x1: 10, y1: 42, x2: 190, y2: 42, stroke: '#000', 'stroke-width': 1});
+  N(s, 'line', {x1: 10, y1: 30, x2: 190, y2: 30, stroke: '#fff', 'stroke-width': 1.5, 'stroke-dasharray': '8,5'});
+})();
+
+// Просёлочная Г
+(function() {
+  const s = E('rd_fin');
+  N(s, 'line', {x1: 10, y1: 20, x2: 190, y2: 20,
+    stroke: '#000', 'stroke-width': 2, 'stroke-dasharray': '3,2'});
+})();
+
+// Река Б
+(function() {
+  const s = E('rv_fin');
+  N(s, 'path', {
+    d: 'M 10,110 C 40,80 30,60 70,55 C 110,50 100,30 140,40 C 175,48 175,20 195,15',
+    fill: 'none', stroke: '#000', 'stroke-width': 4, 'stroke-linecap': 'round',
+  });
+})();
+
+// Конюшня Г
+(function() {
+  const s = E('st_fin');
+  N(s, 'rect', {x: 20, y: 30, width: 100, height: 55, fill: '#fff', stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'text', {
+    x: 70, y: 65, 'text-anchor': 'middle',
+    'font-family': 'Cambria, Georgia, serif', 'font-style': 'italic', 'font-size': 14, fill: '#000',
+  }, 'конюшня');
+})();
+
+// =================================================
+//   МОСТЫ (скобки вдоль шоссе)
+// =================================================
+
+// Общий «фон» шоссе для каждой карточки моста
+function drawHwBg(s) {
+  // Тёмно-серая полоса шоссе по центру (вариант В)
+  N(s, 'rect', {x: 10, y: 36, width: 160, height: 18, fill: '#888'});
+  N(s, 'line', {x1: 10, y1: 36, x2: 170, y2: 36, stroke: '#000', 'stroke-width': 1});
+  N(s, 'line', {x1: 10, y1: 54, x2: 170, y2: 54, stroke: '#000', 'stroke-width': 1});
+  N(s, 'line', {x1: 10, y1: 45, x2: 170, y2: 45, stroke: '#fff', 'stroke-width': 1.2, 'stroke-dasharray': '6,4'});
+}
+
+// Координаты моста: длина по x от 60 до 120 (60 пикс — это «протяжённость» моста)
+const X1 = 60, X2 = 120;
+const Y_TOP = 30, Y_BOT = 60;   // верх и низ скобок
+const Y_HW_TOP = 36, Y_HW_BOT = 54;
+
+// А — П-образные скобки параллельно шоссе (открыты внутрь к шоссе)
+(function() {
+  const s = E('br1');
+  drawHwBg(s);
+  // Верхняя скобка: засечки вниз → длинная горизонталь → засечки вниз
+  N(s, 'path', {
+    d: `M ${X1},${Y_HW_TOP} L ${X1},${Y_TOP} L ${X2},${Y_TOP} L ${X2},${Y_HW_TOP}`,
+    fill: 'none', stroke: '#000', 'stroke-width': 2.5, 'stroke-linejoin': 'miter',
+  });
+  // Нижняя скобка: засечки вверх → длинная горизонталь → засечки вверх
+  N(s, 'path', {
+    d: `M ${X1},${Y_HW_BOT} L ${X1},${Y_BOT} L ${X2},${Y_BOT} L ${X2},${Y_HW_BOT}`,
+    fill: 'none', stroke: '#000', 'stroke-width': 2.5, 'stroke-linejoin': 'miter',
+  });
+})();
+
+// Б — только короткие угловые засечки (без перекладин)
+(function() {
+  const s = E('br2');
+  drawHwBg(s);
+  const len = 6;
+  // 4 уголка
+  N(s, 'path', {d: `M ${X1},${Y_HW_TOP} L ${X1},${Y_HW_TOP - len} L ${X1 + len},${Y_HW_TOP - len}`,
+    fill: 'none', stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'path', {d: `M ${X2},${Y_HW_TOP} L ${X2},${Y_HW_TOP - len} L ${X2 - len},${Y_HW_TOP - len}`,
+    fill: 'none', stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'path', {d: `M ${X1},${Y_HW_BOT} L ${X1},${Y_HW_BOT + len} L ${X1 + len},${Y_HW_BOT + len}`,
+    fill: 'none', stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'path', {d: `M ${X2},${Y_HW_BOT} L ${X2},${Y_HW_BOT + len} L ${X2 - len},${Y_HW_BOT + len}`,
+    fill: 'none', stroke: '#000', 'stroke-width': 2.5});
+})();
+
+// В — две длинные горизонтальные линии (перила) + короткие засечки на концах
+(function() {
+  const s = E('br3');
+  drawHwBg(s);
+  // Перила
+  N(s, 'line', {x1: X1, y1: Y_TOP, x2: X2, y2: Y_TOP, stroke: '#000', 'stroke-width': 2});
+  N(s, 'line', {x1: X1, y1: Y_BOT, x2: X2, y2: Y_BOT, stroke: '#000', 'stroke-width': 2});
+  // Засечки на концах
+  N(s, 'line', {x1: X1, y1: Y_TOP, x2: X1, y2: Y_HW_TOP, stroke: '#000', 'stroke-width': 2});
+  N(s, 'line', {x1: X2, y1: Y_TOP, x2: X2, y2: Y_HW_TOP, stroke: '#000', 'stroke-width': 2});
+  N(s, 'line', {x1: X1, y1: Y_BOT, x2: X1, y2: Y_HW_BOT, stroke: '#000', 'stroke-width': 2});
+  N(s, 'line', {x1: X2, y1: Y_BOT, x2: X2, y2: Y_HW_BOT, stroke: '#000', 'stroke-width': 2});
+})();
+
+// Г — толстые перила
+(function() {
+  const s = E('br4');
+  drawHwBg(s);
+  // Толстые перила сверху и снизу
+  N(s, 'line', {x1: X1, y1: Y_TOP, x2: X2, y2: Y_TOP, stroke: '#000', 'stroke-width': 4});
+  N(s, 'line', {x1: X1, y1: Y_BOT, x2: X2, y2: Y_BOT, stroke: '#000', 'stroke-width': 4});
+  // Короткие засечки на концах
+  N(s, 'line', {x1: X1, y1: Y_TOP, x2: X1, y2: Y_HW_TOP, stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'line', {x1: X2, y1: Y_TOP, x2: X2, y2: Y_HW_TOP, stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'line', {x1: X1, y1: Y_BOT, x2: X1, y2: Y_HW_BOT, stroke: '#000', 'stroke-width': 2.5});
+  N(s, 'line', {x1: X2, y1: Y_BOT, x2: X2, y2: Y_HW_BOT, stroke: '#000', 'stroke-width': 2.5});
+})();
+
+// Д — двойные перила
+(function() {
+  const s = E('br5');
+  drawHwBg(s);
+  // Внешние перила
+  N(s, 'line', {x1: X1, y1: Y_TOP, x2: X2, y2: Y_TOP, stroke: '#000', 'stroke-width': 1.6});
+  N(s, 'line', {x1: X1, y1: Y_BOT, x2: X2, y2: Y_BOT, stroke: '#000', 'stroke-width': 1.6});
+  // Внутренние перила (ближе к шоссе)
+  N(s, 'line', {x1: X1, y1: Y_TOP + 3, x2: X2, y2: Y_TOP + 3, stroke: '#000', 'stroke-width': 1.4});
+  N(s, 'line', {x1: X1, y1: Y_BOT - 3, x2: X2, y2: Y_BOT - 3, stroke: '#000', 'stroke-width': 1.4});
+  // Засечки на концах
+  N(s, 'line', {x1: X1, y1: Y_TOP, x2: X1, y2: Y_HW_TOP, stroke: '#000', 'stroke-width': 1.6});
+  N(s, 'line', {x1: X2, y1: Y_TOP, x2: X2, y2: Y_HW_TOP, stroke: '#000', 'stroke-width': 1.6});
+  N(s, 'line', {x1: X1, y1: Y_BOT, x2: X1, y2: Y_HW_BOT, stroke: '#000', 'stroke-width': 1.6});
+  N(s, 'line', {x1: X2, y1: Y_BOT, x2: X2, y2: Y_HW_BOT, stroke: '#000', 'stroke-width': 1.6});
+})();
+</script>
+
+</body>
+</html>

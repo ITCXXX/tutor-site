@@ -1,33 +1,56 @@
 # users/views.py
-from django.db.models import Avg, Count, Q, Max
+from django.db.models import Avg, Count, Q, Max, F
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from .models import (
     Course, Module, Lesson, Assignment,
     Enrollment, User, StudentProfile, LessonProgress,
+    StudentProgress, ManualMark, StudentSubmission, HomeworkAttempt,
+    TestQuestion, AnswerOption, ProblemGenerator, GeneratedProblem,
 )
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, Http404
 from urllib.parse import quote
 from django.views.decorators.http import require_POST
+from .decorators import student_required, teacher_required
+from .answer_check import check_answer
+from django.db import transaction
+from django.utils.text import slugify
 import json
+import re
+from collections import defaultdict
 
 def home_view(request):
     """Главная страница"""
     return render(request, 'users/home.html')
 
 def login_view(request):
-    """Страница входа"""
-    if request.user.is_authenticated:
-        if request.user.role == 'student':
+    """Страница входа.
+
+    Уважает ?next= (с проверкой url_has_allowed_host_and_scheme от open-redirect):
+    ученик по ссылке на вариант → /login/?next=/exam/variant/CODE/ → после входа
+    возвращается на вариант, а не на дашборд.
+    """
+    next_url = request.POST.get('next') or request.GET.get('next') or ''
+
+    def _redirect_after(user):
+        if next_url and url_has_allowed_host_and_scheme(
+            next_url, allowed_hosts={request.get_host()},
+            require_https=request.is_secure(),
+        ):
+            return redirect(next_url)
+        if user.role == 'student':
             return redirect('student_dashboard')
-        elif request.user.role == 'teacher':
+        elif user.role == 'teacher':
             return redirect('teacher_dashboard')
-        else:
-            return redirect('/admin/')
-    
+        return redirect('/admin/')
+
+    if request.user.is_authenticated:
+        return _redirect_after(request.user)
+
     error = None
     if request.method == 'POST':
         username = request.POST.get('username')
@@ -39,68 +62,74 @@ def login_view(request):
             if user is not None:
                 if user.is_active:
                     login(request, user)
-                    if user.role == 'student':
-                        return redirect('student_dashboard')
-                    elif user.role == 'teacher':
-                        return redirect('teacher_dashboard')
-                    else:
-                        return redirect('/admin/')
+                    return _redirect_after(user)
                 else:
                     error = "Аккаунт отключен. Обратитесь к администратору."
             else:
                 error = "Неверный логин или пароль"
-    
-    return render(request, 'users/login.html', {'error': error})
+
+    return render(request, 'users/login.html', {'error': error, 'next': next_url})
 
 # users/views.py - функция student_dashboard
 
-@login_required
+def course_progress_percent(student, course):
+    """Процент прохождения курса учеником (0..100), считается на лету.
+
+    По заданиям: manual-курс — по отметкам преподавателя (ManualMark),
+    иначе — по авто-прогрессу (StudentProgress). Если заданий в курсе нет
+    (курс-методичка) — по прочитанным теоретическим урокам (LessonProgress).
+    Опора на поле Enrollment.progress убрана: оно нигде не заполнялось → 0%.
+    """
+
+    assignment_ids = list(
+        Assignment.objects.filter(lesson__module__course=course)
+        .values_list('id', flat=True)
+    )
+    total = len(assignment_ids)
+    if total:
+        if course.is_manual:
+            done = ManualMark.objects.filter(
+                student=student, assignment_id__in=assignment_ids, is_completed=True,
+            ).count()
+        else:
+            done = StudentProgress.objects.filter(
+                student=student, assignment_id__in=assignment_ids, is_completed=True,
+            ).count()
+        return round(done / total * 100)
+
+    # Курс без заданий — считаем по прочитанным теоретическим урокам.
+    lesson_ids = list(
+        Lesson.objects.filter(module__course=course).values_list('id', flat=True)
+    )
+    if not lesson_ids:
+        return 0
+    read = LessonProgress.objects.filter(
+        student=student, lesson_id__in=lesson_ids, is_read=True,
+    ).count()
+    return round(read / len(lesson_ids) * 100)
+
+
+@student_required
 def student_dashboard(request):
     """Личный кабинет ученика."""
-    if request.user.role != 'student':
-        messages.error(request, 'Доступ только для учеников')
-        return redirect('login')
 
-    from .models import StudentProgress, ManualMark
-
-    enrollments = Enrollment.objects.filter(student=request.user, is_active=True)
-    course_ids = list(enrollments.values_list('course_id', flat=True))
-
-    # Все задания из курсов, на которые записан ученик
-    all_assignments = Assignment.objects.filter(
-        lesson__module__course_id__in=course_ids
-    )
-    total_assignments = all_assignments.count()
-
-    # Сколько заданий ученик закрыл: auto-курсы по StudentProgress, manual — по ManualMark
-    auto_done = StudentProgress.objects.filter(
-        student=request.user,
-        assignment__in=all_assignments,
-        is_completed=True,
-    ).count()
-    manual_done = ManualMark.objects.filter(
-        student=request.user,
-        assignment__in=all_assignments,
-        is_completed=True,
-    ).count()
-    completed_assignments = auto_done + manual_done
-
-    progress_pct = (
-        round(completed_assignments / total_assignments * 100)
-        if total_assignments else 0
-    )
+    enrollments = (Enrollment.objects
+                   .filter(student=request.user, is_active=True)
+                   .select_related('course'))
+    percents = [course_progress_percent(request.user, e.course) for e in enrollments]
+    courses_count = len(percents)
+    progress_pct = round(sum(percents) / courses_count) if courses_count else 0
 
     return render(request, 'users/dashboard.html', {
         'user': request.user,
         'title': 'Личный кабинет',
-        'total_assignments': total_assignments,
-        'completed_assignments': completed_assignments,
+        'has_courses': courses_count > 0,
+        'courses_count': courses_count,
         'progress_pct': progress_pct,
     })
 
 def _teacher_course_stats(teacher, course):
     """Считает (n_students_from_teacher, avg_progress_percent) для курса."""
-    from .models import StudentProgress, Assignment, ManualMark
     students = User.objects.filter(student_profile__teacher=teacher,
                                    enrollments__course=course,
                                    enrollments__is_active=True).distinct()
@@ -120,7 +149,9 @@ def _teacher_course_stats(teacher, course):
         avg = (completed / max_completable * 100) if max_completable else 0
     else:
         # Сумма correct_attempts/required по всем (student, assignment) парам, делим на n*len(assign)
-        records = StudentProgress.objects.filter(student__in=students, assignment__in=assignments)
+        records = (StudentProgress.objects
+                   .filter(student__in=students, assignment__in=assignments)
+                   .select_related('assignment'))
         total_pct = 0
         for r in records:
             req = r.assignment.required_correct or 1
@@ -130,44 +161,102 @@ def _teacher_course_stats(teacher, course):
     return n, round(avg, 1)
 
 
-@login_required
+@teacher_required
 def teacher_dashboard(request):
     """Кабинет преподавателя: список учеников + список курсов."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import StudentProfile, StudentProgress, Course, ManualMark
-    profiles = (StudentProfile.objects
-                .filter(teacher=request.user)
-                .select_related('user')
-                .order_by('display_name'))
+    profiles = list(StudentProfile.objects
+                    .filter(teacher=request.user)
+                    .select_related('user')
+                    .order_by('display_name'))
+    student_ids = [p.user_id for p in profiles]
+
+    # ── Прогресс учеников считаем БАТЧЕМ (без N+1) ────────────────────────
+    enrollments = list(Enrollment.objects.filter(
+        student_id__in=student_ids, is_active=True).select_related('course'))
+    courses_of = defaultdict(list)          # student_id -> [Course]
+    course_ids = set()
+    for e in enrollments:
+        courses_of[e.student_id].append(e.course)
+        course_ids.add(e.course_id)
+    student_course_ids = {sid: {c.id for c in cs} for sid, cs in courses_of.items()}
+
+    # course_id -> [assignment_id]; assignment_id -> course_id
+    course_assignments = defaultdict(list)
+    assignment_course = {}
+    for aid, cid in Assignment.objects.filter(
+            lesson__module__course_id__in=course_ids
+    ).values_list('id', 'lesson__module__course_id'):
+        course_assignments[cid].append(aid)
+        assignment_course[aid] = cid
+    all_assignment_ids = list(assignment_course)
+
+    # course_id -> число уроков (для курсов без заданий); lesson_id -> course_id
+    course_lesson_count = defaultdict(int)
+    lesson_course = {}
+    for lid, cid in Lesson.objects.filter(
+            module__course_id__in=course_ids).values_list('id', 'module__course_id'):
+        course_lesson_count[cid] += 1
+        lesson_course[lid] = cid
+
+    # StudentProgress: завершённые по (ученик, курс)
+    sp_done = defaultdict(int)          # (student_id, course_id) -> completed
+    for sid, aid in StudentProgress.objects.filter(
+            student_id__in=student_ids, assignment_id__in=all_assignment_ids,
+            is_completed=True,
+    ).values_list('student_id', 'assignment_id'):
+        sp_done[(sid, assignment_course[aid])] += 1
+
+    # ManualMark: завершённые по (ученик, курс)
+    mm_done = defaultdict(int)
+    for sid, aid in ManualMark.objects.filter(
+            student_id__in=student_ids, is_completed=True,
+            assignment_id__in=all_assignment_ids
+    ).values_list('student_id', 'assignment_id'):
+        mm_done[(sid, assignment_course[aid])] += 1
+
+    # LessonProgress: прочитанные уроки по (ученик, курс) — для курсов без заданий
+    lp_read = defaultdict(int)
+    for sid, lid in LessonProgress.objects.filter(
+            student_id__in=student_ids, is_read=True,
+            lesson_id__in=list(lesson_course)
+    ).values_list('student_id', 'lesson_id'):
+        lp_read[(sid, lesson_course[lid])] += 1
+
+    def _percent(sid, course):
+        aids = course_assignments.get(course.id, [])
+        if aids:
+            done = (mm_done if course.is_manual else sp_done).get((sid, course.id), 0)
+            return round(done / len(aids) * 100)
+        n_lessons = course_lesson_count.get(course.id, 0)
+        if not n_lessons:
+            return 0
+        return round(lp_read.get((sid, course.id), 0) / n_lessons * 100)
 
     students_data = []
     total_enrollments = 0
     for sp in profiles:
-        student = sp.user
-        enrollments = Enrollment.objects.filter(student=student, is_active=True)
-        total_courses = enrollments.count()
-        avg_course = enrollments.aggregate(avg=Avg('progress'))['avg'] or 0
-
-        progress_records = StudentProgress.objects.filter(student=student)
-        total_proto = progress_records.count()
-        completed_proto = progress_records.filter(is_completed=True).count()
-
-        # Дополнительно учитываем manual-marks
-        manual_done = ManualMark.objects.filter(student=student, is_completed=True).count()
-
+        sid = sp.user_id
+        my_courses = courses_of.get(sid, [])
+        total_courses = len(my_courses)
+        _percents = [_percent(sid, c) for c in my_courses]
+        avg_course = round(sum(_percents) / len(_percents), 1) if _percents else 0
+        # «Решено X из Y»: числитель и знаменатель — по одному набору (все задания
+        # курсов ученика), иначе счётчик мог давать >100% или вид N/0.
+        total_proto = 0
+        completed_proto = 0
+        for c in my_courses:
+            total_proto += len(course_assignments.get(c.id, []))
+            completed_proto += (mm_done if c.is_manual else sp_done).get((sid, c.id), 0)
         total_enrollments += total_courses
-
         students_data.append({
             'profile': sp,
-            'student': student,
+            'student': sp.user,
             'total_courses': total_courses,
-            'average_progress': round(avg_course, 1),
+            'average_progress': avg_course,
             'total_proto': total_proto,
-            'completed_proto': completed_proto + manual_done,
-            'last_login': student.last_login,
+            'completed_proto': completed_proto,
+            'last_login': sp.user.last_login,
         })
 
     # Auto-курсы: показываются те, на которые записаны ученики преподавателя.
@@ -176,15 +265,14 @@ def teacher_dashboard(request):
     teacher_students = User.objects.filter(student_profile__teacher=request.user)
 
     auto_qs = (Course.objects
-               .filter(tracking_mode=Course.TRACKING_AUTO,
+               .filter(is_public=True,
                        enrollments__student__in=teacher_students,
                        enrollments__is_active=True)
                .distinct()
                .order_by('order', 'title'))
-    # «Мои курсы» преподавателя — задачники + курсы с ДЗ, владелец = он
+    # «Мои курсы» преподавателя — все курсы, где владелец = он (включая приватные auto)
     owned_qs = (Course.objects
-                .filter(tracking_mode__in=[Course.TRACKING_MANUAL, Course.TRACKING_HOMEWORK],
-                        owner=request.user)
+                .filter(owner=request.user)
                 .order_by('order', 'title'))
 
     courses_data = []
@@ -198,9 +286,11 @@ def teacher_dashboard(request):
         owned_data.append({
             'course': c, 'students_count': n, 'avg_progress': avg,
             'is_homework': c.is_homework,
+            'kind': ('ОГЭ-курс' if c.tracking_mode == Course.TRACKING_AUTO
+                     else 'курс с ДЗ' if c.is_homework else 'задачник'),
+            'is_oge': c.tracking_mode == Course.TRACKING_AUTO,
         })
 
-    from .models import StudentSubmission
     pending_count = StudentSubmission.objects.filter(
         status=StudentSubmission.STATUS_PENDING,
         student__student_profile__teacher=request.user,
@@ -218,18 +308,17 @@ def teacher_dashboard(request):
     })
 
 
-@login_required
+@teacher_required
 def teacher_course_progress(request, slug):
     """Сводка по курсу для преподавателя.
     Auto-курсы: таблица «ученик × прототип» с процентами.
     Manual-курсы: список учеников с прогрессом и ссылкой на «отметки»."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import (Course, StudentProgress, Assignment, ManualMark)
 
     course = get_object_or_404(Course, slug=slug)
+    if not course.is_public and course.owner_id != request.user.id:
+        messages.error(request, 'Это не ваш курс.')
+        return redirect('teacher_dashboard')
     teacher_students = (User.objects
                         .filter(student_profile__teacher=request.user)
                         .select_related('student_profile')
@@ -295,7 +384,6 @@ def _build_paragraphs(course, student):
     """Собирает список параграфов (Lessons) с задачами и состоянием прогресса
     для конкретного ученика. Работает и для auto, и для manual курсов.
     Каждая задача получает атрибуты is_done, percent, submission (для review-задач)."""
-    from .models import ManualMark, StudentProgress, StudentSubmission
 
     lessons = []
     for module in course.modules.all().order_by('order'):
@@ -316,7 +404,7 @@ def _build_paragraphs(course, student):
     else:
         progress = StudentProgress.objects.filter(
             student=student, assignment_id__in=course_assignment_ids,
-        )
+        ).select_related('assignment')
         done_set = {p.assignment_id for p in progress if p.is_completed}
         percent_map = {}
         for p in progress:
@@ -339,6 +427,10 @@ def _build_paragraphs(course, student):
             t.is_done = t.id in done_set
             t.percent = percent_map.get(t.id, 0)
             t.submission = submissions_map.get(t.id)
+            # Если title — короткое число (как в задачнике Поповой), показать его
+            # в квадратике вместо forloop.counter → получится сквозная нумерация.
+            title_clean = (t.title or '').strip()
+            t.display_num = title_clean if title_clean.isdigit() and len(title_clean) <= 5 else None
         done_count = sum(1 for t in tasks if t.is_done)
         total_done += done_count
         total_all += len(tasks)
@@ -353,18 +445,17 @@ def _build_paragraphs(course, student):
     return paragraphs, total_done, total_all
 
 
-@login_required
+@teacher_required
 def teacher_student_workbook(request, slug, student_id):
     """Раскрывающиеся параграфы с задачами для одного ученика.
     Для manual-курсов — клик по квадратику переключает отметку.
     Для auto-курсов — квадратики отображают прогресс по прототипу (read-only)."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import Course
 
     course = get_object_or_404(Course, slug=slug)
+    if not course.is_public and course.owner_id != request.user.id:
+        messages.error(request, 'Это не ваш курс.')
+        return redirect('teacher_dashboard')
     student = get_object_or_404(
         User,
         id=student_id,
@@ -389,15 +480,11 @@ def teacher_student_workbook(request, slug, student_id):
     })
 
 
-@login_required
+@student_required
 def student_course_progress(request, slug):
     """Прогресс ученика по курсу — то же UI, что и у преподавателя,
     но для текущего ученика и read-only."""
-    if request.user.role != 'student':
-        messages.error(request, 'Доступ только для учеников')
-        return redirect('login')
 
-    from .models import Course
 
     course = get_object_or_404(Course, slug=slug)
     enrollment = Enrollment.objects.filter(
@@ -421,16 +508,12 @@ def student_course_progress(request, slug):
     })
 
 
-@login_required
+@teacher_required
+@require_POST
 def teacher_toggle_mark(request):
     """AJAX-endpoint: переключить отметку `решено / не решено` на (student, assignment).
     POST: student_id, assignment_id."""
-    if request.user.role != 'teacher':
-        return JsonResponse({'error': 'forbidden'}, status=403)
-    if request.method != 'POST':
-        return JsonResponse({'error': 'method'}, status=405)
 
-    from .models import ManualMark, Assignment, StudentProfile, Course
 
     student_id = request.POST.get('student_id')
     assignment_id = request.POST.get('assignment_id')
@@ -459,15 +542,11 @@ def teacher_toggle_mark(request):
     return JsonResponse({'is_completed': mark.is_completed})
 
 
-@login_required
+@teacher_required
 def teacher_student_detail(request, student_id):
     """Карточка ученика для преподавателя: заметки, история ответов на ДЗ,
     список курсов, кнопка-ссылка на запись на курсы."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import HomeworkAttempt
 
     student = get_object_or_404(
         User, id=student_id, role='student',
@@ -504,14 +583,10 @@ def teacher_student_detail(request, student_id):
     })
 
 
-@login_required
+@teacher_required
 def teacher_student_new(request):
     """Создание нового ученика прямо из ЛК преподавателя."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import StudentProfile
 
     if request.method == 'POST':
         username = (request.POST.get('username') or '').strip()
@@ -537,17 +612,18 @@ def teacher_student_new(request):
                 'form_data': request.POST,
             })
 
-        student = User.objects.create_user(
-            username=username, password=password, role='student',
-        )
-        StudentProfile.objects.create(
-            user=student,
-            display_name=display_name,
-            real_name=real_name,
-            grade=grade,
-            notes=notes,
-            teacher=request.user,
-        )
+        with transaction.atomic():
+            student = User.objects.create_user(
+                username=username, password=password, role='student',
+            )
+            StudentProfile.objects.create(
+                user=student,
+                display_name=display_name,
+                real_name=real_name,
+                grade=grade,
+                notes=notes,
+                teacher=request.user,
+            )
         messages.success(request, f'Ученик «{display_name}» создан и привязан к вам.')
         return redirect('teacher_student_enroll', student_id=student.id)
 
@@ -557,13 +633,10 @@ def teacher_student_new(request):
     })
 
 
-@login_required
+@teacher_required
 def teacher_student_enroll(request, student_id):
     """Запись/отписка ученика на курсы. Видны курсы, доступные преподавателю
     (общие + его задачники)."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     student = get_object_or_404(
         User, id=student_id, role='student',
@@ -572,13 +645,11 @@ def teacher_student_enroll(request, student_id):
 
     # Список курсов: все активные общие + авторские курсы этого преподавателя
     available_courses = Course.objects.filter(is_active=True).filter(
-        Q(tracking_mode=Course.TRACKING_AUTO)
-        | Q(tracking_mode__in=[Course.TRACKING_MANUAL, Course.TRACKING_HOMEWORK],
-            owner=request.user)
+        Q(is_public=True) | Q(owner=request.user)
     ).order_by('order', 'title')
 
     if request.method == 'POST':
-        selected_ids = set(map(int, request.POST.getlist('courses')))
+        selected_ids = {int(x) for x in request.POST.getlist('courses') if x.isdigit()}
         for c in available_courses:
             enrolled = Enrollment.objects.filter(student=student, course=c).first()
             if c.id in selected_ids:
@@ -609,15 +680,10 @@ def teacher_student_enroll(request, student_id):
     })
 
 
-@login_required
+@teacher_required
 def teacher_workbook_new(request):
     """Создание нового задачника (manual-курса) с модулями и диапазонами номеров задач."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from django.utils.text import slugify
-    import re
 
     if request.method == 'POST':
         title = (request.POST.get('title') or '').strip()
@@ -646,6 +712,8 @@ def teacher_workbook_new(request):
                     errors.append(f'Модуль «{name}»: начальный номер ({s}) больше конечного ({e}).')
                 elif s < 1:
                     errors.append(f'Модуль «{name}»: номер должен быть ≥ 1.')
+                elif e - s + 1 > 1000:
+                    errors.append(f'Модуль «{name}»: слишком большой диапазон ({e - s + 1} задач), максимум 1000.')
                 else:
                     modules_data.append((name, s, e))
             except (TypeError, ValueError):
@@ -711,15 +779,10 @@ def teacher_workbook_new(request):
     })
 
 
-@login_required
+@teacher_required
 def teacher_hw_course_new(request):
     """Создание нового курса с ДЗ. Под одного ученика — основная история."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from django.utils.text import slugify
-    import re
 
     # Список учеников этого преподавателя — для поля «Кому курс»
     student_profiles = (
@@ -787,22 +850,428 @@ def teacher_hw_course_new(request):
     })
 
 
+@teacher_required
+def teacher_oge_course_new(request):
+    """Создание своего закрытого курса ОГЭ-типа.
+
+    Движок — auto (ученики решают на сайте, автопроверка, как в общем ОГЭ),
+    но курс приватный: is_public=False, owner=препод. Виден только владельцу и
+    записанным им ученикам. Наполнение темами/задачами — отдельно (Фаза 2)."""
+    if request.method == 'POST':
+        title = (request.POST.get('title') or '').strip()
+        description = (request.POST.get('description') or '').strip()
+
+        if not title:
+            messages.error(request, 'Введите название курса.')
+            return render(request, 'users/teacher_oge_course_new.html', {
+                'title': 'Новый ОГЭ-курс',
+                'form_data': request.POST,
+            })
+
+        base_slug = slugify(title, allow_unicode=False) or 'oge-course'
+        slug = base_slug
+        n = 2
+        while Course.objects.filter(slug=slug).exists():
+            slug = f'{base_slug}-{request.user.id}-{n}'
+            n += 1
+
+        course = Course.objects.create(
+            title=title,
+            slug=slug,
+            short_description=description[:300],
+            tracking_mode=Course.TRACKING_AUTO,
+            is_public=False,
+            owner=request.user,
+            is_active=True,
+            order=100,
+        )
+        # Стартовый модуль-обёртка, внутрь Фаза 2 будет класть темы (Lesson)
+        Module.objects.create(course=course, order=1, title='Задания')
+
+        messages.success(
+            request, f'Курс «{title}» создан. Добавьте темы и задачи.')
+        return redirect('teacher_course_edit', slug=course.slug)
+
+    return render(request, 'users/teacher_oge_course_new.html', {
+        'title': 'Новый ОГЭ-курс',
+        'form_data': {},
+    })
+
+
+# ─── Управление своим ОГЭ-курсом (Фаза 2A): темы и прототипы ────────────────
+
+@teacher_required
+def teacher_course_edit(request, slug):
+    """Страница управления курсом: темы (Lesson) и прототипы (Assignment)."""
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    module = course.modules.order_by('order').first()
+    if module is None:
+        module = Module.objects.create(course=course, order=1, title='Задания')
+
+    themes = []
+    for lesson in module.lessons.order_by('order'):
+        prototypes = list(
+            lesson.assignments.annotate(q_count=Count('questions')).order_by('order')
+        )
+        themes.append({'lesson': lesson, 'prototypes': prototypes})
+
+    return render(request, 'users/teacher_course_edit.html', {
+        'title': f'Управление: {course.title}',
+        'course': course,
+        'themes': themes,
+    })
+
+
+@teacher_required
+@require_POST
+def teacher_theme_new(request, slug):
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    module = course.modules.order_by('order').first()
+    if module is None:
+        module = Module.objects.create(course=course, order=1, title='Задания')
+    name = (request.POST.get('name') or '').strip()
+    if name:
+        nxt = (module.lessons.aggregate(m=Max('order'))['m'] or 0) + 1
+        Lesson.objects.create(module=module, order=nxt, title=name,
+                              lesson_type='practice')
+        messages.success(request, f'Тема «{name}» добавлена.')
+    else:
+        messages.error(request, 'Введите название темы.')
+    return redirect('teacher_course_edit', slug=slug)
+
+
+@teacher_required
+@require_POST
+def teacher_theme_rename(request, slug, lesson_id):
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
+    name = (request.POST.get('name') or '').strip()
+    if name:
+        lesson.title = name
+        lesson.save(update_fields=['title'])
+    return redirect('teacher_course_edit', slug=slug)
+
+
+@teacher_required
+@require_POST
+def teacher_theme_delete(request, slug, lesson_id):
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
+    lesson.delete()
+    messages.success(request, 'Тема удалена.')
+    return redirect('teacher_course_edit', slug=slug)
+
+
+def _prototype_question_indices(request):
+    """Индексы вопросов из POST (поля q{i}_text) в порядке возрастания."""
+    return sorted({
+        int(m.group(1))
+        for k in request.POST
+        for m in [re.match(r'q(\d+)_text$', k)] if m
+    })
+
+
+def _parse_prototype_questions(request):
+    """Разбор формы прототипа: числовые и single_choice вопросы.
+
+    Поля индексированы по номеру вопроса i: q{i}_text, q{i}_type,
+    q{i}_answer (число), q{i}_opt1..4 + q{i}_correct (выбор),
+    файл q{i}_image, q{i}_existing_image, q{i}_image_clear.
+    Возвращает (questions, errors).
+    """
+    questions, errors = [], []
+    pos = 0
+    for i in _prototype_question_indices(request):
+        text = (request.POST.get(f'q{i}_text') or '').strip()
+        qtype = request.POST.get(f'q{i}_type') or 'number'
+        answer = (request.POST.get(f'q{i}_answer') or '').strip()
+        opts = [(request.POST.get(f'q{i}_opt{j}') or '').strip() for j in range(1, 5)]
+        if not text and not answer and not any(opts):
+            continue  # полностью пустая строка
+        pos += 1
+        if not text:
+            errors.append(f'Вопрос {pos}: укажите текст.')
+            continue
+        common = {
+            'text': text,
+            'qid': (request.POST.get(f'q{i}_qid') or '').strip(),
+            'image': request.FILES.get(f'q{i}_image'),
+            'existing_image': (request.POST.get(f'q{i}_existing_image') or '').strip(),
+            'clear_image': request.POST.get(f'q{i}_image_clear') == '1',
+        }
+        if qtype == 'single_choice':
+            if len([o for o in opts if o]) < 2:
+                errors.append(f'Вопрос {pos}: нужно минимум 2 варианта ответа.')
+                continue
+            correct = request.POST.get(f'q{i}_correct') or ''
+            if not (correct.isdigit() and 1 <= int(correct) <= 4):
+                errors.append(f'Вопрос {pos}: отметьте правильный вариант.')
+                continue
+            correct = int(correct)
+            if not opts[correct - 1]:
+                errors.append(f'Вопрос {pos}: правильный вариант не заполнен.')
+                continue
+            questions.append({**common, 'type': 'single_choice',
+                              'options': opts, 'correct': correct})
+        else:
+            if not answer:
+                errors.append(f'Вопрос {pos}: укажите числовой ответ.')
+                continue
+            questions.append({**common, 'type': 'number', 'answer': answer})
+    if not questions and not errors:
+        errors.append('Добавьте хотя бы один вопрос.')
+    return questions, errors
+
+
+def _prototype_rows(assignment=None, request=None):
+    """Строки для формы: из POST (при ошибке) или из существующего прототипа (edit GET)."""
+    rows = []
+    if request is not None:
+        for i in _prototype_question_indices(request):
+            rows.append({
+                'qid': request.POST.get(f'q{i}_qid', ''),
+                'text': request.POST.get(f'q{i}_text', ''),
+                'type': request.POST.get(f'q{i}_type', 'number'),
+                'answer': request.POST.get(f'q{i}_answer', ''),
+                'options': [request.POST.get(f'q{i}_opt{j}', '') for j in range(1, 5)],
+                'correct': request.POST.get(f'q{i}_correct', ''),
+                'existing_image': request.POST.get(f'q{i}_existing_image', ''),
+            })
+    elif assignment is not None:
+        for q in assignment.questions.order_by('order'):
+            opts = list(q.answers.order_by('order'))
+            if q.question_type == 'single_choice':
+                options = ([o.text for o in opts] + ['', '', '', ''])[:4]
+                correct = next((str(k) for k, o in enumerate(opts, 1) if o.is_correct), '')
+                rows.append({'qid': q.id, 'text': q.question_text, 'type': 'single_choice',
+                             'answer': '', 'options': options, 'correct': correct,
+                             'existing_image': q.image.name if q.image else ''})
+            else:
+                rows.append({'qid': q.id, 'text': q.question_text, 'type': 'number',
+                             'answer': (opts[0].text if opts else ''),
+                             'options': ['', '', '', ''], 'correct': '',
+                             'existing_image': q.image.name if q.image else ''})
+    if not rows:
+        rows = [{'qid': '', 'text': '', 'type': 'number', 'answer': '',
+                 'options': ['', '', '', ''], 'correct': '', 'existing_image': ''}]
+    return rows
+
+
+def _save_prototype_questions(assignment, questions):
+    """Сохраняет вопросы прототипа с сопоставлением по id (скрытое поле q{i}_qid).
+
+    Существующий вопрос обновляется по своему id (прогресс/картинка сохраняются,
+    даже при удалении/перестановке в середине), новый (без id) — создаётся,
+    отсутствующий в форме — удаляется вместе со своим прогрессом (GeneratedProblem
+    по db_question_id), чтобы solved_count не превышал число вопросов.
+    """
+    existing_by_id = {q.id: q for q in assignment.questions.all()}
+    kept_ids = set()
+    for i, q in enumerate(questions, 1):
+        qid = q.get('qid') or ''
+        tq = existing_by_id.get(int(qid)) if qid.isdigit() else None
+        if tq is None:
+            tq = TestQuestion(assignment=assignment)
+        tq.question_text = q['text']
+        tq.question_type = q['type']
+        tq.order = i
+        if q.get('image'):
+            tq.image = q['image']
+        elif q.get('clear_image'):
+            tq.image = None
+        tq.save()
+        kept_ids.add(tq.id)
+        tq.answers.all().delete()  # на варианты ничто не ссылается — пересоздаём
+        if q['type'] == 'single_choice':
+            order = 0
+            for j, opt in enumerate(q['options'], 1):  # j — слот 1..4
+                if not opt.strip():
+                    continue
+                order += 1
+                AnswerOption.objects.create(
+                    question=tq, text=opt, is_correct=(j == q['correct']), order=order)
+        else:
+            AnswerOption.objects.create(
+                question=tq, text=q['answer'], is_correct=True, order=1)
+    # Удаляем вопросы, которых больше нет в форме, вместе с их прогрессом
+    for qid, tq in existing_by_id.items():
+        if qid not in kept_ids:
+            GeneratedProblem.objects.filter(
+                assignment=assignment, task_data__db_question_id=qid).delete()
+            tq.delete()
+
+
+@teacher_required
+def teacher_prototype_new(request, slug, lesson_id):
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
+    if request.method == 'POST':
+        title = (request.POST.get('title') or '').strip()
+        questions, errors = _parse_prototype_questions(request)
+        if not title:
+            errors.insert(0, 'Введите название прототипа.')
+        if errors:
+            for e in errors:
+                messages.error(request, e)
+            return render(request, 'users/teacher_prototype_edit.html', {
+                'title': 'Новый прототип', 'course': course, 'lesson': lesson,
+                'form_data': request.POST, 'rows': _prototype_rows(request=request),
+                'is_edit': False,
+            })
+        nxt = (lesson.assignments.aggregate(m=Max('order'))['m'] or 0) + 1
+        assignment = Assignment.objects.create(
+            lesson=lesson, order=nxt, title=title,
+            answer_type='decimal_input', required_correct=len(questions),
+        )
+        _save_prototype_questions(assignment, questions)
+        messages.success(request, f'Прототип «{title}» добавлен ({len(questions)} вопр.).')
+        return redirect('teacher_course_edit', slug=slug)
+
+    return render(request, 'users/teacher_prototype_edit.html', {
+        'title': 'Новый прототип', 'course': course, 'lesson': lesson,
+        'form_data': {}, 'rows': _prototype_rows(), 'is_edit': False,
+    })
+
+
+@teacher_required
+def teacher_prototype_edit(request, slug, lesson_id, assignment_id):
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
+    assignment = get_object_or_404(Assignment, id=assignment_id, lesson=lesson)
+    if request.method == 'POST':
+        title = (request.POST.get('title') or '').strip()
+        questions, errors = _parse_prototype_questions(request)
+        if not title:
+            errors.insert(0, 'Введите название прототипа.')
+        if errors:
+            for e in errors:
+                messages.error(request, e)
+            return render(request, 'users/teacher_prototype_edit.html', {
+                'title': 'Редактирование прототипа', 'course': course, 'lesson': lesson,
+                'form_data': request.POST, 'rows': _prototype_rows(request=request),
+                'is_edit': True, 'assignment': assignment,
+            })
+        assignment.title = title
+        assignment.required_correct = len(questions)
+        assignment.save(update_fields=['title', 'required_correct'])
+        _save_prototype_questions(assignment, questions)
+        messages.success(request, 'Прототип обновлён.')
+        return redirect('teacher_course_edit', slug=slug)
+
+    return render(request, 'users/teacher_prototype_edit.html', {
+        'title': 'Редактирование прототипа', 'course': course, 'lesson': lesson,
+        'form_data': {'title': assignment.title},
+        'rows': _prototype_rows(assignment=assignment),
+        'is_edit': True, 'assignment': assignment,
+    })
+
+
+@teacher_required
+@require_POST
+def teacher_prototype_delete(request, slug, lesson_id, assignment_id):
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    assignment = get_object_or_404(
+        Assignment, id=assignment_id, lesson__module__course=course)
+    assignment.delete()
+    messages.success(request, 'Прототип удалён.')
+    return redirect('teacher_course_edit', slug=slug)
+
+
+@teacher_required
+def teacher_prototype_from_bank(request, slug, lesson_id):
+    """Добавить в тему прототипы из общего банка генераторов.
+
+    Создаёт Assignment, ссылающийся на существующий ProblemGenerator (генератор
+    общий, не копируется). answer_type/required берём у существующего задания
+    с этим генератором (иначе — дефолты)."""
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
+
+    if request.method == 'POST':
+        ids = [int(x) for x in request.POST.getlist('generators') if x.isdigit()]
+        nxt = (lesson.assignments.aggregate(m=Max('order'))['m'] or 0)
+        created = 0
+        for g in ProblemGenerator.objects.filter(id__in=ids):
+            nxt += 1
+            src = Assignment.objects.filter(problem_generator=g).first()
+            Assignment.objects.create(
+                lesson=lesson, order=nxt, title=(g.name or 'Прототип')[:200],
+                problem_generator=g,
+                answer_type=(src.answer_type if src else 'decimal_input'),
+                required_correct=(src.required_correct if src else 10),
+            )
+            created += 1
+        if created:
+            messages.success(request, f'Добавлено прототипов из банка: {created}.')
+        else:
+            messages.error(request, 'Ничего не выбрано.')
+        return redirect('teacher_course_edit', slug=slug)
+
+    q = (request.GET.get('q') or '').strip()
+    gens = ProblemGenerator.objects.all().order_by('name')
+    if q:
+        gens = gens.filter(name__icontains=q)
+    return render(request, 'users/teacher_prototype_bank.html', {
+        'title': 'Добавить из банка', 'course': course, 'lesson': lesson,
+        'generators': list(gens[:200]), 'q': q,
+        'total': ProblemGenerator.objects.count(),
+    })
+
+
+@teacher_required
+def teacher_course_enroll(request, slug):
+    """Управление составом курса: записать/отписать своих учеников (course-centric)."""
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    profiles = (StudentProfile.objects.filter(teacher=request.user)
+                .select_related('user').order_by('display_name'))
+    if request.method == 'POST':
+        selected = {int(x) for x in request.POST.getlist('students') if x.isdigit()}
+        for sp in profiles:
+            student = sp.user
+            enr = Enrollment.objects.filter(course=course, student=student).first()
+            if student.id in selected:
+                if enr:
+                    if not enr.is_active:
+                        enr.is_active = True
+                        enr.save(update_fields=['is_active'])
+                else:
+                    Enrollment.objects.create(
+                        course=course, student=student, is_active=True)
+            elif enr and enr.is_active:
+                enr.is_active = False
+                enr.save(update_fields=['is_active'])
+        messages.success(request, 'Список учеников курса обновлён.')
+        return redirect('teacher_course_edit', slug=slug)
+
+    enrolled_ids = set(
+        Enrollment.objects.filter(course=course, is_active=True)
+        .values_list('student_id', flat=True)
+    )
+    students = [{'profile': p, 'enrolled': p.user_id in enrolled_ids} for p in profiles]
+    return render(request, 'users/teacher_course_enroll.html', {
+        'title': f'Ученики курса: {course.title}',
+        'course': course, 'students': students,
+    })
+
+
 def _parse_hw_tasks(request):
     """Собрать (tasks, errors, raw_rows) из POST.
     tasks — список словарей {condition, answer, image, remove_image, requires_review}.
     raw_rows — то же для повторного рендера формы при ошибке."""
     conditions = request.POST.getlist('task_condition')
     answers = request.POST.getlist('task_answer')
+    ids = request.POST.getlist('task_id')
     tasks = []
     errors = []
     raw_rows = []
     for i, (cond, ans) in enumerate(zip(conditions, answers)):
         cond = cond.strip()
         ans = ans.strip()
+        tid = ids[i] if i < len(ids) else ''
         requires_review = request.POST.get(f'task_review_{i}') == '1'
         raw_rows.append({
             'condition': cond, 'answer': ans, 'image_url': '',
-            'requires_review': requires_review,
+            'requires_review': requires_review, 'task_id': tid,
         })
         idx_human = i + 1
         if not cond and not ans and not requires_review:
@@ -819,19 +1288,16 @@ def _parse_hw_tasks(request):
         tasks.append({
             'condition': cond, 'answer': ans if not requires_review else '',
             'image': image, 'remove_image': remove_image,
-            'requires_review': requires_review,
+            'requires_review': requires_review, 'id': tid,
         })
     if not tasks and not errors:
         errors.append('Добавьте хотя бы одну задачу.')
     return tasks, errors, raw_rows
 
 
-@login_required
+@teacher_required
 def teacher_hw_lesson_new(request, slug):
     """Добавить новое ДЗ (Lesson + Assignments) в курс с ДЗ."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     course = get_object_or_404(
         Course, slug=slug,
@@ -858,6 +1324,7 @@ def teacher_hw_lesson_new(request, slug):
                 'form_data': request.POST,
                 'rows': raw_rows or [{'condition': '', 'answer': '', 'image_url': '', 'requires_review': False}],
                 'is_edit': False,
+                'lesson_intro': '',
             })
 
         next_order = (wrapper.lessons.aggregate(m=Max('order'))['m'] or 0) + 1
@@ -885,16 +1352,14 @@ def teacher_hw_lesson_new(request, slug):
         'form_data': {},
         'rows': [{'condition': '', 'answer': '', 'image_url': '', 'requires_review': False} for _ in range(3)],
         'is_edit': False,
+        'lesson_intro': '',
     })
 
 
-@login_required
+@teacher_required
 def teacher_hw_lesson_edit(request, slug, lesson_id):
     """Редактирование существующего ДЗ. Сохраняет старые Assignment'ы там, где
     задача с тем же порядковым номером осталась — чтобы не терять прогресс ученика."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     course = get_object_or_404(
         Course, slug=slug,
@@ -920,17 +1385,23 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
                 'form_data': request.POST,
                 'rows': raw_rows or [{'condition': '', 'answer': '', 'image_url': '', 'requires_review': False}],
                 'is_edit': True,
+                'lesson_intro': lesson.content,
             })
 
         lesson.title = lesson_title
         lesson.content = lesson_intro
         lesson.save(update_fields=['title', 'content'])
 
-        # Diff: обновляем по порядку, добавляем новые, удаляем лишние.
-        existing = list(lesson.assignments.order_by('order'))
+        # Diff по стабильному id: задачу с тем же Assignment.id обновляем,
+        # новые (без id) создаём, отсутствующие в форме — удаляем. Так прогресс
+        # ученика не «съезжает» при вставке/удалении/перестановке задач.
+        existing_by_id = {a.id: a for a in lesson.assignments.all()}
+        kept_ids = set()
         for i, t in enumerate(tasks, 1):
-            if i <= len(existing):
-                a = existing[i - 1]
+            tid = (t.get('id') or '')
+            a = existing_by_id.get(int(tid)) if tid.isdigit() else None
+            if a is not None:
+                a.order = i
                 a.title = str(i)
                 a.description = t['condition']
                 a.correct_answer = t['answer']
@@ -940,6 +1411,7 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
                 elif t['remove_image']:
                     a.image = None
                 a.save()
+                kept_ids.add(a.id)
             else:
                 Assignment.objects.create(
                     lesson=lesson, order=i, title=str(i),
@@ -949,15 +1421,17 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
                     image=t['image'] or None,
                     requires_review=t['requires_review'],
                 )
-        if len(tasks) < len(existing):
-            for a in existing[len(tasks):]:
-                a.delete()  # каскадно удалит StudentProgress по этой задаче
+        # Удаляем задачи, которых больше нет в форме (их id не пришёл).
+        for a_id, a in existing_by_id.items():
+            if a_id not in kept_ids:
+                a.delete()  # каскадно удалит прогресс по удалённой задаче
 
         messages.success(request, f'ДЗ «{lesson_title}» сохранено.')
         return redirect('teacher_course_progress', slug=course.slug)
 
     rows = [
         {
+            'task_id': a.id,
             'condition': a.description,
             'answer': a.correct_answer,
             'image_url': a.image.url if a.image else '',
@@ -978,13 +1452,10 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
     })
 
 
-@login_required
+@teacher_required
 @require_POST
 def teacher_hw_lesson_delete(request, slug, lesson_id):
     """Удаление ДЗ вместе со всеми задачами и прогрессом по ним."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     course = get_object_or_404(
         Course, slug=slug,
@@ -998,13 +1469,10 @@ def teacher_hw_lesson_delete(request, slug, lesson_id):
     return redirect('teacher_course_progress', slug=course.slug)
 
 
-@login_required
+@teacher_required
 @require_POST
 def teacher_hw_lesson_duplicate(request, slug, lesson_id):
     """Копия ДЗ в том же курсе. Прогресс учеников по новой копии — пустой."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     course = get_object_or_404(
         Course, slug=slug,
@@ -1036,12 +1504,9 @@ def teacher_hw_lesson_duplicate(request, slug, lesson_id):
     return redirect('teacher_hw_lesson_edit', slug=course.slug, lesson_id=new_lesson.id)
 
 
-@login_required
+@teacher_required
 def teacher_hw_lesson_export(request, slug, lesson_id):
     """Скачать ДЗ в виде JSON-файла. Картинки в файл не пакуются."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     course = get_object_or_404(
         Course, slug=slug,
@@ -1072,12 +1537,9 @@ def teacher_hw_lesson_export(request, slug, lesson_id):
     return response
 
 
-@login_required
+@teacher_required
 def teacher_hw_lesson_import(request, slug):
     """Загрузить JSON и создать новое ДЗ в курсе из его содержимого."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
     course = get_object_or_404(
         Course, slug=slug,
@@ -1097,15 +1559,23 @@ def teacher_hw_lesson_import(request, slug):
             messages.error(request, f'Не удалось разобрать JSON: {e}')
             return redirect('teacher_hw_lesson_import', slug=course.slug)
 
+        if not isinstance(data, dict):
+            messages.error(request, 'Ожидался JSON-объект с полями lesson_title и tasks.')
+            return redirect('teacher_hw_lesson_import', slug=course.slug)
+
         title = (data.get('lesson_title') or '').strip()
         intro = (data.get('lesson_intro') or '').strip()
-        raw_tasks = data.get('tasks') or []
+        raw_tasks = data.get('tasks')
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
         if not title or not raw_tasks:
             messages.error(request, 'В файле не хватает названия ДЗ или задач.')
             return redirect('teacher_hw_lesson_import', slug=course.slug)
 
         valid_tasks = []
         for i, t in enumerate(raw_tasks, 1):
+            if not isinstance(t, dict):
+                continue
             cond = (t.get('condition') or '').strip()
             ans = (t.get('answer') or '').strip()
             req = bool(t.get('requires_review'))
@@ -1145,21 +1615,22 @@ def teacher_hw_lesson_import(request, slug):
     })
 
 
-@login_required
+@student_required
 @require_POST
 def submit_hw_solution(request, assignment_id):
     """Ученик отправляет развёрнутое решение на проверку преподавателю
     (для задач с requires_review=True)."""
-    if request.user.role != 'student':
-        messages.error(request, 'Доступ только для учеников')
-        return redirect('login')
 
-    from .models import StudentSubmission
 
     assignment = get_object_or_404(Assignment, id=assignment_id, requires_review=True)
     course = assignment.lesson.module.course
     if not course.is_homework:
         messages.error(request, 'Это не курс с ДЗ.')
+        return redirect('student_courses')
+    if not Enrollment.objects.filter(
+        course=course, student=request.user, is_active=True
+    ).exists():
+        messages.error(request, 'Вы не записаны на этот курс.')
         return redirect('student_courses')
 
     text = (request.POST.get('text') or '').strip()
@@ -1190,15 +1661,11 @@ def submit_hw_solution(request, assignment_id):
     return redirect('student_course_progress', slug=course.slug)
 
 
-@login_required
+@teacher_required
 def teacher_submissions(request):
     """Решения учеников преподавателя — с фильтром по статусу.
     По умолчанию показываются ожидающие проверки."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import StudentSubmission
 
     base_qs = (StudentSubmission.objects
                .filter(student__student_profile__teacher=request.user)
@@ -1232,15 +1699,11 @@ def teacher_submissions(request):
     })
 
 
-@login_required
+@teacher_required
 @require_POST
 def teacher_review_submission(request, sub_id):
     """Принять/вернуть на доработку развёрнутое решение."""
-    if request.user.role != 'teacher':
-        messages.error(request, 'Доступ только для преподавателей')
-        return redirect('login')
 
-    from .models import StudentSubmission, StudentProgress
 
     sub = get_object_or_404(
         StudentSubmission, id=sub_id,
@@ -1277,8 +1740,6 @@ def teacher_review_submission(request, sub_id):
 def check_hw_answer(request, assignment_id):
     """AJAX-проверка ответа ученика на задачу из курса с ДЗ.
     Анонимам — только результат, без записи прогресса."""
-    from .models import StudentProgress
-    from .answer_check import check_answer
 
     assignment = get_object_or_404(Assignment, id=assignment_id)
     course = assignment.lesson.module.course
@@ -1289,6 +1750,14 @@ def check_hw_answer(request, assignment_id):
             {'error': 'Эта задача требует развёрнутого решения, а не короткого ответа.'},
             status=400,
         )
+
+    # Курс с ДЗ приватный — проверять ответ может только владелец или записанный ученик
+    u = request.user
+    if not (u.is_authenticated and (
+            course.owner_id == u.id
+            or Enrollment.objects.filter(
+                course=course, student=u, is_active=True).exists())):
+        return JsonResponse({'error': 'forbidden'}, status=403)
 
     user_answer = (request.POST.get('answer') or '').strip()
     if not user_answer:
@@ -1301,7 +1770,6 @@ def check_hw_answer(request, assignment_id):
     if not is_student:
         return JsonResponse({'correct': is_correct, 'message': message, 'anonymous': True})
 
-    from .models import HomeworkAttempt
     HomeworkAttempt.objects.create(
         student=request.user, assignment=assignment,
         answer=user_answer, is_correct=is_correct,
@@ -1310,7 +1778,7 @@ def check_hw_answer(request, assignment_id):
     sp, _ = StudentProgress.objects.get_or_create(
         student=request.user, assignment=assignment,
     )
-    sp.total_attempts = (sp.total_attempts or 0) + 1
+    sp.total_attempts = F('total_attempts') + 1  # атомарный инкремент, без гонок
     if is_correct:
         sp.correct_attempts = max(sp.correct_attempts or 0, 1)
         if not sp.is_completed:
@@ -1321,6 +1789,7 @@ def check_hw_answer(request, assignment_id):
     return JsonResponse({'correct': is_correct, 'message': message})
 
 
+@require_POST
 def logout_view(request):
     """Выход из системы"""
     logout(request)
@@ -1330,20 +1799,20 @@ def courses_list(request):
     """Каталог курсов. Авторские курсы (задачники + ДЗ) скрываются от всех, кроме их владельца.
     Ученикам, записанным на конкретный авторский курс, он тоже виден."""
     courses = Course.objects.filter(is_active=True).order_by('order')
-    owned_modes = [Course.TRACKING_MANUAL, Course.TRACKING_HOMEWORK]
     if request.user.is_authenticated and request.user.role == 'teacher':
+        # Скрываем чужие приватные курсы; свои (в т.ч. приватные) остаются видны
         courses = courses.exclude(
-            Q(tracking_mode__in=owned_modes) & ~Q(owner=request.user)
+            Q(is_public=False) & ~Q(owner=request.user)
         )
     elif request.user.is_authenticated and request.user.role == 'student':
-        # Ученик видит общие курсы + те, на которые он записан
+        # Ученик видит публичные курсы + приватные, на которые записан
         courses = courses.filter(
-            Q(tracking_mode=Course.TRACKING_AUTO)
-            | Q(tracking_mode__in=owned_modes,
+            Q(is_public=True)
+            | Q(is_public=False,
                 enrollments__student=request.user, enrollments__is_active=True)
         ).distinct()
     else:
-        courses = courses.exclude(tracking_mode__in=owned_modes)
+        courses = courses.filter(is_public=True)
     
     # Статистика
     total_courses = courses.count()
@@ -1361,6 +1830,14 @@ def courses_list(request):
 def course_detail(request, slug):
     """Детальная страница курса"""
     course = get_object_or_404(Course, slug=slug, is_active=True)
+    # Приватный курс виден только владельцу и записанным ученикам
+    if not course.is_public:
+        u = request.user
+        is_owner = u.is_authenticated and course.owner_id == u.id
+        is_enrolled = u.is_authenticated and Enrollment.objects.filter(
+            course=course, student=u, is_active=True).exists()
+        if not (is_owner or is_enrolled):
+            raise Http404()
     modules = course.modules.all().order_by('order').prefetch_related('lessons')
 
     total_lessons = 0
@@ -1433,6 +1910,16 @@ def course_detail(request, slug):
         if themes or tasks:
             exam_constructor = {'themes': themes, 'tasks': tasks}
 
+    # Прогресс ученика по DB-прототипам курса — для прогресс-баров на карточках
+    # ({assignment_id: (correct_attempts, required_correct)}); ключи — int (assignment.id).
+    student_progress_map = {}
+    if request.user.is_authenticated and getattr(request.user, 'role', None) == 'student':
+        for aid, correct, req in StudentProgress.objects.filter(
+                student=request.user,
+                assignment__lesson__module__course=course,
+        ).values_list('assignment_id', 'correct_attempts', 'assignment__required_correct'):
+            student_progress_map[aid] = (correct, req or 1)
+
     return render(request, 'users/course_detail.html', {
         'course': course,
         'modules': modules,
@@ -1444,48 +1931,56 @@ def course_detail(request, slug):
         'enrollment': enrollment,
         'generator_lesson_ids': generator_lesson_ids,
         'exam_constructor': exam_constructor,
+        'student_progress_map': student_progress_map,
     })
 
-@login_required
+@student_required
+@require_POST
 def enroll_to_course(request, course_id):
     """Запись на курс"""
-    if request.user.role != 'student':
-        messages.error(request, 'Только ученики могут записываться на курсы')
-        return redirect('courses_list')
     
     course = get_object_or_404(Course, id=course_id, is_active=True)
-    
-    # Проверяем, не записан ли уже
-    if Enrollment.objects.filter(student=request.user, course=course).exists():
+    # На приватный курс ученик сам записаться не может — только преподаватель
+    if not course.is_public:
+        messages.error(request, 'На этот курс записывает преподаватель.')
+        return redirect('student_courses')
+
+    # Проверяем, не записан ли уже; деактивированную запись — реактивируем
+    enr = Enrollment.objects.filter(student=request.user, course=course).first()
+    if enr and enr.is_active:
         messages.warning(request, f'Вы уже записаны на курс "{course.title}"')
+    elif enr:
+        enr.is_active = True
+        enr.save(update_fields=['is_active'])
+        messages.success(request, f'Вы снова записаны на курс "{course.title}"')
     else:
         Enrollment.objects.create(student=request.user, course=course)
 
     return redirect('student_courses')
 
-@login_required
+@student_required
 def student_courses(request):
     """Список курсов, на которые записан ученик"""
-    if request.user.role != 'student':
-        messages.error(request, 'Доступ только для учеников')
-        return redirect('login')
     
     enrollments = Enrollment.objects.filter(
-        student=request.user, 
+        student=request.user,
         is_active=True
     ).select_related('course').order_by('-last_accessed')
-    
+
+    courses = [
+        {'enrollment': e, 'percent': course_progress_percent(request.user, e.course)}
+        for e in enrollments
+    ]
+
     return render(request, 'users/student_courses.html', {
-        'enrollments': enrollments,
+        'courses': courses,
         'title': 'Мои курсы'
     })
 
-@login_required
+@student_required
+@require_POST
 def unenroll_from_course(request, enrollment_id):
     """Отписаться от курса"""
-    if request.user.role != 'student':
-        messages.error(request, 'Доступ только для учеников')
-        return redirect('login')
     
     enrollment = get_object_or_404(
         Enrollment, 
@@ -1503,10 +1998,29 @@ def unenroll_from_course(request, enrollment_id):
 # но нет Assignment'ов и TaskGroup. Прогресс — модель LessonProgress.
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _can_access_lesson(user, lesson):
+    """Доступ к уроку: бесплатный — всем; иначе нужен вход и активная запись
+    на курс (либо владелец курса / администратор)."""
+    course = lesson.module.course
+    if getattr(lesson, 'is_free', False):
+        return True
+    if not user.is_authenticated:
+        return False
+    if user.is_superuser or getattr(course, 'owner_id', None) == user.id:
+        return True
+    return Enrollment.objects.filter(
+        course=course, student=user, is_active=True
+    ).exists()
+
+
 def lesson_detail(request, lesson_id):
     """Страница теоретического урока (методичка)."""
     lesson = get_object_or_404(Lesson, id=lesson_id)
     course = lesson.module.course
+
+    if not _can_access_lesson(request.user, lesson):
+        messages.error(request, 'Этот урок доступен только записанным на курс.')
+        return redirect('course_detail', slug=course.slug)
 
     is_read = False
     if request.user.is_authenticated and request.user.role == 'student':
@@ -1533,12 +2047,10 @@ def lesson_detail(request, lesson_id):
     })
 
 
-@login_required
+@student_required
 @require_POST
 def mark_lesson_read(request, lesson_id):
     """AJAX: отметить теоретический урок как прочитанный."""
-    if request.user.role != 'student':
-        return JsonResponse({'error': 'only students'}, status=403)
     lesson = get_object_or_404(Lesson, id=lesson_id)
     progress, _ = LessonProgress.objects.get_or_create(
         student=request.user, lesson=lesson,

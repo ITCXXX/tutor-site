@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Тариф F4978F — сравнение с оригиналом</title>
+<style>
+  body {
+    font-family: Cambria, Georgia, serif;
+    background: #f5f5f5;
+    color: #1f1f1f;
+    padding: 30px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 1.8rem 0 1.2rem; }
+  h2 { font-size: 1.1rem; margin: 0 0 .8rem; }
+  .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: .5rem;
+    padding: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 20px;
+  }
+  .card .row {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+  }
+  .card .cell {
+    flex: 1 1 0;
+    text-align: center;
+    min-width: 0;
+  }
+  .card .cell .label {
+    font-size: .85rem;
+    color: #6b7280;
+    margin-bottom: .4rem;
+  }
+  .card .cell img,
+  .card .cell svg {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #eee;
+    background: #fff;
+  }
+  @media (max-width: 900px) {
+    .card .row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<h1>F4978F · Мобильная связь (Стандартный) — график потребления</h1>
+
+<div class="card">
+  <h2>Сравнение оригинала с моим SVG</h2>
+  <div class="row">
+    <div class="cell">
+      <div class="label">Оригинал из БД</div>
+      <img src="media/oge15/oge15_F4978F.png" alt="F4978F original">
+    </div>
+    <div class="cell">
+      <div class="label">Мой SVG</div>
+      <svg xmlns="http://www.w3.org/2000/svg" id="chart" viewBox="0 0 640 360" width="640" height="360"></svg>
+    </div>
+  </div>
+</div>
+
+<script>
+// Чёрная сплошная — минуты исходящих вызовов
+const SOLID = [
+  175, 275, 150, 350, 300, 325, 375, 325, 200, 200, 325, 350,
+];
+// Пунктирная (точечная) — гигабайты трафика (значения по правой оси в ГБ).
+// Шкала: 1 ГБ = 100 мин (правая ось — в 100 раз меньше левой по числам).
+const DASHED_GB = [
+  2.5, 3.5, 2, 4, 2.75, 3, 1, 1.5, 2.75, 3.25, 3.75, 2.25,
+];
+
+const svg = document.getElementById('chart');
+
+// Параметры графика
+const W = 600, H = 360;
+const PL = 60, PR = 60, PT = 30, PB = 50;  // padding
+const PW = W - PL - PR, PH = H - PT - PB;
+const Y_MAX_MIN = 400, Y_STEP_MIN = 25;       // левая ось — мин
+const Y_MAX_GB  = 4,   Y_STEP_GB  = 0.25;     // правая ось — ГБ
+const X_COUNT = 12;
+
+function el(tag, attrs = {}, text) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+// Отступ по краям, чтобы точка 1 и 12 не упирались в оси.
+const X_INSET = 0.5;
+function xPx(month) {
+  return PL + (X_INSET + (month - 1)) / (X_COUNT - 1 + 2 * X_INSET) * PW;
+}
+function yPxMin(v) { return PT + PH - (v / Y_MAX_MIN) * PH; }
+function yPxGB(v) { return PT + PH - (v / Y_MAX_GB) * PH; }
+
+// ===== Сетка =====
+// Горизонтальная: по шагу минут (25 мин)
+for (let v = 0; v <= Y_MAX_MIN; v += Y_STEP_MIN) {
+  const y = yPxMin(v);
+  svg.appendChild(el('line', {
+    x1: PL, y1: y, x2: PL + PW, y2: y,
+    stroke: '#d6d6d6', 'stroke-width': 0.6,
+  }));
+}
+// Вертикальная: по каждому месяцу
+for (let m = 1; m <= X_COUNT; m++) {
+  const x = xPx(m);
+  svg.appendChild(el('line', {
+    x1: x, y1: PT, x2: x, y2: PT + PH,
+    stroke: '#d6d6d6', 'stroke-width': 0.6,
+  }));
+}
+
+// ===== Левая ось — минуты =====
+svg.appendChild(el('line', {
+  x1: PL, y1: PT, x2: PL, y2: PT + PH, stroke: '#000', 'stroke-width': 1.2,
+}));
+for (let v = 0; v <= Y_MAX_MIN; v += 50) {
+  const y = yPxMin(v);
+  svg.appendChild(el('line', {
+    x1: PL - 5, y1: y, x2: PL, y2: y, stroke: '#000', 'stroke-width': 1,
+  }));
+  svg.appendChild(el('text', {
+    x: PL - 8, y: y + 4, 'text-anchor': 'end',
+    'font-family': 'Arial, Helvetica, sans-serif', 'font-size': 11, fill: '#000',
+  }, String(v)));
+}
+svg.appendChild(el('text', {
+  x: PL - 50, y: PT + PH / 2,
+  'text-anchor': 'middle',
+  transform: `rotate(-90 ${PL - 50} ${PT + PH / 2})`,
+  'font-family': 'Cambria, Georgia, serif', 'font-style': 'italic', 'font-size': 13, fill: '#000',
+}, 'мин'));
+
+// ===== Правая ось — гигабайты =====
+svg.appendChild(el('line', {
+  x1: PL + PW, y1: PT, x2: PL + PW, y2: PT + PH, stroke: '#000', 'stroke-width': 1.2,
+}));
+for (let v = 0; v <= Y_MAX_GB; v += 0.5) {
+  const y = yPxGB(v);
+  svg.appendChild(el('line', {
+    x1: PL + PW, y1: y, x2: PL + PW + 5, y2: y, stroke: '#000', 'stroke-width': 1,
+  }));
+  const label = (v === 0 || v % 1 === 0) ? String(v) : v.toString().replace('.', ',');
+  svg.appendChild(el('text', {
+    x: PL + PW + 8, y: y + 4, 'text-anchor': 'start',
+    'font-family': 'Arial, Helvetica, sans-serif', 'font-size': 11, fill: '#000',
+  }, label));
+}
+svg.appendChild(el('text', {
+  x: PL + PW + 38, y: PT + PH / 2,
+  'text-anchor': 'middle',
+  transform: `rotate(-90 ${PL + PW + 38} ${PT + PH / 2})`,
+  'font-family': 'Cambria, Georgia, serif', 'font-style': 'italic', 'font-size': 13, fill: '#000',
+}, 'ГБ'));
+
+// ===== Нижняя ось — месяцы =====
+svg.appendChild(el('line', {
+  x1: PL, y1: PT + PH, x2: PL + PW, y2: PT + PH, stroke: '#000', 'stroke-width': 1.2,
+}));
+for (let m = 1; m <= X_COUNT; m++) {
+  const x = xPx(m);
+  svg.appendChild(el('text', {
+    x: x, y: PT + PH + 14, 'text-anchor': 'middle',
+    'font-family': 'Arial, Helvetica, sans-serif', 'font-size': 11, fill: '#000',
+  }, String(m)));
+}
+svg.appendChild(el('text', {
+  x: PL + PW / 2, y: H - 8, 'text-anchor': 'middle',
+  'font-family': 'Cambria, Georgia, serif', 'font-style': 'italic', 'font-size': 13, fill: '#000',
+}, 'месяц'));
+
+// ===== Жирная горизонтальная линия на уровне 300 мин (= 3 ГБ) — лимит тарифа =====
+const limitY = yPxMin(300);
+svg.appendChild(el('line', {
+  x1: PL, y1: limitY, x2: PL + PW, y2: limitY,
+  stroke: '#000', 'stroke-width': 2.5,
+}));
+
+// ===== Подписи легенды над осями =====
+// Слева — "минуты" с подчёркиванием сплошной линией
+(function() {
+  const tx = PL - 4, ty = PT - 14;
+  svg.appendChild(el('text', {
+    x: tx, y: ty, 'text-anchor': 'end',
+    'font-family': 'Cambria, Georgia, serif', 'font-size': 13, fill: '#000',
+  }, 'минуты'));
+  svg.appendChild(el('line', {
+    x1: tx - 46, y1: ty + 4, x2: tx, y2: ty + 4,
+    stroke: '#000', 'stroke-width': 1.6,
+  }));
+})();
+// Справа — "гигабайты" с пунктирным подчёркиванием
+(function() {
+  const tx = PL + PW + 4, ty = PT - 14;
+  svg.appendChild(el('text', {
+    x: tx, y: ty, 'text-anchor': 'start',
+    'font-family': 'Cambria, Georgia, serif', 'font-size': 13, fill: '#000',
+  }, 'гигабайты'));
+  svg.appendChild(el('line', {
+    x1: tx, y1: ty + 4, x2: tx + 64, y2: ty + 4,
+    stroke: '#000', 'stroke-width': 1.4, 'stroke-dasharray': '5,3',
+  }));
+})();
+
+// ===== Чёрная сплошная линия (минуты) =====
+const solidPath = SOLID.map((v, i) =>
+  `${i === 0 ? 'M' : 'L'} ${xPx(i + 1)},${yPxMin(v)}`
+).join(' ');
+svg.appendChild(el('path', {
+  d: solidPath, fill: 'none', stroke: '#000', 'stroke-width': 1.6,
+}));
+// Точки
+SOLID.forEach((v, i) => {
+  svg.appendChild(el('circle', {
+    cx: xPx(i + 1), cy: yPxMin(v), r: 3, fill: '#000',
+  }));
+});
+
+// ===== Пунктирная (точечная) линия (гигабайты) =====
+const dashedPath = DASHED_GB.map((v, i) =>
+  `${i === 0 ? 'M' : 'L'} ${xPx(i + 1)},${yPxGB(v)}`
+).join(' ');
+svg.appendChild(el('path', {
+  d: dashedPath, fill: 'none', stroke: '#000', 'stroke-width': 1.4,
+  'stroke-dasharray': '5,3',
+}));
+// Точки — пустые кружочки чтоб отличались от сплошных
+DASHED_GB.forEach((v, i) => {
+  svg.appendChild(el('circle', {
+    cx: xPx(i + 1), cy: yPxGB(v), r: 3, fill: '#fff', stroke: '#000', 'stroke-width': 1.2,
+  }));
+});
+
+</script>
+
+</body>
+</html>

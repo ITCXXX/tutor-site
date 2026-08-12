@@ -4,12 +4,12 @@
 from django.core.management.base import BaseCommand
 from django.db.models import Max
 from users.models import Course, Module, Lesson, TaskGroup, GroupSubQuestion
+from ._oge15_shiny import TIRE_SVG
 
 
 LESSON_TITLE = "Шины"
 GROUP_TITLE = "77CC6F · Размеры шин 175/70 R12"
 FIPI_CTX_ID = "77CC6F"
-IMG_PATH = "/media/oge15/oge15_47E80B.png"  # переиспользуем общую картинку шин
 
 
 CONTEXT_HTML = ("""
@@ -30,12 +30,11 @@ CONTEXT_HTML = ("""
 25,4 мм). Таким образом, общий диаметр колеса <i>D</i> можно найти, зная
 диаметр диска и высоту боковины.</p>
 
-<img src="__IMG__" alt="Шины: маркировка и размеры"
-     style="max-width:560px;display:block;margin:0.8em 0;">
+__SVG__
 
 <p>Завод производит легковые автомобили определённой модели и устанавливает
 на них колёса с шинами <b>175/70 R12</b>.</p>
-""").strip().replace("__IMG__", IMG_PATH)
+""").strip().replace("__SVG__", TIRE_SVG)
 
 
 T1_TABLE_HTML = """

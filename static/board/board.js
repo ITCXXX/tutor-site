@@ -1,0 +1,8102 @@
+/* board/board.js — бесконечный совместный холст на Konva.
+ *
+ * Единая модель элемента:
+ *   { id, type, data: { x, y, ...геометрия относительно (x,y)..., stroke, strokeWidth }, z }
+ * Позиция элемента — всегда data.x / data.y; геометрия (points/width/height/радиусы)
+ * задаётся ОТНОСИТЕЛЬНО этой позиции. Тогда перемещение = изменение x/y, а
+ * Konva-узел рисуется как node.x = data.x, node.y = data.y. Это делает рисование,
+ * перетаскивание и синхронизацию по сети единообразными.
+ */
+(function () {
+  'use strict';
+
+  const cfg = window.BOARD_CONFIG;
+  const stageEl = document.getElementById('board-stage');
+  const cursorLayerEl = document.getElementById('cursor-layer');
+  const frameExitBtn = document.getElementById('frame-exit-btn');
+
+  // ── Konva: сцена и слой ───────────────────────────────────────────────
+  const stage = new Konva.Stage({
+    container: 'board-stage',
+    width: stageEl.clientWidth,
+    height: stageEl.clientHeight,
+    draggable: false, // включаем только в режиме «select» (панорама)
+  });
+  const layer = new Konva.Layer();
+  stage.add(layer);
+
+  // ── Координатная сетка (фон) ───────────────────────────────────────────
+  // Отдельный слой под рисованием. Рисуется один Shape с кастомным sceneFunc,
+  // который перерисовывает видимую часть бесконечной сетки при зуме/панораме.
+  const GRID_STEP = 40; // шаг клетки в мировых единицах
+  const BOARD_CFG_ID = '__boardcfg__'; // singleton-элемент настроек доски (фон)
+  let boardBg = 'grid'; // grid | dots | lines | blank — общий фон полотна
+  let boardBgColor = ''; // цвет полотна ('' = по умолчанию из CSS)
+  let boardGridColor = ''; // цвет рисунка фона (линии/точки), '' = по умолчанию
+  const gridLayer = new Konva.Layer({ listening: false });
+  stage.add(gridLayer);
+  gridLayer.moveToBottom();
+  const gridShape = new Konva.Shape({ sceneFunc: drawGrid });
+  gridLayer.add(gridShape);
+
+  // Слой умных направляющих (поверх всего): при перетаскивании показывает линии
+  // выравнивания к соседним объектам. Разделяет трансформацию сцены (мир. коорд.).
+  const guideLayer = new Konva.Layer({ listening: false });
+  stage.add(guideLayer);
+
+  function drawGrid(ctx) {
+    if (boardBg === 'blank') return; // пустое полотно
+    const scale = stage.scaleX();
+    const x0 = -stage.x() / scale;
+    const y0 = -stage.y() / scale;
+    const x1 = x0 + stage.width() / scale;
+    const y1 = y0 + stage.height() / scale;
+    const lw = 1 / scale; // тонкие линии независимо от зума
+
+    const startX = Math.floor(x0 / GRID_STEP) * GRID_STEP;
+    const startY = Math.floor(y0 / GRID_STEP) * GRID_STEP;
+
+    const gc = boardGridColor || '#e2e2ea'; // цвет рисунка фона
+    if (boardBg === 'dots') {
+      // Точки в узлах клетки.
+      ctx.fillStyle = gc;
+      const r = 1.1 / scale;
+      for (let x = startX; x <= x1; x += GRID_STEP) {
+        for (let y = startY; y <= y1; y += GRID_STEP) { ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill(); }
+      }
+      return;
+    }
+    if (boardBg === 'lines') {
+      // Тетрадная линейка — только горизонтальные линии.
+      ctx.beginPath(); ctx.lineWidth = lw; ctx.strokeStyle = gc;
+      for (let y = startY; y <= y1; y += GRID_STEP) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+      ctx.stroke();
+      return;
+    }
+
+    // boardBg === 'grid': только мелкая клетка (без осей — доска не координатная).
+    ctx.beginPath();
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = gc;
+    for (let x = startX; x <= x1; x += GRID_STEP) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for (let y = startY; y <= y1; y += GRID_STEP) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    ctx.stroke();
+  }
+  // Общий фон доски хранится синглтон-элементом (синхронизируется как любой
+  // элемент, переживает перезагрузку). Здесь — только применение и рассылка.
+  function applyBoardBgColor() { if (stageEl) stageEl.style.background = boardBgColor || ''; }
+  function pushBoardCfg() {
+    const el = { id: BOARD_CFG_ID, type: 'boardconfig', z: 0, data: { bg: boardBg, color: boardBgColor, gridColor: boardGridColor } };
+    elements.set(el.id, el); send({ action: 'element_add', element: el });
+  }
+  function setBoardBg(style) { boardBg = style; redrawGrid(); pushBoardCfg(); if (typeof syncBgUI === 'function') syncBgUI(); }
+  function setBoardBgColor(color) { boardBgColor = color || ''; applyBoardBgColor(); pushBoardCfg(); if (typeof syncBgUI === 'function') syncBgUI(); }
+  function setBoardGridColor(color) { boardGridColor = color || ''; redrawGrid(); pushBoardCfg(); if (typeof syncBgUI === 'function') syncBgUI(); }
+
+  // draw() (синхронно), а не batchDraw(): сетка перерисовывается только при
+  // зуме/панораме/resize — это редко, зато надёжно прокрашивается и на старте
+  // (batchDraw на инициализации попадал в RAF-гонку и не рисовался).
+  function redrawGrid() { gridLayer.draw(); }
+
+  // Дросселированная перерисовка вида (сетка + чужие курсоры) — не чаще раза в
+  // кадр. Нужна для жестов тачпада: во время инерции wheel-события сыплются
+  // очень часто, и синхронная перерисовка на каждом забивала поток, из-за чего
+  // новый жест (смена направления) применялся с задержкой.
+  let viewRAF = null;
+  function scheduleViewRedraw() {
+    if (viewRAF != null) return;
+    viewRAF = requestAnimationFrame(() => {
+      viewRAF = null;
+      redrawGrid();
+      repositionCursors();
+      positionHandles();
+    });
+  }
+
+  function syncStageSize() {
+    stage.width(stageEl.clientWidth);
+    stage.height(stageEl.clientHeight);
+    redrawGrid();
+    repositionCursors();
+  }
+  window.addEventListener('resize', syncStageSize);
+  // ResizeObserver срабатывает сразу, как только #board-stage получает реальный
+  // размер (layout мог быть не готов на момент инициализации скрипта) — это
+  // гарантирует, что сетка и размеры сцены верны с первого кадра.
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncStageSize).observe(stageEl);
+  }
+
+  // ── Состояние редактора ───────────────────────────────────────────────
+  let tool = 'pen';
+  let strokeColor = '#1f2937';
+  let strokeWidth = parseInt(document.getElementById('stroke-width').value, 10);
+  // Дефолты по типам: новые объекты создаются с настройками, заданными в панели
+  // «для типа» (режим «все …»). Пусто = базовые значения. point: size/shape/
+  // labelMode/labelSize/labelHidden; line/circle: strokeWidth/style/color.
+  const typeDefaults = { point: {}, line: {}, circle: {}, polygon: {}, segment: {}, angle: {} };
+  function applyTypeDefaults(data, kind) { const d = typeDefaults[kind]; for (const k in d) if (d[k] !== undefined) data[k] = d[k]; return data; }
+
+  const nodes = new Map();    // element.id → Konva node
+  const elements = new Map(); // element.id → element object (последнее состояние)
+  let myId = null;            // мой user id (с сервера, из init)
+
+  function uuid() {
+    return 'e' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  // ── История (шаг назад / вперёд) ───────────────────────────────────────
+  const undoStack = [], redoStack = [];
+  const TYPE_NAMES = { frame: 'окно', point: 'точка', segment: 'отрезок', ray: 'луч', gline: 'прямая', perp: 'перпендикуляр', parallel: 'параллель', perpbis: 'сер. перпендикуляр', bisector: 'биссектриса', circ: 'окружность', circle: 'окружность', angle: 'угол', func: 'функция', implicit: 'кривая', region: 'область', ftangent: 'касательная', farea: 'площадь', fintersect: 'пересечение', vector: 'вектор', rect: 'прямоугольник', ellipse: 'эллипс', line: 'линия', arrow: 'стрелка', freehand: 'рисунок', text: 'текст', latex: 'формула', shape: 'фигура', image: 'картинка', pdf: 'PDF', measure: 'измерение', polygon: 'многоугольник', regpoly: 'многоугольник', table: 'таблица', kanban: 'канбан', timer: 'таймер', wheel: 'колесо', slider: 'ползунок', sticky: 'стикер', geogebra: 'ГеоГебра' };
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function histAdd(el) { undoStack.push({ kind: 'add', el: clone(el) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
+  function histDel(el) { undoStack.push({ kind: 'del', el: clone(el) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
+  function histUpd(before, after) {
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    undoStack.push({ kind: 'upd', before: clone(before), after: clone(after) }); redoStack.length = 0; trimHist();
+  }
+  // Пакет правок как ОДИН шаг отмены (например, стирание ластиком: удалить штрих
+  // и добавить его уцелевшие куски). ops — массив обычных записей add/del/upd.
+  function histBatch(ops) { if (!ops || !ops.length) return; undoStack.push({ kind: 'batch', ops: ops.map((o) => clone(o)) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
+  function trimHist() { if (undoStack.length > 200) undoStack.shift(); }
+  function reAdd(el) { const c = clone(el); upsertNode(c); send({ action: 'element_add', element: stripPrivate(c) }); }
+  function reUpd(el) { const c = clone(el); upsertNode(c); send({ action: 'element_update', element: stripPrivate(c) }); }
+  function reDel(id) { removeNode(id); send({ action: 'element_delete', id }); }
+  function undoOp(e) {
+    if (e.kind === 'add') reDel(e.el.id);
+    else if (e.kind === 'del') reAdd(e.el);
+    else if (e.kind === 'upd') reUpd(e.before);
+  }
+  function redoOp(e) {
+    if (e.kind === 'add') reAdd(e.el);
+    else if (e.kind === 'del') reDel(e.el.id);
+    else if (e.kind === 'upd') reUpd(e.after);
+  }
+  function doUndo() {
+    const e = undoStack.pop(); if (!e) return; redoStack.push(e);
+    if (e.kind === 'batch') { for (let i = e.ops.length - 1; i >= 0; i--) undoOp(e.ops[i]); }
+    else undoOp(e);
+  }
+  function doRedo() {
+    const e = redoStack.pop(); if (!e) return; undoStack.push(e);
+    if (e.kind === 'batch') { e.ops.forEach(redoOp); }
+    else redoOp(e);
+  }
+
+  // ── Построение / обновление узлов ─────────────────────────────────────
+  function buildNode(el) {
+    const d = el.data || {};
+    const common = {
+      id: el.id,
+      x: d.x || 0,
+      y: d.y || 0,
+      stroke: d.stroke || '#1f2937',
+      strokeWidth: d.strokeWidth || 3,
+      draggable: false,
+    };
+    let node;
+    if (el.type === 'freehand') {
+      node = new Konva.Line({
+        ...common,
+        points: d.points || [0, 0],
+        lineCap: 'round',
+        lineJoin: 'round',
+        tension: !d.marker ? 0.4 : 0,
+        hitStrokeWidth: Math.max(12, common.strokeWidth + 8),
+        opacity: d.marker ? (d.opacity != null ? d.opacity : 0.4) : 1,
+      });
+    } else if (el.type === 'line' || el.type === 'arrow') {
+      // Линия/стрелка: единый рендер (прямая/кривая/уступ, наконечники, сужение).
+      node = new Konva.Shape({ id: el.id, x: d.x || 0, y: d.y || 0, stroke: '#000', strokeWidth: 16, sceneFunc: drawConnector, hitFunc: hitConnector, draggable: false });
+      node.getSelfRect = function () { const e = elements.get(el.id); return e ? connBounds(e.data) : { x: 0, y: 0, width: 0, height: 0 }; };
+    } else if (el.type === 'rect') {
+      node = new Konva.Rect({
+        ...common,
+        width: d.width || 0,
+        height: d.height || 0,
+        fill: shapeFillStyle(d, null) || undefined,
+      });
+    } else if (el.type === 'ellipse') {
+      node = new Konva.Ellipse({
+        ...common,
+        radiusX: d.radiusX || 0,
+        radiusY: d.radiusY || 0,
+        fill: shapeFillStyle(d, null) || undefined,
+      });
+    } else if (el.type === 'shape') {
+      // Базовая фигура (по рамке): рисуется sceneFunc'ом; заливка для клика — в hitFunc.
+      node = new Konva.Shape({ id: el.id, x: d.x || 0, y: d.y || 0, sceneFunc: drawBasicShape, fill: 'rgba(0,0,0,0.01)', draggable: false });
+      node.hitFunc(hitBasicShape);
+      node.getSelfRect = function () { const e = elements.get(el.id); return { x: 0, y: 0, width: (e && e.data.width) || 0, height: (e && e.data.height) || 0 }; };
+    } else if (el.type === 'latex') {
+      node = new Konva.Image({
+        id: el.id, x: d.x || 0, y: d.y || 0,
+        width: d.width || 10, height: d.height || 10,
+        draggable: false, image: undefined,
+      });
+      node._latex = ''; // для отслеживания изменений
+      renderLatexInto(node, el);
+    } else if (el.type === 'text') {
+      node = new Konva.Image({
+        id: el.id, x: d.x || 0, y: d.y || 0,
+        width: d.width || 10, height: d.height || 10,
+        draggable: false, image: undefined,
+      });
+      node._textKey = '';
+      renderTextInto(node, el);
+    } else if (el.type === 'image' || el.type === 'pdf') {
+      // Импортированная картинка / страница PDF — Konva.Image, картинку грузим асинхронно.
+      node = new Konva.Image({ id: el.id, x: d.x || 0, y: d.y || 0, width: d.width || 10, height: d.height || 10, draggable: false, image: undefined, stroke: el.type === 'pdf' ? '#d9d9e0' : undefined, strokeWidth: el.type === 'pdf' ? 1 : 0 });
+      if (el.type === 'image') loadImageInto(node, el); else renderPdfInto(node, el);
+    } else if (el.type === 'point') {
+      // Точка = группа: видимая точка + подпись. Крупная hit-зона для захвата.
+      let px = d.x || 0, py = d.y || 0;
+      if (d.frame) { const fr = elements.get(d.frame); if (fr) { const L = frameMathToLocal(fr, d.mx || 0, d.my || 0); px = L.x; py = L.y; } }
+      node = new Konva.Group({ id: el.id, x: px, y: py, draggable: false });
+      const glyph = new Konva.Shape({ name: 'pglyph', sceneFunc: drawPointGlyph, hitFunc: pointHitFunc });
+      const _fs = labelFontOf(d);
+      const label = new Konva.Text({ name: 'plabel', text: pointLabelText(el), x: 8, y: -(_fs + 3), fontSize: _fs, fontStyle: 'italic', fill: d.color || '#1f2937', visible: !d.labelHidden });
+      node.add(glyph); node.add(label);
+      node._plabel = d.label || '';
+    } else if (el.type === 'circle') {
+      node = new Konva.Circle({
+        id: el.id, x: d.x || 0, y: d.y || 0,
+        radius: d.r || 0,
+        stroke: d.stroke || '#1f2937', strokeWidth: d.strokeWidth || 2,
+        draggable: false, hitStrokeWidth: 14,
+      });
+    } else if (CONSTRUCT_LINES.indexOf(el.type) >= 0) {
+      // Построение-линия: рисуется sceneFunc'ом (линия + декорации: шевроны/засечки/длина).
+      node = new Konva.Shape({
+        id: el.id, x: 0, y: 0, sceneFunc: drawLineShape,
+        stroke: d.color || d.stroke || '#1f2937', strokeWidth: d.strokeWidth || 2,
+        dash: figureDash(d.style, d.strokeWidth || 2),
+        lineCap: 'round', hitStrokeWidth: 14, draggable: false,
+      });
+      node.getSelfRect = lineSelfRect(el);
+    } else if (el.type === 'conic') {
+      // Коника по 5 точкам — неявная кривая F(x,y)=0, marching-squares в коорд. окна.
+      node = new Konva.Shape({ id: el.id, x: 0, y: 0, sceneFunc: drawConicShape, hitFunc: hitConicShape, stroke: d.color || d.stroke || '#c0392b', strokeWidth: d.strokeWidth || 2, hitStrokeWidth: 12, draggable: false });
+    } else if (el.type === 'vector') {
+      // Вектор AB — стрелка, следует за точками.
+      const vc = d.color || d.stroke || '#1f2937';
+      node = new Konva.Arrow({ id: el.id, x: 0, y: 0, points: vecEnds(el) || [0, 0, 0, 0], stroke: vc, fill: vc, strokeWidth: d.strokeWidth || 2.5, pointerLength: 11, pointerWidth: 10, lineCap: 'round', lineJoin: 'round', hitStrokeWidth: 14, draggable: false });
+    } else if (el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit') {
+      // Анализ функций / неявная кривая — sceneFunc по окну; живёт в группе окна.
+      const sf = el.type === 'ftangent' ? drawTangent : (el.type === 'farea' ? drawArea : (el.type === 'fintersect' ? drawFIntersect : (el.type === 'region' ? drawRegion : drawImplicit)));
+      node = new Konva.Shape({ id: el.id, x: 0, y: 0, listening: false, sceneFunc: sf });
+    } else if (isFilledPoly(el.type)) {
+      // Многоугольник (обычный по вершинам / правильный n-угольник): замкнутая
+      // линия с полупрозрачной заливкой; контур — shapeOutline.
+      const col = d.color || d.stroke || '#1f2937';
+      node = new Konva.Line({
+        id: el.id, x: 0, y: 0, points: shapeOutline(el) || [], closed: true,
+        stroke: col, strokeWidth: d.strokeWidth || 2, dash: figureDash(d.style, d.strokeWidth || 2),
+        fill: hexToRgba(col, 0.10), lineJoin: 'round', lineCap: 'round', hitStrokeWidth: 14, draggable: false,
+      });
+    } else if (el.type === 'circ') {
+      // Окружность/полукруг по точкам: центр и радиус — из circleGeom. Полукруг
+      // рисуем sceneFunc'ом (дуга), полную — Konva.Circle (проще обновлять).
+      const _dash = figureDash(d.style, d.strokeWidth || 2);
+      if (d.kind === 'semi') {
+        node = new Konva.Shape({ id: el.id, sceneFunc: drawSemiShape, stroke: d.color || d.stroke || '#1f2937', strokeWidth: d.strokeWidth || 2, dash: _dash, lineCap: 'round', hitStrokeWidth: 14, draggable: false });
+      } else {
+        const C = circleGeom(el) || { cx: 0, cy: 0, r: 0 };
+        node = new Konva.Circle({ id: el.id, x: C.cx, y: C.cy, radius: C.r, stroke: d.color || d.stroke || '#1f2937', strokeWidth: d.strokeWidth || 2, dash: _dash, lineCap: 'round', draggable: false, hitStrokeWidth: 14 });
+      }
+    } else if (el.type === 'mark') {
+      // Пометка (засечки/дуги/прямой угол/параллельность) — рисуется по опорам.
+      node = new Konva.Shape({ id: el.id, listening: false, sceneFunc: drawMarkShape });
+    } else if (el.type === 'measure') {
+      // Подпись-измерение: белая «пилюля» с текстом; позиция считается в recomputeGeometry.
+      node = new Konva.Label({ id: el.id, x: d.x || 0, y: d.y || 0, draggable: false });
+      node.add(new Konva.Tag({ fill: 'rgba(255,255,255,0.9)', stroke: '#d9d9e0', strokeWidth: 1, cornerRadius: 4 }));
+      node.add(new Konva.Text({ name: 'mtext', text: '', fontSize: 13, padding: 4, fill: d.color || '#1f2937' }));
+    } else if (el.type === 'angle') {
+      node = new Konva.Shape({ id: el.id, listening: false, sceneFunc: drawAngleShape });
+    } else if (el.type === 'frame') {
+      // Математическое окно: своя система координат (cx,cy,unit), оси/сетка,
+      // отсечение содержимого по прямоугольнику.
+      const W = d.width || 0, H = d.height || 0;
+      node = new Konva.Group({ id: el.id, x: d.x || 0, y: d.y || 0, draggable: false,
+        clipX: 0, clipY: 0, clipWidth: W, clipHeight: H });
+      node.add(new Konva.Rect({ name: 'fbg', x: 0, y: 0, width: W, height: H, fill: d.bgColor || '#ffffff', stroke: '#d9d9e0', strokeWidth: 1 }));
+      node.add(new Konva.Shape({ name: 'fgrid', sceneFunc: (ctx) => drawFrameGrid(ctx, elements.get(el.id)) }));
+      node.add(new Konva.Rect({ name: 'fheader', x: 0, y: 0, width: W, height: FRAME_HEADER, fill: '#f4f4f7', stroke: '#e3e3e8', strokeWidth: 1 }));
+      node.add(new Konva.Text({ name: 'fhlabel', x: 8, y: 6, text: 'Окно', fontSize: 12, fill: '#6b6b76' }));
+      node.add(new Konva.Text({ name: 'fdel', text: '×', x: W - 16, y: 3, fontSize: 16, fill: '#9a9aa4' }));
+      attachFrameHandlers(node, el.id);
+    } else {
+      return null;
+    }
+    // Hit-зона на всю площадь объекта. Иначе по незакрашенным фигурам и по
+    // прозрачным местам формулы/текста (картинка почти пустая) клик промахивается.
+    if (el.type === 'rect' || el.type === 'latex' || el.type === 'text') {
+      node.hitFunc((ctx, shape) => {
+        ctx.beginPath();
+        ctx.rect(0, 0, shape.width(), shape.height());
+        ctx.closePath();
+        ctx.fillStrokeShape(shape);
+      });
+    } else if (el.type === 'ellipse') {
+      node.hitFunc((ctx, shape) => {
+        ctx.beginPath();
+        ctx.ellipse(0, 0, shape.radiusX(), shape.radiusY(), 0, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.fillStrokeShape(shape);
+      });
+    }
+    if (el.type === 'point' || el.type === 'circle') {
+      node.on('dragmove', () => onGeoDragMove(el.id, node));
+      node.on('dragend', () => onGeoDragEnd(el.id, node));
+    } else if (el.type === 'measure') {
+      node.on('dragmove', () => moveDragFollowers(el.id, node)); // не замораживать группу, если тащат за измерение
+      node.on('dragend', () => onMeasureDragEnd(el.id, node));
+    } else {
+      node.on('dragmove', () => onNodeDragMove(el.id, node));
+      node.on('dragend', () => onNodeDragEnd(el.id, node));
+    }
+    return node;
+  }
+
+  // ── Линии и стрелки: единый рендер ─────────────────────────────────────
+  // Точки в data.points относительны data.x/y. Кривизну задают ПУТЕВЫЕ ТОЧКИ,
+  // через которые кривая ПРОХОДИТ (лежат НА ней → влияют локально и независимо):
+  // data.wl (левая), data.wm (центр), data.wr (правая) — относит. data.x/y. Кривая —
+  // центростремительный сплайн Catmull-Rom через [A, wl?, wm?, wr?, B] (гладкий,
+  // не «деревянный»). elbow — уступ (L), taper — сужение. Наконечники: startCap/endCap.
+  // Старое data.c1/c2 (кубика) и data.ctrl (квадратичная вершина) читаем для миграции.
+  function connEnds(d) { const p = d.points || [0, 0, 0, 0]; return { A: { x: p[0], y: p[1] }, B: { x: p[2], y: p[3] } }; }
+  function bezPoint(A, C1, C2, B, t) { const u = 1 - t; return { x: u * u * u * A.x + 3 * u * u * t * C1.x + 3 * u * t * t * C2.x + t * t * t * B.x, y: u * u * u * A.y + 3 * u * u * t * C1.y + 3 * u * t * t * C2.y + t * t * t * B.y }; }
+  // Список точек, через которые проходит кривая: [A, (путевые точки), B].
+  function connWaypoints(d) {
+    const e = connEnds(d), A = e.A, B = e.B, P = (a) => ({ x: a[0], y: a[1] }), list = [A];
+    if (d.wl || d.wm || d.wr) {
+      if (d.wl) list.push(P(d.wl)); if (d.wm) list.push(P(d.wm)); if (d.wr) list.push(P(d.wr));
+    } else if (d.c1 && d.c2) { // миграция старой кубики → 3 точки на ней
+      const C1 = P(d.c1), C2 = P(d.c2);
+      list.push(bezPoint(A, C1, C2, B, 0.25), bezPoint(A, C1, C2, B, 0.5), bezPoint(A, C1, C2, B, 0.75));
+    } else if (d.ctrl && d.ctrl.length === 2) { // миграция квадратичной вершины → центр кривой
+      const Q = P(d.ctrl); list.push({ x: 0.25 * A.x + 0.5 * Q.x + 0.25 * B.x, y: 0.25 * A.y + 0.5 * Q.y + 0.25 * B.y });
+    }
+    list.push(B);
+    return list;
+  }
+  // Кривая, если хоть одна путевая точка заметно отходит от хорды AB.
+  function connIsCurved(d) {
+    const wp = connWaypoints(d); if (wp.length <= 2) return false;
+    const A = wp[0], B = wp[wp.length - 1], vx = B.x - A.x, vy = B.y - A.y, L2 = vx * vx + vy * vy || 1;
+    const dev = (Pt) => { const t = ((Pt.x - A.x) * vx + (Pt.y - A.y) * vy) / L2, px = A.x + t * vx, py = A.y + t * vy; return Math.hypot(Pt.x - px, Pt.y - py); };
+    for (let i = 1; i < wp.length - 1; i++) if (dev(wp[i]) > 1.5) return true;
+    return false;
+  }
+  // НАТУРАЛЬНЫЙ КУБИЧЕСКИЙ СПЛАЙН через точки P → гладкая ломаная. C²-непрерывен
+  // (кривизна без скачков → нет «виляния» между узлами, в отличие от Catmull-Rom).
+  // Параметр — центростремительная длина (^0.5) — меньше выбросов на неравных
+  // промежутках. Натуральные краевые условия (2-я производная=0) → концы «расслаблены».
+  function naturalSpline(P, seg) {
+    const n = P.length; if (n <= 2) return P.slice();
+    seg = seg || 16;
+    const t = [0];
+    for (let i = 1; i < n; i++) t.push(t[i - 1] + Math.max(1e-3, Math.pow(Math.hypot(P[i].x - P[i - 1].x, P[i].y - P[i - 1].y), 0.5)));
+    const h = []; for (let i = 0; i < n - 1; i++) h.push(t[i + 1] - t[i]);
+    // Вторые производные M сплайна для одной координаты (трёхдиагональная прогонка).
+    function solveM(y) {
+      const M = new Array(n).fill(0);
+      if (n < 3) return M;
+      const b = new Array(n).fill(0), c = new Array(n).fill(0), d = new Array(n).fill(0);
+      for (let i = 1; i < n - 1; i++) { b[i] = 2 * (h[i - 1] + h[i]); c[i] = h[i]; d[i] = 6 * ((y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1]); }
+      for (let i = 2; i < n - 1; i++) { const w = h[i - 1] / b[i - 1]; b[i] -= w * c[i - 1]; d[i] -= w * d[i - 1]; }
+      for (let i = n - 2; i >= 1; i--) M[i] = (d[i] - c[i] * M[i + 1]) / b[i];
+      return M;
+    }
+    const xs = P.map((p) => p.x), ys = P.map((p) => p.y), Mx = solveM(xs), My = solveM(ys);
+    const pts = [P[0]];
+    for (let i = 0; i < n - 1; i++) {
+      for (let s = 1; s <= seg; s++) {
+        const tt = t[i] + h[i] * (s / seg), a = (t[i + 1] - tt) / h[i], b = (tt - t[i]) / h[i];
+        const ev = (y, M) => a * y[i] + b * y[i + 1] + ((a * a * a - a) * M[i] + (b * b * b - b) * M[i + 1]) * h[i] * h[i] / 6;
+        pts.push({ x: ev(xs, Mx), y: ev(ys, My) });
+      }
+    }
+    return pts;
+  }
+  // Ортогональный маршрут «уступа»: A→B тремя сегментами (Z-шаг). elbowT∈[0,1] —
+  // доля, где происходит поворот вдоль ГЛАВНОЙ оси (по большей разнице координат).
+  // t=0 и t=1 вырождают Z в L, 0.5 — симметричный шаг. Совпавшие точки убираем.
+  function elbowRoute(d) {
+    const e = connEnds(d), A = e.A, B = e.B, dx = B.x - A.x, dy = B.y - A.y;
+    const horiz = Math.abs(dx) >= Math.abs(dy);
+    let t = (d.elbowT == null ? 0.5 : d.elbowT);
+    // Если излом подводят вплотную к концу, «схлопываем» Z в чистую Г-образную линию
+    // (короткий сегмент у наконечника → он бы ломался; вместо этого наконечник повернётся).
+    const mainLen = Math.abs(horiz ? dx : dy);
+    if (mainLen > 0) { const frac = Math.min(0.45, (connArrowLen(d.strokeWidth || 3) + 6) / mainLen); if (t < frac) t = 0; else if (t > 1 - frac) t = 1; }
+    let pts;
+    if (horiz) { const sx = A.x + dx * t; pts = [A, { x: sx, y: A.y }, { x: sx, y: B.y }, B]; }
+    else { const sy = A.y + dy * t; pts = [A, { x: A.x, y: sy }, { x: B.x, y: sy }, B]; }
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) if (Math.hypot(pts[i].x - out[out.length - 1].x, pts[i].y - out[out.length - 1].y) > 0.01) out.push(pts[i]);
+    return out;
+  }
+  // Середина среднего сегмента уступа — там сидит ручка излома.
+  function elbowMidHandle(d) {
+    const rt = elbowRoute(d);
+    if (rt.length >= 4) return { x: (rt[1].x + rt[2].x) / 2, y: (rt[1].y + rt[2].y) / 2 };
+    if (rt.length === 3) return rt[1];
+    return { x: (rt[0].x + rt[rt.length - 1].x) / 2, y: (rt[0].y + rt[rt.length - 1].y) / 2 };
+  }
+  // Скруглить углы ломаной дугами радиуса r (квадратичная в каждом углу).
+  function roundCorners(pts, r) {
+    if (pts.length < 3 || r <= 0) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+      const d1 = Math.hypot(p0.x - p1.x, p0.y - p1.y) || 1, d2 = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+      const rr = Math.min(r, d1 / 2, d2 / 2);
+      const a = { x: p1.x + (p0.x - p1.x) / d1 * rr, y: p1.y + (p0.y - p1.y) / d1 * rr };
+      const b = { x: p1.x + (p2.x - p1.x) / d2 * rr, y: p1.y + (p2.y - p1.y) / d2 * rr };
+      out.push(a);
+      for (let s = 1; s <= 6; s++) { const t = s / 7, u = 1 - t; out.push({ x: u * u * a.x + 2 * u * t * p1.x + t * t * b.x, y: u * u * a.y + 2 * u * t * p1.y + t * t * b.y }); }
+      out.push(b);
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
+  function connSample(d) {
+    const e = connEnds(d);
+    if (d.elbow) return roundCorners(elbowRoute(d), 16);
+    if (connIsCurved(d)) return naturalSpline(connWaypoints(d), 16);
+    return [e.A, e.B];
+  }
+  // Точка на кривой по доле длины дуги f∈[0,1] (для размещения ручки на кривой).
+  function connPointAtFraction(d, f) {
+    const pts = connSample(d); if (pts.length < 2) return pts[0] || { x: 0, y: 0 };
+    let total = 0; const segL = [];
+    for (let i = 1; i < pts.length; i++) { const L = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); segL.push(L); total += L; }
+    let target = f * total, acc = 0;
+    for (let i = 0; i < segL.length; i++) { if (acc + segL[i] >= target) { const t = (target - acc) / (segL[i] || 1); return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * t, y: pts[i].y + (pts[i + 1].y - pts[i].y) * t }; } acc += segL[i]; }
+    return pts[pts.length - 1];
+  }
+  // Перевести старую кривизну (c1/c2 или ctrl) в путевые слоты wl/wm/wr (один раз).
+  function connMigrateCurve(d) {
+    if (d.wl || d.wm || d.wr) { delete d.c1; delete d.c2; delete d.ctrl; return; }
+    if ((d.c1 && d.c2) || d.ctrl) {
+      const wp = connWaypoints(d); // [A, ...точки, B]
+      if (wp.length === 5) { d.wl = [wp[1].x, wp[1].y]; d.wm = [wp[2].x, wp[2].y]; d.wr = [wp[3].x, wp[3].y]; }
+      else if (wp.length === 3) { d.wm = [wp[1].x, wp[1].y]; }
+    }
+    delete d.c1; delete d.c2; delete d.ctrl;
+  }
+  function connBounds(d) {
+    const pts = connSample(d); let a = Infinity, b = Infinity, c = -Infinity, e = -Infinity;
+    pts.forEach((p) => { a = Math.min(a, p.x); b = Math.min(b, p.y); c = Math.max(c, p.x); e = Math.max(e, p.y); });
+    const pad = (d.strokeWidth || 3) + 8; return { x: a - pad, y: b - pad, width: (c - a) + 2 * pad, height: (e - b) + 2 * pad };
+  }
+  function connTangent(p0, p1) { const dx = p1.x - p0.x, dy = p1.y - p0.y, L = Math.hypot(dx, dy) || 1; return { x: dx / L, y: dy / L }; }
+  // Длина наконечника-стрелки в пикселях (растёт с толщиной).
+  function connArrowLen(sw) { return Math.max(9, sw * 2.6); }
+  // Путевая точка-центр по умолчанию для кнопки «кривая»: середина AB, сдвинутая
+  // по нормали (заметный, но не резкий изгиб). Возвращает [x,y] (относит.).
+  function connDefaultCurve(d) {
+    const e = connEnds(d), A = e.A, B = e.B, mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+    const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L, off = Math.max(30, L * 0.22);
+    return [mx + nx * off, my + ny * off];
+  }
+  // Обрезать ломаную на dist пикселей с конца / с начала (по длине дуги) — чтобы
+  // ствол упирался в ОСНОВАНИЕ наконечника, а не торчал из его острия.
+  function connTrimEnd(pts, dist) {
+    if (dist <= 0 || pts.length < 2) return pts.slice();
+    let rem = dist;
+    for (let i = pts.length - 1; i > 0; i--) {
+      const p = pts[i], q = pts[i - 1], seg = Math.hypot(q.x - p.x, q.y - p.y);
+      if (seg >= rem) { const t = rem / seg; return pts.slice(0, i).concat([{ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }]); }
+      rem -= seg;
+    }
+    return [pts[0]];
+  }
+  function connTrimStart(pts, dist) {
+    if (dist <= 0 || pts.length < 2) return pts.slice();
+    let rem = dist;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p = pts[i], q = pts[i + 1], seg = Math.hypot(q.x - p.x, q.y - p.y);
+      if (seg >= rem) { const t = rem / seg; return [{ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }].concat(pts.slice(i + 1)); }
+      rem -= seg;
+    }
+    return [pts[pts.length - 1]];
+  }
+  // Насколько укоротить ствол под наконечником (чтобы торец прятался под фигурой).
+  function capTrim(cap, sw) {
+    if (cap === 'arrow' || cap === 'triangle_open') return connArrowLen(sw) * 0.9;
+    if (cap === 'diamond' || cap === 'diamond_open') return connArrowLen(sw);
+    return 0;
+  }
+  function drawConnCap(ctx, cap, at, dir, sw, col) {
+    if (!cap || cap === 'none') return;
+    const nx = -dir.y, ny = dir.x, thin = Math.max(1.5, sw * 0.7);
+    if (cap === 'dot' || cap === 'circle_open') {
+      const rad = Math.max(3, sw * 0.9 + 1.5); ctx.beginPath(); ctx.arc(at.x, at.y, rad, 0, 2 * Math.PI);
+      if (cap === 'dot') { ctx.fillStyle = col; ctx.fill(); } else { ctx.strokeStyle = col; ctx.lineWidth = thin; ctx.stroke(); }
+      return;
+    }
+    if (cap === 'bar') {
+      const half = Math.max(5, sw * 1.7); ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, sw); ctx.lineCap = 'round';
+      ctx.moveTo(at.x + nx * half, at.y + ny * half); ctx.lineTo(at.x - nx * half, at.y - ny * half); ctx.stroke(); return;
+    }
+    const len = connArrowLen(sw), wid = Math.max(7, sw * 2.2);
+    const bx = at.x - dir.x * len, by = at.y - dir.y * len; // центр основания
+    if (cap === 'arrow' || cap === 'triangle_open') {
+      ctx.beginPath(); ctx.moveTo(at.x, at.y); ctx.lineTo(bx + nx * wid / 2, by + ny * wid / 2); ctx.lineTo(bx - nx * wid / 2, by - ny * wid / 2); ctx.closePath();
+      if (cap === 'arrow') { ctx.fillStyle = col; ctx.fill(); } else { ctx.strokeStyle = col; ctx.lineWidth = thin; ctx.lineJoin = 'round'; ctx.stroke(); }
+      return;
+    }
+    if (cap === 'arrow_open') {
+      ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, sw); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.moveTo(bx + nx * wid / 2, by + ny * wid / 2); ctx.lineTo(at.x, at.y); ctx.lineTo(bx - nx * wid / 2, by - ny * wid / 2); ctx.stroke(); return;
+    }
+    if (cap === 'diamond' || cap === 'diamond_open') {
+      const mx = at.x - dir.x * len * 0.5, my = at.y - dir.y * len * 0.5, w = wid * 0.62;
+      ctx.beginPath(); ctx.moveTo(at.x, at.y); ctx.lineTo(mx + nx * w, my + ny * w); ctx.lineTo(bx, by); ctx.lineTo(mx - nx * w, my - ny * w); ctx.closePath();
+      if (cap === 'diamond') { ctx.fillStyle = col; ctx.fill(); } else { ctx.strokeStyle = col; ctx.lineWidth = thin; ctx.lineJoin = 'round'; ctx.stroke(); }
+      return;
+    }
+  }
+  function drawConnector(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const d = el.data, ends = connEnds(d), A = ends.A, B = ends.B, col = d.stroke || '#1f2937', sw = d.strokeWidth || 3, full = connSample(d);
+    ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    // СУЖЕНИЕ — самостоятельный тип: ПРЯМАЯ линия, сильно жирнеющая к концу (от
+    // острия до толщины sw). Клин со straight-краями; без наконечников/обрезки.
+    if (d.taper) {
+      const N = 24, w0 = 0.6, tg = connTangent(A, B), nx = -tg.y, ny = tg.x, left = [], right = [];
+      for (let i = 0; i <= N; i++) {
+        const t = i / N, p = { x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t };
+        const half = (w0 + (sw - w0) * Math.pow(t, 1.8)) / 2; // pow>1: тонкая большую часть, резкий разжир у конца
+        left.push({ x: p.x + nx * half, y: p.y + ny * half }); right.push({ x: p.x - nx * half, y: p.y - ny * half });
+      }
+      ctx.beginPath(); ctx.moveTo(left[0].x, left[0].y);
+      for (let i = 1; i < left.length; i++) ctx.lineTo(left[i].x, left[i].y);
+      for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i].x, right[i].y);
+      ctx.closePath(); ctx.fillStyle = col; ctx.fill(); ctx.restore(); return;
+    }
+    // Ствол укорачиваем до основания наконечника (чуть меньше, чтобы перекрытие
+    // спряталось под треугольником): цельная стрелка без торчащего торца.
+    let body = full;
+    const trimE = capTrim(d.endCap, sw), trimS = capTrim(d.startCap, sw);
+    if (trimE > 0) body = connTrimEnd(body, trimE);
+    if (trimS > 0) body = connTrimStart(body, trimS);
+    if (body.length >= 2) {
+      ctx.beginPath(); ctx.moveTo(body[0].x, body[0].y);
+      for (let i = 1; i < body.length; i++) ctx.lineTo(body[i].x, body[i].y);
+      ctx.strokeStyle = col; ctx.lineWidth = sw; ctx.stroke();
+    }
+    // Наконечники — по ИСХОДНЫМ концам, направление по касательной исходной ломаной.
+    drawConnCap(ctx, d.endCap, B, connTangent(full[full.length - 2], full[full.length - 1]), sw, col);
+    drawConnCap(ctx, d.startCap, A, connTangent(full[1], full[0]), sw, col);
+    ctx.restore();
+  }
+  function hitConnector(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const pts = connSample(el.data); ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeShape(shape);
+  }
+
+  function upsertNode(el) {
+    if (el.type === 'boardconfig') { elements.set(el.id, el); boardBg = (el.data && el.data.bg) || 'grid'; boardBgColor = (el.data && el.data.color) || ''; boardGridColor = (el.data && el.data.gridColor) || ''; applyBoardBgColor(); redrawGrid(); if (typeof syncBgUI === 'function') syncBgUI(); return; }
+    if (el.type === 'geogebra') { elements.set(el.id, el); upsertGGB(el); return; }
+    if (el.type === 'func') { elements.set(el.id, el); upsertFuncNode(el); return; }
+    if (WIDGET_TYPES.indexOf(el.type) >= 0) { elements.set(el.id, el); upsertWidget(el); return; }
+    if (el.type === 'textbox') { elements.set(el.id, el); upsertTextbox(el); return; }
+    if (el.type === 'text') { elements.set(el.id, el); upsertMathText(el); return; }
+    elements.set(el.id, el);
+    let node = nodes.get(el.id);
+    if (!node) {
+      node = buildNode(el);
+      if (!node) return;
+      nodes.set(el.id, node);
+      // Привязанная к окну геометрия — в группу окна (обрезается её clip);
+      // иначе на общий слой. Если окно ещё не загружено — позже reattach.
+      if (!(el.data && el.data.frame && el.type !== 'measure' && attachToFrame(el, node))) layer.add(node);
+    } else {
+      const d = el.data || {};
+      node.position({ x: d.x || 0, y: d.y || 0 });
+      if (el.type === 'point') {
+        // у группы-точки нет stroke(); обновляем только позицию и подпись
+        if (node._plabel !== (d.label || '')) {
+          const t = node.findOne('.plabel'); if (t) t.text(d.label || '');
+          node._plabel = d.label || '';
+        }
+      } else if (el.type === 'circle') {
+        node.radius(d.r || 0);
+        node.stroke(d.stroke || '#1f2937');
+        node.strokeWidth(d.strokeWidth || 2);
+      } else if (el.type === 'frame') {
+        const W = d.width || 0, H = d.height || 0;
+        node.clipWidth(W); node.clipHeight(H);
+        const bg = node.findOne('.fbg'); if (bg) { bg.size({ width: W, height: H }); bg.fill(d.bgColor || '#ffffff'); }
+        const hd = node.findOne('.fheader'); if (hd) hd.width(W);
+        const del = node.findOne('.fdel'); if (del) del.x(W - 16);
+        // сетка/оси берут актуальные данные из elements при перерисовке
+      } else if (el.type === 'line' || el.type === 'arrow') {
+        // Кастомный Shape: sceneFunc берёт данные из elements; широкую hit-зону не трогаем.
+      } else {
+        node.stroke(d.stroke || '#1f2937');
+        node.strokeWidth(d.strokeWidth || 3);
+        if (node.getClassName() === 'Line') node.points(d.points || [0, 0]);
+        if (el.type === 'rect') { node.width(d.width || 0); node.height(d.height || 0); node.fill(shapeFillStyle(d, null)); }
+        if (el.type === 'ellipse') { node.radiusX(d.radiusX || 0); node.radiusY(d.radiusY || 0); node.fill(shapeFillStyle(d, null)); }
+        if (el.type === 'image') { if (d.width) node.width(d.width); if (d.height) node.height(d.height); loadImageInto(node, el); }
+        if (el.type === 'pdf') { if (d.width) node.width(d.width); if (d.height) node.height(d.height); renderPdfInto(node, el); }
+        if (el.type === 'latex') {
+          if (d.width) node.width(d.width);
+          if (d.height) node.height(d.height);
+          if (node._latex !== (d.latex || '') + '|' + (d.color || '')) renderLatexInto(node, el);
+        }
+        if (el.type === 'text') {
+          if (d.width) node.width(d.width);
+          if (d.height) node.height(d.height);
+          if (node._textKey !== textKey(d)) renderTextInto(node, el);
+        }
+      }
+    }
+    node.draggable(tool === 'select' && !viewOnly && el.type !== 'frame' && !isPointBound(el) && !el.data.locked); // рамку, геометрию по точкам и закреплённые не таскаем; в режиме просмотра — ничего
+    if (el.type === 'point' || el.type === 'circle' || el.type === 'circ' || isFilledPoly(el.type) || isConstruction(el.type)) recomputeGeometry();
+    if (el.type === 'frame') reattachFuncs(); // привязать функции, ждавшие своё окно
+    applyElVisibility(el); // учесть флаг data.hidden
+    if (el.type === 'point' && el.data.trace) ensureTrace(el); // включить след, если помечен
+    if (el.type === 'rect' || el.type === 'ellipse' || el.type === 'shape') syncShapeText(el); // текст внутри фигуры
+    layer.batchDraw();
+  }
+
+  function removeNode(id) {
+    if (shapeTextItems.has(id)) removeShapeText(id);
+    if (ggbItems.has(id)) { removeGGB(id); elements.delete(id); return; }
+    if (widgetItems.has(id)) { removeWidget(id); return; }
+    const tl = traceLines.get(id); if (tl) { tl.destroy(); traceLines.delete(id); } // убрать след
+    const node = nodes.get(id);
+    if (node) { node.destroy(); nodes.delete(id); }
+    elements.delete(id);
+    if (selected.has(id)) { selected.delete(id); refreshTransformer(); }
+    layer.batchDraw();
+  }
+
+  // ── Зависимости при удалении ───────────────────────────────────────────
+  // Элементы, ПРЯМО ссылающиеся на id (опорные точки построений/окружностей,
+  // точки на линии/окружности/в пересечении, вся геометрия внутри окна).
+  function directDependents(id) {
+    const res = [];
+    elements.forEach((el) => {
+      const d = el.data; if (!d || el.id === id) return;
+      let refs = (d.a === id || d.b === id || d.c === id || d.center === id || d.through === id || d.line === id || d.frame === id || d.vertex === id || d.func === id || d.f === id || d.g === id);
+      if (!refs && d.parts && d.parts.some((p) => p.func === id)) refs = true; // условие области ссылается на график
+      if (!refs && d.pts && d.pts.indexOf(id) >= 0) refs = true; // вершина многоугольника
+      if (!refs && d.refs && d.refs.indexOf(id) >= 0) refs = true; // опора измерения
+      if (!refs && d.on) {
+        const o = d.on;
+        if (o.line === id || o.c === id || o.circle === id || o.regpoly === id) refs = true;
+        else if (o.isect && (o.isect[0] === id || o.isect[1] === id)) refs = true;
+        else if (o.centroid && o.centroid.indexOf(id) >= 0) refs = true;
+        else if (o.ratio && (o.ratio.a === id || o.ratio.b === id)) refs = true;
+        else if (o.xform && (o.src === id || o.xform.c === id || o.xform.a === id || o.xform.b === id || o.xform.line === id)) refs = true;
+      }
+      if (refs) res.push(el.id);
+    });
+    return res;
+  }
+  // Транзитивное замыкание зависимостей, упорядоченное «зависимые раньше основы»
+  // (для корректной истории: undo восстановит основу первой).
+  function withDependents(rootIds) {
+    const layer = new Map(), queue = [];
+    rootIds.forEach((id) => { if (elements.has(id) && !layer.has(id)) { layer.set(id, 0); queue.push(id); } });
+    for (let qi = 0; qi < queue.length; qi++) {
+      const cur = queue[qi], L = layer.get(cur);
+      directDependents(cur).forEach((dep) => {
+        if (!layer.has(dep) || layer.get(dep) <= L) { layer.set(dep, L + 1); queue.push(dep); }
+      });
+    }
+    return Array.from(layer.keys()).sort((a, b) => layer.get(b) - layer.get(a)); // глубже — раньше
+  }
+  // Удалить элементы вместе со всем, что от них зависит.
+  function deleteWithDependents(ids) {
+    withDependents(ids).forEach((id) => {
+      const el = elements.get(id); if (!el) return;
+      histDel(el); send({ action: 'element_delete', id }); removeNode(id);
+    });
+  }
+
+  // Перетаскивание нескольких выбранных объектов вместе (в т.ч. группы).
+  // Стартовые позиции фиксируем на mousedown (captureDragStart ниже), ДО того
+  // как Konva начнёт двигать узел, — иначе ведомые отстают на первый шаг мыши.
+  let dragStart = null;
+  let dragSnap = null; // снимки «до» для истории
+
+  function captureDragSnap(ids) {
+    if (dragSnap) return;
+    dragSnap = ids.map((i) => elements.get(i)).filter(Boolean).map(clone);
+  }
+  function commitDragSnap() {
+    if (!dragSnap) return;
+    dragSnap.forEach((b) => { const cur = elements.get(b.id); if (cur) histUpd(b, cur); });
+    dragSnap = null;
+  }
+
+  // ── Умные направляющие (как в Miro): при перетаскивании выравниваем края/центры
+  // объекта к соседям (матокна, PDF, картинки, фигуры, таблицы) с прилипанием.
+  let guideRefs = null; // боксы соседей {x,y,w,h}, снятые один раз за перетаскивание
+  const SNAP_BOX_TYPES = { frame: 1, image: 1, pdf: 1, shape: 1, rect: 1, ellipse: 1, text: 1, latex: 1 };
+  function boxOfElem(el, id) {
+    if (!el) return null;
+    if (el.type === 'frame') return { x: el.data.x || 0, y: el.data.y || 0, w: el.data.width || 0, h: el.data.height || 0 };
+    const n = nodes.get(id); if (!n || typeof n.getClientRect !== 'function') return null;
+    const b = n.getClientRect({ relativeTo: layer });
+    return (b && b.width && b.height) ? { x: b.x, y: b.y, w: b.width, h: b.height } : null;
+  }
+  let guidesEnabled = true; // тумблер «Направляющие (выравнивание)» в меню доски
+  function collectGuideRefs(excludeIds) {
+    if (!guidesEnabled) return []; // направляющие выключены — снапа нет
+    const ex = new Set(excludeIds), refs = [];
+    elements.forEach((el, id) => {
+      if (ex.has(id) || (el.data && el.data.hidden && !revealHidden) || !SNAP_BOX_TYPES[el.type]) return;
+      const b = boxOfElem(el, id); if (b) refs.push(b);
+    });
+    widgetItems.forEach((it, id) => {
+      if (ex.has(id)) return;
+      const d = it.el.data, w = it.wrapper.offsetWidth, h = it.wrapper.offsetHeight;
+      if (w && h) refs.push({ x: d.x || 0, y: d.y || 0, w: w, h: h });
+    });
+    return refs;
+  }
+  function computeSnap(box) {
+    if (!guideRefs || !guideRefs.length) return { dx: 0, dy: 0, lines: [] };
+    const th = 7 / stage.scaleX();
+    const dX = [box.x, box.x + box.w / 2, box.x + box.w], dY = [box.y, box.y + box.h / 2, box.y + box.h];
+    let bV = null, bH = null;
+    guideRefs.forEach((r) => {
+      const rX = [r.x, r.x + r.w / 2, r.x + r.w], rY = [r.y, r.y + r.h / 2, r.y + r.h];
+      dX.forEach((d) => rX.forEach((v) => { const ad = Math.abs(v - d); if (ad <= th && (!bV || ad < bV.ad)) bV = { ad: ad, diff: v - d, at: v }; }));
+      dY.forEach((d) => rY.forEach((v) => { const ad = Math.abs(v - d); if (ad <= th && (!bH || ad < bH.ad)) bH = { ad: ad, diff: v - d, at: v }; }));
+    });
+    const dx = bV ? bV.diff : 0, dy = bH ? bH.diff : 0, sb = { x: box.x + dx, y: box.y + dy, w: box.w, h: box.h };
+    const lines = [];
+    if (bV) { let a = sb.y, b = sb.y + sb.h; guideRefs.forEach((r) => { if ([r.x, r.x + r.w / 2, r.x + r.w].some((v) => Math.abs(v - bV.at) < 0.5)) { a = Math.min(a, r.y); b = Math.max(b, r.y + r.h); } }); lines.push({ v: true, at: bV.at, a: a, b: b }); }
+    if (bH) { let a = sb.x, b = sb.x + sb.w; guideRefs.forEach((r) => { if ([r.y, r.y + r.h / 2, r.y + r.h].some((v) => Math.abs(v - bH.at) < 0.5)) { a = Math.min(a, r.x); b = Math.max(b, r.x + r.w); } }); lines.push({ v: false, at: bH.at, a: a, b: b }); }
+    return { dx: dx, dy: dy, lines: lines, snappedX: !!bV, snappedY: !!bH };
+  }
+  // Одинаковые интервалы (как в Figma). Одна ось: pos/size тянущегося, intervals —
+  // отрезки [s,e] соседей в той же полосе. Возвращает целевой pos и два равных зазора.
+  function gapSnap1D(pos, size, intervals, th) {
+    const end = pos + size, list = intervals.slice().sort((p, q) => p.s - q.s);
+    const left = list.filter((r) => r.e <= pos + th), right = list.filter((r) => r.s >= end - th);
+    const cands = [];
+    // (1) по центру между ближайшими соседями слева и справа
+    if (left.length && right.length) {
+      const L = left[left.length - 1], R = right[0], target = (L.e + R.s - size) / 2, g = target - L.e;
+      if (g > 0.5) cands.push({ target: target, gaps: [{ a: L.e, b: target }, { a: target + size, b: R.s }] });
+    }
+    // (2) повтор зазора слева: два ближайших слева дают зазор g, ставим справа от них так же
+    if (left.length >= 2) {
+      const L2 = left[left.length - 1], L1 = left[left.length - 2], g = L2.s - L1.e, target = L2.e + g;
+      if (g > 0.5) cands.push({ target: target, gaps: [{ a: L1.e, b: L2.s }, { a: L2.e, b: target }] });
+    }
+    // (3) повтор зазора справа
+    if (right.length >= 2) {
+      const R1 = right[0], R2 = right[1], g = R2.s - R1.e, target = R1.s - g - size;
+      if (g > 0.5) cands.push({ target: target, gaps: [{ a: target + size, b: R1.s }, { a: R1.e, b: R2.s }] });
+    }
+    let best = null;
+    cands.forEach((c) => { const d = Math.abs(pos - c.target); if (d <= th && (!best || d < best.d)) best = { d: d, c: c }; });
+    return best ? best.c : null;
+  }
+  // Снап равных интервалов при перетаскивании (по осям, где край НЕ примагнитился).
+  function equalGapSnap(box, skipX, skipY) {
+    const th = 7 / stage.scaleX(); let dx = 0, dy = 0; const marks = [];
+    if (!skipX) {
+      const band = (guideRefs || []).filter((r) => r.y < box.y + box.h && r.y + r.h > box.y);
+      const r = gapSnap1D(box.x, box.w, band.map((o) => ({ s: o.x, e: o.x + o.w })), th);
+      if (r) { dx = r.target - box.x; const cy = box.y + box.h / 2; r.gaps.forEach((g) => marks.push({ seg: true, x0: g.a, y0: cy, x1: g.b, y1: cy })); }
+    }
+    if (!skipY) {
+      const band = (guideRefs || []).filter((r) => r.x < box.x + box.w && r.x + r.w > box.x);
+      const r = gapSnap1D(box.y, box.h, band.map((o) => ({ s: o.y, e: o.y + o.h })), th);
+      if (r) { dy = r.target - box.y; const cx = box.x + box.w / 2 + dx; r.gaps.forEach((g) => marks.push({ seg: true, x0: cx, y0: g.a, x1: cx, y1: g.b })); }
+    }
+    return { dx: dx, dy: dy, marks: marks };
+  }
+  // Полный снап при перетаскивании: край (приоритет) + равные интервалы по свободным осям.
+  function computeDragSnap(box) {
+    const e = computeSnap(box);
+    const g = equalGapSnap(box, e.snappedX, e.snappedY);
+    return { dx: e.snappedX ? e.dx : g.dx, dy: e.snappedY ? e.dy : g.dy, lines: e.lines.concat(g.marks) };
+  }
+  function drawGuides(lines) {
+    guideLayer.destroyChildren();
+    const sw = 1 / stage.scaleX(), cap = 5 / stage.scaleX();
+    (lines || []).forEach((L) => {
+      if (L.seg) {
+        guideLayer.add(new Konva.Line({ points: [L.x0, L.y0, L.x1, L.y1], stroke: '#ff3b7f', strokeWidth: sw, listening: false }));
+        if (L.y0 === L.y1) { [L.x0, L.x1].forEach((x) => guideLayer.add(new Konva.Line({ points: [x, L.y0 - cap, x, L.y0 + cap], stroke: '#ff3b7f', strokeWidth: sw, listening: false }))); }
+        else { [L.y0, L.y1].forEach((y) => guideLayer.add(new Konva.Line({ points: [L.x0 - cap, y, L.x0 + cap, y], stroke: '#ff3b7f', strokeWidth: sw, listening: false }))); }
+      } else { const pts = L.v ? [L.at, L.a, L.at, L.b] : [L.a, L.at, L.b, L.at]; guideLayer.add(new Konva.Line({ points: pts, stroke: '#ff3b7f', strokeWidth: sw, listening: false })); }
+    });
+    guideLayer.batchDraw();
+  }
+  function clearGuides() { guideLayer.destroyChildren(); guideLayer.batchDraw(); guideRefs = null; }
+  // Снап ТЯНУЩЕГОСЯ угла при ресайзе: двигаем угол P (противоположный F зафиксирован),
+  // липнем краями/центрами к соседям по X и Y независимо; линии — через выровненные.
+  function snapResizePoint(P, F) {
+    const th = 7 / stage.scaleX();
+    let x = P.x, y = P.y, bV = null, bH = null;
+    (guideRefs || []).forEach((r) => {
+      [r.x, r.x + r.w / 2, r.x + r.w].forEach((v) => { const ad = Math.abs(v - P.x); if (ad <= th && (!bV || ad < bV.ad)) bV = { ad: ad, at: v }; });
+      [r.y, r.y + r.h / 2, r.y + r.h].forEach((v) => { const ad = Math.abs(v - P.y); if (ad <= th && (!bH || ad < bH.ad)) bH = { ad: ad, at: v }; });
+    });
+    const lines = [];
+    if (bV) { x = bV.at; let a = Math.min(y, F.y), b = Math.max(y, F.y); (guideRefs || []).forEach((r) => { if ([r.x, r.x + r.w / 2, r.x + r.w].some((v) => Math.abs(v - bV.at) < 0.5)) { a = Math.min(a, r.y); b = Math.max(b, r.y + r.h); } }); lines.push({ v: true, at: bV.at, a: a, b: b }); }
+    if (bH) { y = bH.at; let a = Math.min(x, F.x), b = Math.max(x, F.x); (guideRefs || []).forEach((r) => { if ([r.y, r.y + r.h / 2, r.y + r.h].some((v) => Math.abs(v - bH.at) < 0.5)) { a = Math.min(a, r.x); b = Math.max(b, r.x + r.w); } }); lines.push({ v: false, at: bH.at, a: a, b: b }); }
+    return { x: x, y: y, lines: lines, snappedX: !!bV, snappedY: !!bH };
+  }
+  // Равные интервалы при РЕСАЙЗЕ (одна ось): двигаем край E (противоположный F фикс.),
+  // band — соседи [{s,e}] в полосе. Цель — зазор E↔соседа = либо зазору с фикс.стороны,
+  // либо любому зазору-паре в ряду. Возвращает целевой E + два равных отрезка-мерки.
+  function resizeGapTargets(F, E, band) {
+    const th = 7 / stage.scaleX(), dir = Math.sign(E - F) || 1, list = band.slice().sort((a, b) => a.s - b.s);
+    let Nedge = null;
+    if (dir > 0) { const c = list.filter((r) => r.s >= E - th); if (c.length) Nedge = c[0].s; }
+    else { const c = list.filter((r) => r.e <= E + th); if (c.length) Nedge = c[c.length - 1].e; }
+    if (Nedge == null) return null;
+    const targets = [];
+    if (dir > 0) { const c = list.filter((r) => r.e <= F + th); if (c.length) { const M = c[c.length - 1]; targets.push({ G: F - M.e, ref: { a: M.e, b: F } }); } }
+    else { const c = list.filter((r) => r.s >= F - th); if (c.length) { const M = c[0]; targets.push({ G: M.s - F, ref: { a: F, b: M.s } }); } }
+    for (let i = 0; i < list.length - 1; i++) { const g = list[i + 1].s - list[i].e; if (g > 0.5) targets.push({ G: g, ref: { a: list[i].e, b: list[i + 1].s } }); }
+    let best = null;
+    targets.forEach((t) => { if (t.G <= 0.5) return; const targetE = Nedge - dir * t.G, d = Math.abs(E - targetE); if (d <= th && (!best || d < best.d)) best = { d: d, E: targetE, ref: t.ref, moving: dir > 0 ? { a: targetE, b: Nedge } : { a: Nedge, b: targetE } }; });
+    return best;
+  }
+  // Снап тянущегося угла окна (P) при фикс. углу F: край/центр (приоритет) + равные
+  // интервалы по свободным осям. Используется и при ресайзе окна, и при его создании.
+  function frameCornerSnap(P, F) {
+    const S = snapResizePoint(P, F);
+    let Px = S.x, Py = S.y; const marks = S.lines.slice();
+    const cy = (F.y + Py) / 2, cx = (F.x + Px) / 2;
+    if (!S.snappedX) {
+      const bandX = (guideRefs || []).filter((r) => r.y < Math.max(F.y, Py) && r.y + r.h > Math.min(F.y, Py)).map((r) => ({ s: r.x, e: r.x + r.w }));
+      const g = resizeGapTargets(F.x, P.x, bandX);
+      if (g) { Px = g.E; marks.push({ seg: true, x0: g.moving.a, y0: cy, x1: g.moving.b, y1: cy }, { seg: true, x0: g.ref.a, y0: cy, x1: g.ref.b, y1: cy }); }
+    }
+    if (!S.snappedY) {
+      const bandY = (guideRefs || []).filter((r) => r.x < Math.max(F.x, Px) && r.x + r.w > Math.min(F.x, Px)).map((r) => ({ s: r.y, e: r.y + r.h }));
+      const g = resizeGapTargets(F.y, P.y, bandY);
+      if (g) { Py = g.E; marks.push({ seg: true, x0: cx, y0: g.moving.a, x1: cx, y1: g.moving.b }, { seg: true, x0: cx, y0: g.ref.a, x1: cx, y1: g.ref.b }); }
+    }
+    return { x: Px, y: Py, marks: marks };
+  }
+  // Снап для РАВНОМЕРНОГО ресайза (картинки/фигуры): масштаб один, поэтому липнем
+  // тем краем угла, что ближе к линии соседа — второй край следует по пропорции.
+  function snapUniformScale(F, dirX, dirY, w0, h0, s) {
+    if (!guideRefs || !guideRefs.length) return { s: s, lines: [] };
+    const th = 7 / stage.scaleX();
+    const cornerX = F.x + dirX * w0 * s, cornerY = F.y + dirY * h0 * s;
+    let best = null;
+    // Кандидаты-выравнивания: угол к краю/центру соседа.
+    (guideRefs || []).forEach((r) => {
+      [r.x, r.x + r.w / 2, r.x + r.w].forEach((vx) => { const dist = Math.abs(cornerX - vx); if (dist <= th && (!best || dist < best.dist)) best = { dist: dist, s: Math.abs(vx - F.x) / w0, kind: 'edgeV', at: vx }; });
+      [r.y, r.y + r.h / 2, r.y + r.h].forEach((vy) => { const dist = Math.abs(cornerY - vy); if (dist <= th && (!best || dist < best.dist)) best = { dist: dist, s: Math.abs(vy - F.y) / h0, kind: 'edgeH', at: vy }; });
+    });
+    // Кандидаты-интервалы: край угла делает зазор до соседа равным другому зазору.
+    const yLo = Math.min(F.y, cornerY), yHi = Math.max(F.y, cornerY);
+    const bandX = (guideRefs || []).filter((r) => r.y < yHi && r.y + r.h > yLo).map((r) => ({ s: r.x, e: r.x + r.w }));
+    const gX = resizeGapTargets(F.x, cornerX, bandX);
+    if (gX) { const dist = Math.abs(cornerX - gX.E); if (dist <= th && (!best || dist < best.dist)) best = { dist: dist, s: Math.abs(gX.E - F.x) / w0, kind: 'gapV', g: gX }; }
+    const xLo = Math.min(F.x, cornerX), xHi = Math.max(F.x, cornerX);
+    const bandY = (guideRefs || []).filter((r) => r.x < xHi && r.x + r.w > xLo).map((r) => ({ s: r.y, e: r.y + r.h }));
+    const gY = resizeGapTargets(F.y, cornerY, bandY);
+    if (gY) { const dist = Math.abs(cornerY - gY.E); if (dist <= th && (!best || dist < best.dist)) best = { dist: dist, s: Math.abs(gY.E - F.y) / h0, kind: 'gapH', g: gY }; }
+    if (!best) return { s: s, lines: [] };
+    const ns = Math.max(0.05, Math.min(40, best.s)), cX = F.x + dirX * w0 * ns, cY = F.y + dirY * h0 * ns, lines = [];
+    if (best.kind === 'edgeV') { let a = Math.min(cY, F.y), b = Math.max(cY, F.y); (guideRefs || []).forEach((r) => { if ([r.x, r.x + r.w / 2, r.x + r.w].some((v) => Math.abs(v - best.at) < 0.5)) { a = Math.min(a, r.y); b = Math.max(b, r.y + r.h); } }); lines.push({ v: true, at: best.at, a: a, b: b }); }
+    else if (best.kind === 'edgeH') { let a = Math.min(cX, F.x), b = Math.max(cX, F.x); (guideRefs || []).forEach((r) => { if ([r.y, r.y + r.h / 2, r.y + r.h].some((v) => Math.abs(v - best.at) < 0.5)) { a = Math.min(a, r.x); b = Math.max(b, r.x + r.w); } }); lines.push({ v: false, at: best.at, a: a, b: b }); }
+    else if (best.kind === 'gapV') { const cy = (F.y + cY) / 2; lines.push({ seg: true, x0: best.g.moving.a, y0: cy, x1: best.g.moving.b, y1: cy }, { seg: true, x0: best.g.ref.a, y0: cy, x1: best.g.ref.b, y1: cy }); }
+    else { const cx = (F.x + cX) / 2; lines.push({ seg: true, x0: cx, y0: best.g.moving.a, x1: cx, y1: best.g.moving.b }, { seg: true, x0: cx, y0: best.g.ref.a, x1: cx, y1: best.g.ref.b }); }
+    return { s: ns, lines: lines };
+  }
+
+  function onNodeDragMove(id, node) {
+    positionHandles(); // ручки следуют за объектом при перемещении
+    captureDragSnap(dragStart ? Array.from(selected) : [id]);
+    const isLead = !dragStart || dragStart.leadId === id;
+    if (!isLead) return; // следом-объекты двигает ведущий
+    if (!guideRefs) guideRefs = collectGuideRefs(dragStart ? Array.from(selected) : [id]);
+    const b = node.getClientRect({ relativeTo: layer });
+    const snap = computeDragSnap({ x: b.x, y: b.y, w: b.width, h: b.height });
+    if (snap.dx || snap.dy) node.position({ x: node.x() + snap.dx, y: node.y() + snap.dy });
+    drawGuides(snap.lines);
+    moveDragFollowers(id, node);
+    // Ручки коннектора (синие концы + белые путевые точки) должны ехать ВМЕСТЕ с линией,
+    // а не телепортироваться в конце: позиционируем их по ЖИВОЙ позиции узла (data.x/y ещё старые).
+    if (connHandles.visible()) {
+      const cel = connSelectedEl();
+      if (cel) { const cn = nodes.get(cel.id); if (cn) positionConnHandlesAt(cel, cn.x(), cn.y()); }
+    }
+    if (shapeTextItems.size) repositionWidgets(); // текст внутри фигур едет вместе с фигурой
+    layer.batchDraw();
+  }
+
+  function onNodeDragEnd(id, node) {
+    // Синхронизируем все сдвинутые объекты: выделение + «прицепы» (надписи на
+    // картинке/pdf едут с ней, даже если не выделены).
+    const ids = new Set([id]);
+    if (dragStart && dragStart.leadId === id) {
+      Array.from(selected).forEach((x) => ids.add(x));
+      dragStart.items.forEach((it) => { ids.add(it.node ? it.node.id() : (it.widget && it.widget.el.id)); });
+    }
+    ids.forEach((eid) => {
+      const el = elements.get(eid); if (!el) return;
+      // Геометрию по точкам не синкаем по x/y (её позиция определяется точками) —
+      // иначе запишем и разошлём ложный сдвиг, оторвав её от точек.
+      if (isPointBound(el)) return;
+      const n = nodes.get(eid);
+      if (n) { el.data.x = n.x(); el.data.y = n.y(); } // виджеты: data.x/y уже обновлены при move
+      send({ action: 'element_update', element: el });
+    });
+    dragStart = null;
+    commitDragSnap();
+    positionHandles();
+    clearGuides();
+  }
+
+  // Двигать «ведомых» группового перетаскивания за ведущим (Konva-узлы + DOM-виджеты).
+  // Общий помощник — используют и onNodeDragMove, и onGeoDragMove (когда ведущий —
+  // свободная точка/окружность), иначе гео-обработчики замораживали остальную группу.
+  function moveDragFollowers(id, node) {
+    if (!(dragStart && dragStart.leadId === id)) return;
+    const dx = node.x() - dragStart.leadX0, dy = node.y() - dragStart.leadY0;
+    let anyWidget = false;
+    dragStart.items.forEach((it) => {
+      if (it.node) it.node.position({ x: it.x0 + dx, y: it.y0 + dy });
+      else if (it.widget) { it.widget.el.data.x = it.wx0 + dx; it.widget.el.data.y = it.wy0 + dy; anyWidget = true; }
+    });
+    if (anyWidget) repositionWidgets();
+    tr.forceUpdate();
+  }
+  function commitDragFollowers(id) {
+    if (!(dragStart && dragStart.leadId === id)) return;
+    dragStart.items.forEach((it) => {
+      const eid = it.node ? it.node.id() : (it.widget && it.widget.el.id);
+      const el = eid && elements.get(eid); if (!el) return;
+      if (isPointBound(el)) return;
+      const n = nodes.get(eid);
+      if (n) { el.data.x = n.x(); el.data.y = n.y(); }
+      send({ action: 'element_update', element: el });
+    });
+  }
+
+  // Групповое перемещение, начатое с DOM-элемента (текст/виджет) — двигаем ВСЁ
+  // выделение (и Konva-объекты, и DOM), чтобы текст в выделении вёл себя как все.
+  function selectionSnapshot() {
+    const snap = [];
+    selected.forEach((id) => {
+      const n = nodes.get(id); if (n) { snap.push({ id, node: n, x0: n.x(), y0: n.y() }); return; }
+      const w = widgetItems.get(id); if (w) snap.push({ id, widget: w, x0: (w.el.data.x || 0), y0: (w.el.data.y || 0) });
+    });
+    return snap;
+  }
+  function moveSnapshotBy(snap, dx, dy) {
+    snap.forEach((it) => { if (it.node) it.node.position({ x: it.x0 + dx, y: it.y0 + dy }); else if (it.widget) { it.widget.el.data.x = it.x0 + dx; it.widget.el.data.y = it.y0 + dy; } });
+    repositionWidgets(); layer.batchDraw();
+  }
+  function domSelectionDrag(startEv) {
+    const s = stage.scaleX(), sx = startEv.clientX, sy = startEv.clientY;
+    const snap = selectionSnapshot();
+    const befores = snap.map((o) => ({ id: o.id, before: clone(elements.get(o.id)) })).filter((b) => b.before);
+    let moved = false;
+    const mv = (ev) => { if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) moved = true; if (moved) moveSnapshotBy(snap, (ev.clientX - sx) / s, (ev.clientY - sy) / s); };
+    const up = () => {
+      document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+      if (!moved) return;
+      const ops = [];
+      selected.forEach((id) => { const el = elements.get(id); if (!el) return; const n = nodes.get(id); if (n) { el.data.x = n.x(); el.data.y = n.y(); } send({ action: 'element_update', element: el }); });
+      befores.forEach((b) => { const after = elements.get(b.id); if (after) ops.push({ kind: 'upd', before: b.before, after: clone(after) }); });
+      histBatch(ops);
+      if (tr) tr.forceUpdate();
+    };
+    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+  }
+
+  // ── Геометрия: точки и окружности с привязкой ──────────────────────────
+  // Привязка курсора: сначала к окружности (точка ложится точно на неё и
+  // запоминает угол), затем к существующей точке, затем к узлу сетки.
+  function snapPoint(pt, excludeId) {
+    const THRESH = 12 / stage.scaleX();
+    // 1) на окружность
+    let bestC = null, bestD = THRESH;
+    elements.forEach((el) => {
+      if (el.type !== 'circle') return;
+      const d = Math.hypot(pt.x - el.data.x, pt.y - el.data.y);
+      const diff = Math.abs(d - (el.data.r || 0));
+      if (diff < bestD) { bestD = diff; bestC = el; }
+    });
+    if (bestC) {
+      const a = Math.atan2(pt.y - bestC.data.y, pt.x - bestC.data.x);
+      const r = bestC.data.r || 0;
+      return { x: bestC.data.x + r * Math.cos(a), y: bestC.data.y + r * Math.sin(a), on: { c: bestC.id, a } };
+    }
+    // 2) к существующей точке
+    let bestP = null, bestPD = THRESH, bestPW = null;
+    elements.forEach((el) => {
+      if (el.type !== 'point' || el.id === excludeId) return;
+      const w = pointWorld(el);
+      const d = Math.hypot(pt.x - w.x, pt.y - w.y);
+      if (d < bestPD) { bestPD = d; bestP = el; bestPW = w; }
+    });
+    if (bestP) return { x: bestPW.x, y: bestPW.y, on: null };
+    // 3) к узлу сетки
+    const gx = Math.round(pt.x / GRID_STEP) * GRID_STEP, gy = Math.round(pt.y / GRID_STEP) * GRID_STEP;
+    if (Math.abs(pt.x - gx) < THRESH && Math.abs(pt.y - gy) < THRESH) return { x: gx, y: gy, on: null };
+    return { x: pt.x, y: pt.y, on: null };
+  }
+
+  // Пересчёт зависимой геометрии: точки «на окружности» держатся на ней по углу.
+  // ── Построения по точкам (отрезок/луч/прямая/перпендикуляр/параллель/
+  //    серединный перпендикуляр/биссектриса/угол) ────────────────────────
+  const CONSTRUCT_LINES = ['segment', 'ray', 'gline', 'perpbis', 'perp', 'parallel', 'bisector'];
+  const CONSTRUCT_PICKS = { segment: 2, ray: 2, gline: 2, perpbis: 2, bisector: 3, perp: 3, parallel: 3, angle: 3, conic: 5 };
+  // Бесконечные построения (луч, прямая, перп., паралл., сред.перп., биссектриса)
+  // живут СТРОГО внутри матокна — их обрезает граница окна. Отрезок и угол — конечные,
+  // строятся где угодно.
+  const INFINITE_CONSTRUCTS = ['ray', 'gline', 'perpbis', 'perp', 'parallel', 'bisector', 'conic'];
+  const GEO_L = 6000; // «бесконечность» в локальных px матокна (обрежет clip окна)
+  // Производная точка — положение полностью определено (пересечение), её не таскают.
+  function isDerivedPoint(el) { return el.type === 'point' && el.data.on && !!(el.data.on.isect || el.data.on.regpoly || el.data.on.centroid || el.data.on.ratio || el.data.on.xform); }
+  function ptPos(id) { const e = elements.get(id); return (e && e.type === 'point') ? pointWorld(e) : null; }
+  function vnorm(v) { const m = Math.hypot(v.x, v.y) || 1; return { x: v.x / m, y: v.y / m }; }
+  function isConstruction(t) { return CONSTRUCT_LINES.indexOf(t) >= 0 || t === 'angle'; }
+  // ── Единая «трейт-таблица» геометрии по точкам ─────────────────────────
+  // isPointBoundLine — объект ОПРЕДЕЛЯЕТСЯ точками, рисуется в абсолютных коорд.
+  // от них: не таскается свободно как узел, двигается ПАРАЛЛЕЛЬНЫМ ПЕРЕНОСОМ своих
+  // точек (startLineDrag) и следует за ними в recompute. isPointBound — то же + произв.
+  // точки (двигаться не могут). ЕДИНАЯ точка правды вместо ~6 разрозненных списков
+  // (два draggable-гейта, маршрутизация переноса, исключение из «ведомых», reattach).
+  // Новый такой тип (напр. коника) добавляется ЗДЕСЬ, а не в шести местах.
+  function isPointBoundLine(el) { return !!(el && (isConstruction(el.type) || el.type === 'circ' || el.type === 'vector' || el.type === 'conic' || isFilledPoly(el.type))); }
+  function isPointBound(el) { return !!(el && (isPointBoundLine(el) || isDerivedPoint(el))); }
+
+  // Функция позиции опорной точки для построения: привязанное к окну считаем
+  // в ЛОКАЛЬНЫХ px группы окна (clip окна обрежет «бесконечное»), свободное — в мировых.
+  function ptPosFor(el) {
+    const fr = el.data.frame ? elements.get(el.data.frame) : null;
+    if (!fr) return ptPos;
+    return (id) => { const e = elements.get(id); if (!(e && e.type === 'point')) return null; return frameMathToLocal(fr, e.data.mx || 0, e.data.my || 0); };
+  }
+  // Параметры построения: базовая точка, направление и диапазон параметра t.
+  //   segment  — конечный, концы A,B;
+  //   ray/bisector — луч, t∈[0,∞);
+  //   gline/perp/parallel/perpbis — полная прямая, t∈(−∞,∞).
+  // Единичное направление опорной линии-объекта (для перп./паралл. «по линии»).
+  function refLineDir(el, depth) {
+    const P = constructionParams(el, depth);
+    if (!P) return null;
+    if (P.u) return P.u;
+    if (P.seg) return vnorm({ x: P.seg[2] - P.seg[0], y: P.seg[3] - P.seg[1] });
+    return null;
+  }
+  function constructionParams(el, depth) {
+    depth = depth || 0; if (depth > 8) return null; // страховка от циклов ссылок
+    const d = el.data;
+    const pos = ptPosFor(el);
+    // Перпендикуляр/параллель «по линии»: базовая линия-объект d.line + точка d.through.
+    if ((el.type === 'perp' || el.type === 'parallel') && d.line) {
+      const ref = elements.get(d.line);
+      const ru = ref ? refLineDir(ref, depth + 1) : null;
+      const through = pos(d.through);
+      if (!ru || !through) return null;
+      const u = (el.type === 'perp') ? { x: -ru.y, y: ru.x } : ru;
+      return { base: through, u, tlo: -Infinity, thi: Infinity };
+    }
+    const A = pos(d.a), B = pos(d.b), C = d.c ? pos(d.c) : null;
+    if (!A || !B) return null;
+    if (el.type === 'segment') return { seg: [A.x, A.y, B.x, B.y] };
+    const dir = vnorm({ x: B.x - A.x, y: B.y - A.y });
+    const pdir = { x: -dir.y, y: dir.x };
+    if (el.type === 'ray') return { base: A, u: dir, tlo: 0, thi: Infinity };
+    if (el.type === 'gline') return { base: A, u: dir, tlo: -Infinity, thi: Infinity };
+    if (el.type === 'perpbis') return { base: { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 }, u: pdir, tlo: -Infinity, thi: Infinity };
+    // Перпендикуляр/параллель «по трём точкам»: A,B задают направление, C — через какую точку.
+    if (el.type === 'perp') { if (!C) return null; return { base: C, u: pdir, tlo: -Infinity, thi: Infinity }; }
+    if (el.type === 'parallel') { if (!C) return null; return { base: C, u: dir, tlo: -Infinity, thi: Infinity }; }
+    if (el.type === 'bisector') {
+      if (!C) return null; const V = B;
+      const u = vnorm({ x: A.x - V.x, y: A.y - V.y }), w = vnorm({ x: C.x - V.x, y: C.y - V.y });
+      let b = { x: u.x + w.x, y: u.y + w.y }; if (Math.hypot(b.x, b.y) < 1e-6) b = pdir;
+      return { base: V, u: vnorm(b), tlo: 0, thi: Infinity };
+    }
+    return null;
+  }
+  // Концы вектора AB в коорд. узла (лок. окна или мировые).
+  function vecEnds(el) { const pos = ptPosFor(el), A = pos(el.data.a), B = pos(el.data.b); return (A && B) ? [A.x, A.y, B.x, B.y] : null; }
+  function constructionLinePoints(el) {
+    const P = constructionParams(el);
+    if (!P) return null;
+    if (P.seg) return P.seg; // отрезок — конечный, живёт где угодно
+    if (el.data.frame) {
+      // Бесконечное построение по параметрическому уравнению P(t)=base+t·u —
+      // строго ВНУТРИ матокна: тянем на ±GEO_L в локальных px, граница окна обрезает.
+      const t0 = (P.tlo === -Infinity) ? -GEO_L : P.tlo, t1 = GEO_L;
+      return [P.base.x + P.u.x * t0, P.base.y + P.u.y * t0, P.base.x + P.u.x * t1, P.base.y + P.u.y * t1];
+    }
+    return null; // бесконечное построение вне окна не рисуем — оно живёт только в матокне
+  }
+  // Многоугольник: плоский список координат вершин (лок. коорд окна или мировые).
+  function polygonPoints(el) {
+    const pos = ptPosFor(el), flat = [];
+    for (const id of (el.data.pts || [])) { const p = pos(id); if (!p) return null; flat.push(p.x, p.y); }
+    return flat.length >= 4 ? flat : null;
+  }
+  function hexToRgba(hex, a) {
+    hex = (hex || '#1f2937').replace('#', '');
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    const n = parseInt(hex, 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+  // ── Базовые фигуры (для схем/оформления): рисуются протягиванием рамки ──
+  const SHAPE_TOOLS = { sh_rrect: 'rrect', sh_tri: 'tri', sh_rtri: 'rtri', sh_para: 'para', sh_trap: 'trap', sh_rhomb: 'rhomb', sh_penta: 'penta', sh_hexa: 'hexa', sh_star: 'star', sh_cyl: 'cyl', sh_cloud: 'cloud', sh_cross: 'cross', sh_barrow: 'barrow', sh_callout: 'callout' };
+  function shapeRegPts(W, H, n, rotDeg) { const cx = W / 2, cy = H / 2, out = []; for (let i = 0; i < n; i++) { const a = (rotDeg + i * 360 / n) * Math.PI / 180; out.push([cx + Math.cos(a) * W / 2, cy + Math.sin(a) * H / 2]); } return out; }
+  function shapeStarPts(W, H, n, rotDeg, inner) { const cx = W / 2, cy = H / 2, out = []; for (let i = 0; i < 2 * n; i++) { const a = (rotDeg + i * 180 / n) * Math.PI / 180, rr = (i % 2 === 0) ? 1 : inner; out.push([cx + Math.cos(a) * W / 2 * rr, cy + Math.sin(a) * H / 2 * rr]); } return out; }
+  function shapePolyPath(ctx, pts) { ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]); ctx.closePath(); }
+  function shapeRoundRect(ctx, x, y, w, h, r) { r = Math.min(r, w / 2, h / 2); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+  function shapeCylinder(ctx, W, H) { const rx = W / 2, ry = Math.min(H * 0.16, H / 2 - 2); ctx.moveTo(0, ry); ctx.lineTo(0, H - ry); ctx.ellipse(rx, H - ry, rx, ry, 0, Math.PI, 2 * Math.PI, false); ctx.lineTo(W, ry); ctx.ellipse(rx, ry, rx, ry, 0, 0, 2 * Math.PI, true); ctx.closePath(); }
+  function shapeCloud(ctx, W, H) { const cx = W / 2, cy = H / 2, rx = W / 2, ry = H / 2, n = 9; ctx.moveTo(cx + rx * 0.82, cy); for (let i = 0; i < n; i++) { const a1 = (i + 1) / n * 2 * Math.PI, am = (i + 0.5) / n * 2 * Math.PI, bump = 0.3 * Math.min(rx, ry); const mx = cx + Math.cos(am) * (rx + bump), my = cy + Math.sin(am) * (ry + bump); const ex = cx + Math.cos(a1) * rx * 0.82, ey = cy + Math.sin(a1) * ry * 0.82; ctx.quadraticCurveTo(mx, my, ex, ey); } ctx.closePath(); }
+  function shapeCallout(ctx, W, H) { const bh = H * 0.72, r = Math.min(W, H) * 0.14, t0 = W * 0.20, t1 = W * 0.36, tipX = W * 0.12, tipY = H; ctx.moveTo(r, 0); ctx.arcTo(W, 0, W, bh, r); ctx.arcTo(W, bh, 0, bh, r); ctx.lineTo(t1, bh); ctx.lineTo(tipX, tipY); ctx.lineTo(t0, bh); ctx.arcTo(0, bh, 0, 0, r); ctx.arcTo(0, 0, W, 0, r); ctx.closePath(); }
+  function shapePath(ctx, kind, W, H) {
+    switch (kind) {
+      case 'rrect': shapeRoundRect(ctx, 0, 0, W, H, Math.min(W, H) * 0.16); break;
+      case 'tri': shapePolyPath(ctx, [[W / 2, 0], [W, H], [0, H]]); break;
+      case 'rtri': shapePolyPath(ctx, [[0, 0], [0, H], [W, H]]); break;
+      case 'para': { const s = W * 0.25; shapePolyPath(ctx, [[s, 0], [W, 0], [W - s, H], [0, H]]); break; }
+      case 'trap': shapePolyPath(ctx, [[W * 0.25, 0], [W * 0.75, 0], [W, H], [0, H]]); break;
+      case 'rhomb': shapePolyPath(ctx, [[W / 2, 0], [W, H / 2], [W / 2, H], [0, H / 2]]); break;
+      case 'penta': shapePolyPath(ctx, shapeRegPts(W, H, 5, -90)); break;
+      case 'hexa': shapePolyPath(ctx, shapeRegPts(W, H, 6, -90)); break;
+      case 'star': shapePolyPath(ctx, shapeStarPts(W, H, 5, -90, 0.42)); break;
+      case 'cross': { const aw = Math.min(W, H) * 0.34, x0 = (W - aw) / 2, x1 = (W + aw) / 2, y0 = (H - aw) / 2, y1 = (H + aw) / 2; shapePolyPath(ctx, [[x0, 0], [x1, 0], [x1, y0], [W, y0], [W, y1], [x1, y1], [x1, H], [x0, H], [x0, y1], [0, y1], [0, y0], [x0, y0]]); break; }
+      case 'barrow': { const hw = Math.min(W * 0.42, W - 2), y0 = H * 0.25, y1 = H * 0.75; shapePolyPath(ctx, [[0, y0], [W - hw, y0], [W - hw, 0], [W, H / 2], [W - hw, H], [W - hw, y1], [0, y1]]); break; }
+      case 'cyl': shapeCylinder(ctx, W, H); break;
+      case 'cloud': shapeCloud(ctx, W, H); break;
+      case 'callout': shapeCallout(ctx, W, H); break;
+      default: ctx.rect(0, 0, W, H);
+    }
+  }
+  // Стиль заливки фигуры. d.fill: undefined — легаси (значение legacy), '' — без
+  // заливки, иначе цвет + d.fillOpacity (0..1). Граница — d.stroke/d.color.
+  function shapeFillStyle(d, legacy) {
+    if (d.fill === undefined) return legacy || null;
+    if (!d.fill) return null;
+    return hexToRgba(d.fill, d.fillOpacity == null ? 0.2 : d.fillOpacity);
+  }
+  function drawBasicShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const d = el.data, W = d.width || 0, H = d.height || 0; if (W <= 0 || H <= 0) return;
+    const col = d.stroke || d.color || '#1f2937';
+    ctx.beginPath(); shapePath(ctx, d.kind, W, H);
+    const fillStyle = shapeFillStyle(d, hexToRgba(col, 0.10));
+    if (fillStyle) { ctx.fillStyle = fillStyle; ctx.fill(); }
+    if ((d.strokeWidth == null ? 2 : d.strokeWidth) > 0) { ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = d.strokeWidth || 2; ctx.strokeStyle = col; ctx.stroke(); }
+  }
+  function hitBasicShape(ctx, shape) { const el = elements.get(shape.id()); if (!el) return; const d = el.data; ctx.beginPath(); shapePath(ctx, d.kind, d.width || 0, d.height || 0); ctx.closePath(); ctx.fillStrokeShape(shape); }
+  // Вершины правильного n-угольника (center: центр+вершина; edge: два соседних
+  // против часовой). Возвращает массив {x,y} в тех же коорд, что и опорные точки.
+  function regPolyVertices(el) {
+    const pos = ptPosFor(el), d = el.data, n = Math.max(3, Math.min(200, d.n || 3));
+    if (d.kind === 'center') {
+      const C = pos(d.center), V = pos(d.vertex); if (!C || !V) return null;
+      const r = Math.hypot(V.x - C.x, V.y - C.y), a0 = Math.atan2(V.y - C.y, V.x - C.x);
+      const out = [];
+      for (let k = 0; k < n; k++) { const a = a0 + 2 * Math.PI * k / n; out.push({ x: C.x + r * Math.cos(a), y: C.y + r * Math.sin(a) }); }
+      return out;
+    }
+    // edge: A,B — соседние вершины, обход A→B против часовой (по экрану).
+    const A = pos(d.a), B = pos(d.b); if (!A || !B) return null;
+    const dx = B.x - A.x, dy = B.y - A.y, s = Math.hypot(dx, dy) || 1, ux = dx / s, uy = dy / s;
+    const h = s / (2 * Math.tan(Math.PI / n)), R = s / (2 * Math.sin(Math.PI / n));
+    const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+    const C = { x: mid.x + uy * h, y: mid.y - ux * h }; // центр слева от A→B (экранное CCW)
+    const aA = Math.atan2(A.y - C.y, A.x - C.x), aB = Math.atan2(B.y - C.y, B.x - C.x);
+    let step = aB - aA; while (step <= -Math.PI) step += 2 * Math.PI; while (step > Math.PI) step -= 2 * Math.PI;
+    const dir = step >= 0 ? 1 : -1;
+    const out = [];
+    for (let k = 0; k < n; k++) { const a = aA + dir * 2 * Math.PI * k / n; out.push({ x: C.x + R * Math.cos(a), y: C.y + R * Math.sin(a) }); }
+    return out;
+  }
+  // Плоский контур замкнутой фигуры (обычный многоугольник / правильный).
+  function shapeOutline(el) {
+    if (el.type === 'polygon') return polygonPoints(el);
+    if (el.type === 'regpoly') { const vs = regPolyVertices(el); if (!vs) return null; const flat = []; vs.forEach((v) => flat.push(v.x, v.y)); return flat.length >= 6 ? flat : null; }
+    return null;
+  }
+  function isFilledPoly(t) { return t === 'polygon' || t === 'regpoly'; }
+  // ── Измерения (длина / угол / площадь) ─────────────────────────────────
+  // Значение считается «вживую» в recomputeGeometry по опорным объектам.
+  function fmtMeasure(v) { const r = Math.round(v * 100) / 100; return String(Math.abs(r) < 1e-9 ? 0 : r); }
+  function angleDeg(A, V, B) {
+    const v1 = { x: A.x - V.x, y: A.y - V.y }, v2 = { x: B.x - V.x, y: B.y - V.y };
+    const m = Math.hypot(v1.x, v1.y) * Math.hypot(v2.x, v2.y); if (m < 1e-9) return 0;
+    let c = (v1.x * v2.x + v1.y * v2.y) / m; c = Math.max(-1, Math.min(1, c));
+    return Math.acos(c) * 180 / Math.PI;
+  }
+  function shoelace(flat) { let s = 0; const n = flat.length / 2; for (let i = 0; i < n; i++) { const j = (i + 1) % n; s += flat[2 * i] * flat[2 * j + 1] - flat[2 * j] * flat[2 * i + 1]; } return s / 2; }
+  // {text, x, y} — подпись и мировая точка привязки; null если опоры пропали.
+  function measureInfo(el) {
+    const d = el.data, refs = (d.refs || []).map((id) => elements.get(id));
+    if (!refs.length || refs.some((e) => !e)) return null;
+    const fr = d.frame ? elements.get(d.frame) : null, unit = fr ? (fr.data.unit || 1) : 1;
+    if (d.kind === 'length') {
+      if (refs[0].type !== 'point' || refs[1].type !== 'point') return null;
+      const A = pointWorld(refs[0]), B = pointWorld(refs[1]); if (!A || !B) return null;
+      const val = Math.hypot(B.x - A.x, B.y - A.y) / (fr ? unit : 1);
+      const nm = pointName(refs[0]) + pointName(refs[1]);
+      return { text: (nm ? nm + ' = ' : '') + fmtMeasure(val), x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+    }
+    if (d.kind === 'angle') {
+      const A = pointWorld(refs[0]), V = pointWorld(refs[1]), B = pointWorld(refs[2]); if (!A || !V || !B) return null;
+      const nm = pointName(refs[0]) + pointName(refs[1]) + pointName(refs[2]);
+      return { text: '∠' + (nm ? nm + ' = ' : '') + fmtMeasure(angleDeg(A, V, B)) + '°', x: V.x, y: V.y };
+    }
+    if (d.kind === 'area') {
+      const poly = refs[0]; if (!isFilledPoly(poly.type)) return null;
+      const flat = shapeOutline(poly); if (!flat || flat.length < 6) return null;
+      const pfr = poly.data.frame ? elements.get(poly.data.frame) : null;
+      let area = Math.abs(shoelace(flat)); if (pfr) { const u = pfr.data.unit || 1; area /= u * u; }
+      let cx = 0, cy = 0, nn = flat.length / 2; for (let i = 0; i < flat.length; i += 2) { cx += flat[i]; cy += flat[i + 1]; }
+      cx /= nn; cy /= nn; if (pfr) { cx += pfr.data.x; cy += pfr.data.y; }
+      return { text: 'S = ' + fmtMeasure(area), x: cx, y: cy };
+    }
+    return null;
+  }
+  // Числовое значение измерения (длина/угол°/площадь в единицах окна) — для
+  // вычислителя условий и динамического текста. null, если опоры пропали.
+  function measureValue(el) {
+    const d = el.data, refs = (d.refs || []).map((id) => elements.get(id));
+    if (!refs.length || refs.some((e) => !e)) return null;
+    const fr = d.frame ? elements.get(d.frame) : null, unit = fr ? (fr.data.unit || 1) : 1;
+    if (d.kind === 'length') { if (refs[0].type !== 'point' || refs[1].type !== 'point') return null; const A = pointWorld(refs[0]), B = pointWorld(refs[1]); if (!A || !B) return null; return Math.hypot(B.x - A.x, B.y - A.y) / (fr ? unit : 1); }
+    if (d.kind === 'angle') { const A = pointWorld(refs[0]), V = pointWorld(refs[1]), B = pointWorld(refs[2]); if (!A || !V || !B) return null; return angleDeg(A, V, B); }
+    if (d.kind === 'area') { const poly = refs[0]; if (!isFilledPoly(poly.type)) return null; const flat = shapeOutline(poly); if (!flat || flat.length < 6) return null; const pfr = poly.data.frame ? elements.get(poly.data.frame) : null; let area = Math.abs(shoelace(flat)); if (pfr) { const u = pfr.data.unit || 1; area /= u * u; } return area; }
+    return null;
+  }
+  const MEASURE_PICKS = { measure_len: 2, measure_area: 1 };
+  // ── Пометки для доказательств (равенство/прямой угол/параллельность) ────
+  // type 'mark', data:{kind:'tick'|'arc'|'right'|'para', refs:[ids], count}.
+  // Рисуется sceneFunc'ом по текущим мировым координатам опор — следует за ними.
+  function markRefsWorld(el) {
+    const refs = (el.data.refs || []).map((id) => { const e = elements.get(id); return (e && e.type === 'point') ? pointWorld(e) : null; });
+    return refs.some((p) => !p) ? null : refs;
+  }
+  // ── Общие «кисти» декораций (строят путь в ctx; штрих делает вызывающий) ──
+  // Засечки равенства: n штрихов поперёк отрезка AB в его середине.
+  function pathEqTicks(ctx, A, B, n) {
+    const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, px = -uy, py = ux;
+    const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 }, half = 6, gap = 4.5;
+    for (let i = 0; i < n; i++) { const o = (i - (n - 1) / 2) * gap, c = { x: mid.x + ux * o, y: mid.y + uy * o }; ctx.moveTo(c.x - px * half, c.y - py * half); ctx.lineTo(c.x + px * half, c.y + py * half); }
+  }
+  // Шевроны параллельности: n «галочек» вдоль AB, указывающих по направлению A→B.
+  function pathChevrons(ctx, A, B, n) {
+    const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, px = -uy, py = ux;
+    const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 }, w = 6, h = 5, gap = 5.5;
+    for (let i = 0; i < n; i++) { const o = (i - (n - 1) / 2) * gap, ax = mid.x + ux * (o + w / 2), ay = mid.y + uy * (o + w / 2); ctx.moveTo(ax - ux * w + px * h, ay - uy * w + py * h); ctx.lineTo(ax, ay); ctx.lineTo(ax - ux * w - px * h, ay - uy * w - py * h); }
+  }
+  // Дуги равенства углов: n концентрических дуг у вершины V от угла a1 на diff.
+  function pathEqArcs(ctx, V, a1, diff, n, r0) {
+    for (let i = 0; i < n; i++) { const r = (r0 || 14) + i * 4.5; ctx.moveTo(V.x + r * Math.cos(a1), V.y + r * Math.sin(a1)); ctx.arc(V.x, V.y, r, a1, a1 + diff, diff < 0); }
+  }
+  // Знак прямого угла: маленький квадрат в вершине V между лучами на A и B.
+  function pathRightAngle(ctx, A, V, B) {
+    const u1 = vnorm({ x: A.x - V.x, y: A.y - V.y }), u2 = vnorm({ x: B.x - V.x, y: B.y - V.y }), s = 12;
+    ctx.moveTo(V.x + u1.x * s, V.y + u1.y * s); ctx.lineTo(V.x + (u1.x + u2.x) * s, V.y + (u1.y + u2.y) * s); ctx.lineTo(V.x + u2.x * s, V.y + u2.y * s);
+  }
+  function drawMarkShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const P = markRefsWorld(el); if (!P) return;
+    const d = el.data, kind = d.kind, n = Math.max(1, d.count || 1);
+    ctx.save(); ctx.strokeStyle = d.color || '#1f2937'; ctx.lineWidth = 1.6; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
+    if (kind === 'tick') pathEqTicks(ctx, P[0], P[1], n);
+    else if (kind === 'para') pathChevrons(ctx, P[0], P[1], n);
+    else if (kind === 'arc') { const a1 = Math.atan2(P[0].y - P[1].y, P[0].x - P[1].x), a2 = Math.atan2(P[2].y - P[1].y, P[2].x - P[1].x); let diff = a2 - a1; while (diff <= -Math.PI) diff += 2 * Math.PI; while (diff > Math.PI) diff -= 2 * Math.PI; pathEqArcs(ctx, P[1], a1, diff, n); }
+    else if (kind === 'right') pathRightAngle(ctx, P[0], P[1], P[2]);
+    ctx.stroke(); ctx.restore();
+  }
+  // Равенство отрезков/углов и шевроны переехали в настройки объектов; из отдельных
+  // инструментов-пометок остался только знак прямого угла.
+  const MARK_PICKS = { mark_right: 3 };
+  function markKindOf(t) { return { mark_right: 'right' }[t]; }
+  // Габарит построения-линии (для рамки/marquee — у Konva.Shape нет своего selfRect).
+  function lineSelfRect(el) {
+    return function () {
+      const pts = constructionLinePoints(el) || [];
+      if (pts.length < 4) return { x: 0, y: 0, width: 0, height: 0 };
+      let a = Infinity, b = Infinity, c = -Infinity, e = -Infinity;
+      for (let i = 0; i < pts.length; i += 2) { a = Math.min(a, pts[i]); c = Math.max(c, pts[i]); b = Math.min(b, pts[i + 1]); e = Math.max(e, pts[i + 1]); }
+      return { x: a, y: b, width: c - a, height: e - b };
+    };
+  }
+  // Построение-линия: сама линия (цвет/толщина/стиль — из атрибутов узла) + декорации:
+  // шевроны параллельности (любая линия), засечки равенства и подпись длины (отрезок).
+  function drawLineShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const pts = constructionLinePoints(el); if (!pts || pts.length < 4) return;
+    ctx.beginPath(); ctx.moveTo(pts[0], pts[1]);
+    for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]);
+    ctx.strokeShape(shape);
+    const d = el.data;
+    const chev = Math.max(0, Math.min(3, d.chevrons || 0));
+    const isSeg = el.type === 'segment';
+    const ticks = isSeg ? Math.max(0, Math.min(3, d.eqTicks || 0)) : 0;
+    const showLen = isSeg && d.showLength;
+    if (!chev && !ticks && !showLen) return;
+    let A, B; const P = constructionParams(el);
+    if (P && P.seg) { A = { x: P.seg[0], y: P.seg[1] }; B = { x: P.seg[2], y: P.seg[3] }; }
+    else { A = { x: pts[0], y: pts[1] }; B = { x: pts[pts.length - 2], y: pts[pts.length - 1] }; }
+    const col = d.color || d.stroke || '#1f2937';
+    ctx.save(); ctx.setLineDash([]); ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    if (ticks) pathEqTicks(ctx, A, B, ticks);
+    if (chev) pathChevrons(ctx, A, B, chev);
+    ctx.stroke();
+    if (showLen) {
+      const fr = d.frame ? elements.get(d.frame) : null;
+      const Ld = Math.hypot(B.x - A.x, B.y - A.y), val = fr ? Ld / (fr.data.unit || 1) : Ld;
+      const ddx = B.x - A.x, ddy = B.y - A.y, L = Math.hypot(ddx, ddy) || 1, px = -ddy / L, py = ddx / L;
+      ctx.fillStyle = col; ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(fmtMeasure(val), (A.x + B.x) / 2 + px * 12, (A.y + B.y) / 2 + py * 12);
+    }
+    ctx.restore();
+  }
+  // ── Геометрические преобразования (образ точки p в ЛОКАЛЬНЫХ коорд окна fr) ──
+  // xf: {kind, ...}. csym: центр c; asym: прямая line; rot: центр c, угол°;
+  // trans: вектор a→b; homo: центр c, коэф k; spiral: центр c, угол°, k.
+  function xfPtLocal(fr, id) { const e = elements.get(id); if (!(e && e.type === 'point')) return null; return frameMathToLocal(fr, e.data.mx || 0, e.data.my || 0); }
+  function applyXform(fr, xf, p) {
+    if (!xf) return null;
+    if (xf.kind === 'csym') { const C = xfPtLocal(fr, xf.c); if (!C) return null; return { x: 2 * C.x - p.x, y: 2 * C.y - p.y }; }
+    if (xf.kind === 'trans') { const A = xfPtLocal(fr, xf.a), B = xfPtLocal(fr, xf.b); if (!A || !B) return null; return { x: p.x + (B.x - A.x), y: p.y + (B.y - A.y) }; }
+    if (xf.kind === 'rot' || xf.kind === 'spiral') {
+      const C = xfPtLocal(fr, xf.c); if (!C) return null;
+      const a = -(xf.angle || 0) * Math.PI / 180; // экранное «против часовой» при положительном угле
+      const k = (xf.kind === 'spiral') ? (xf.k || 1) : 1;
+      const dx = p.x - C.x, dy = p.y - C.y;
+      const rx = dx * Math.cos(a) - dy * Math.sin(a), ry = dx * Math.sin(a) + dy * Math.cos(a);
+      return { x: C.x + k * rx, y: C.y + k * ry };
+    }
+    if (xf.kind === 'homo') { const C = xfPtLocal(fr, xf.c); if (!C) return null; const k = xf.k || 1; return { x: C.x + k * (p.x - C.x), y: C.y + k * (p.y - C.y) }; }
+    if (xf.kind === 'asym') {
+      const line = elements.get(xf.line), G = line ? lineGeom(line) : null; if (!G) return null;
+      const proj = (p.x - G.base.x) * G.u.x + (p.y - G.base.y) * G.u.y;
+      const fx = G.base.x + proj * G.u.x, fy = G.base.y + proj * G.u.y;
+      return { x: 2 * fx - p.x, y: 2 * fy - p.y };
+    }
+    return null;
+  }
+  function drawAngleShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const pos = ptPosFor(el), d = el.data, col = d.color || '#1f2937';
+    const A = pos(d.a), V = pos(d.b), C = pos(d.c); if (!A || !V || !C) return;
+    const a1 = Math.atan2(A.y - V.y, A.x - V.x), a2 = Math.atan2(C.y - V.y, C.x - V.x);
+    let diff = a2 - a1; while (diff <= -Math.PI) diff += 2 * Math.PI; while (diff > Math.PI) diff -= 2 * Math.PI;
+    const deg = Math.abs(diff) * 180 / Math.PI, R = 34, hl = selected.has(el.id);
+    ctx.save();
+    if (hl) { ctx.beginPath(); ctx.strokeStyle = '#4d7cfe'; ctx.lineWidth = (d.strokeWidth || 1.6) + 3; ctx.globalAlpha = 0.4; ctx.arc(V.x, V.y, R, a1, a1 + diff, diff < 0); ctx.stroke(); ctx.globalAlpha = 1; }
+    // Заливка сектора с прозрачностью.
+    const fo = Math.max(0, Math.min(1, d.fillOpacity || 0));
+    if (fo > 0) { ctx.beginPath(); ctx.moveTo(V.x, V.y); ctx.arc(V.x, V.y, R, a1, a1 + diff, diff < 0); ctx.closePath(); ctx.fillStyle = hexToRgba(col, fo); ctx.fill(); }
+    // Прямой угол (ровно 90°) обозначаем квадратиком вместо дуги и без числа —
+    // это делает «обычный» инструмент, автоматически. (Ручной знак для любого угла —
+    // отдельный инструмент mark_right, для стереометрии.)
+    const isRight = Math.abs(deg - 90) < 0.5;
+    ctx.strokeStyle = col; ctx.lineWidth = d.strokeWidth || 1.6; ctx.setLineDash(figureDash(d.style, d.strokeWidth || 2) || []);
+    if (isRight) {
+      ctx.beginPath(); pathRightAngle(ctx, A, V, C); ctx.stroke(); ctx.setLineDash([]);
+    } else {
+      // Дуги (1..3 — обозначают равные углы), стиль штриха из настроек.
+      const n = Math.max(1, Math.min(3, d.arcCount || 1));
+      ctx.beginPath(); pathEqArcs(ctx, V, a1, diff, n, R - (n - 1) * 4.5); ctx.stroke(); ctx.setLineDash([]);
+      // Градусная мера (можно отключить).
+      if (d.showDegree !== false) {
+        const mid = a1 + diff / 2;
+        ctx.fillStyle = col; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(deg.toFixed(0) + '°', V.x + Math.cos(mid) * (R + 16), V.y + Math.sin(mid) * (R + 16));
+      }
+    }
+    ctx.restore();
+  }
+  // Полуокружность: дуга от a0 против часовой на π (диаметр AB).
+  function drawSemiShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const C = circleGeom(el); if (!C) return;
+    ctx.beginPath();
+    ctx.arc(C.cx, C.cy, C.r, C.a0, C.a0 + Math.PI, false);
+    ctx.strokeShape(shape);
+  }
+
+  // ── Внешний вид точки: размер (плавающий 1..100) + форма ───────────────
+  // Единая числовая шкала 1..100 для размеров (точка/подпись), чтобы разные
+  // объекты можно было подогнать под одно число. 50 — базовый.
+  function numSize(v) {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') return { small: 30, normal: 50, large: 80 }[v] || 50;
+    return 50;
+  }
+  function pointRadiusOf(d) { return Math.max(1, 1 + numSize(d.size) * 0.09); }      // 50→5.5px, 100→10px
+  function labelFontOf(d) { return Math.max(6, 6 + numSize(d.labelSize) * 0.2); }    // 50→16px, 100→26px
+  function drawPointGlyph(ctx, shape) {
+    const parent = shape.getParent(); const el = parent && elements.get(parent.id()); if (!el) return;
+    const d = el.data, r = pointRadiusOf(d), color = d.color || '#1f2937', sh = d.shape || 'dot';
+    if (selected.has(el.id)) { ctx.beginPath(); ctx.arc(0, 0, r + 4, 0, 2 * Math.PI); ctx.strokeStyle = '#4d7cfe'; ctx.lineWidth = 2; ctx.stroke(); } // подсветка выделения
+    ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    if (sh === 'open') { ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.stroke(); }
+    else if (sh === 'cross') { ctx.moveTo(-r, -r); ctx.lineTo(r, r); ctx.moveTo(-r, r); ctx.lineTo(r, -r); ctx.stroke(); }
+    else if (sh === 'plus') { ctx.moveTo(-r, 0); ctx.lineTo(r, 0); ctx.moveTo(0, -r); ctx.lineTo(0, r); ctx.stroke(); }
+    else if (sh === 'square') { ctx.rect(-r, -r, 2 * r, 2 * r); ctx.fill(); }
+    else if (sh === 'diamond') { ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.closePath(); ctx.fill(); }
+    else if (sh === 'triangle') { ctx.moveTo(0, -r * 1.1); ctx.lineTo(r, r * 0.72); ctx.lineTo(-r, r * 0.72); ctx.closePath(); ctx.fill(); }
+    else { ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.fill(); } // dot (без белой обводки)
+  }
+  function pointHitFunc(ctx, shape) { ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.closePath(); ctx.fillStrokeShape(shape); }
+  function fmtCoord(v) { const r = Math.round(v * 100) / 100; return Math.abs(r) < 1e-9 ? 0 : r; }
+  // Нижний индекс из цифр (₀₁₂…). Базовый объект — индекс 1, образ преобразования — +1.
+  function subscriptNum(n) { const S = '₀₁₂₃₄₅₆₇₈₉'; return String(n).split('').map((c) => (c >= '0' && c <= '9') ? S[+c] : c).join(''); }
+  // Базовая точка — без индекса (просто «A»); индекс появляется у образов преобразований (A₁, A₂…).
+  function pointName(el) { const d = el.data; return (d.label || '') + (d.idx ? subscriptNum(d.idx) : ''); }
+  // Имя не-точечного объекта (прямая/окружность/коника/вектор/функция…): первая
+  // свободная строчная буква a,b,c… (у точек — заглавные метки, разные пространства).
+  function nextObjName() {
+    const used = new Set(); elements.forEach((e) => { if (e.data && e.data.name) used.add(e.data.name); });
+    for (let i = 0; i < 26; i++) { const L = String.fromCharCode(97 + i); if (!used.has(L)) return L; }
+    for (let k = 1; ; k++) { const L = 'a' + k; if (!used.has(L)) return L; }
+  }
+  function objName(e) { return (e && e.data && e.data.name) ? e.data.name : ''; }
+  function odescHtml(e, desc) { const n = objName(e); return '<span class="fe-odesc">' + (n ? '<b>' + escapeHtml(n) + '</b>: ' : '') + escapeHtml(desc) + '</span>'; }
+  function pointLabelText(el) {
+    const d = el.data, name = pointName(el), mode = d.labelMode || 'name';
+    if (mode === 'name') return name;
+    const cx = d.frame ? (d.mx || 0) : (d.x || 0), cy = d.frame ? (d.my || 0) : (d.y || 0);
+    const coords = '(' + fmtCoord(cx) + '; ' + fmtCoord(cy) + ')';
+    if (mode === 'coords') return coords;
+    return (name ? name + ' ' : '') + coords;
+  }
+  function updatePointLabel(el) {
+    const n = nodes.get(el.id); if (!n) return; const lbl = n.findOne('.plabel'); if (!lbl) return;
+    const fs = labelFontOf(el.data);
+    lbl.text(pointLabelText(el)); lbl.visible(!el.data.labelHidden); lbl.fill(el.data.color || '#1f2937');
+    lbl.fontSize(fs); lbl.y(-(fs + 3));
+  }
+
+  // ── Стиль фигур (толщина + сплошная/пунктир/точки) ─────────────────────
+  function figureDash(style, w) {
+    if (style === 'dashed') return [Math.max(7, w * 3.5), Math.max(5, w * 2.5)];
+    if (style === 'dotted') return [0.1, Math.max(4, w * 2.4)];
+    return [];
+  }
+  function applyFigureVisual(el) {
+    const n = nodes.get(el.id); if (!n) return;
+    const w = el.data.strokeWidth || 2;
+    if (typeof n.strokeWidth === 'function') n.strokeWidth(w);
+    if (typeof n.dash === 'function') n.dash(figureDash(el.data.style, w));
+    if (typeof n.lineCap === 'function') n.lineCap('round'); // круглые концы (и точки в 'dotted')
+  }
+
+  // ── Показать / скрыть объект ───────────────────────────────────────────
+  // data.hidden: объект есть, но не рисуется. revealHidden — режим «показать
+  // скрытое» (полупрозрачно, чтобы можно было выделить и вернуть).
+  let revealHidden = false;
+  function nodeVisible(el) { return !((el.data && el.data.hidden) || el._condHide) || revealHidden; }
+  function applyElVisibility(el) {
+    const n = nodes.get(el.id); if (!n || typeof n.visible !== 'function') return;
+    const hid = !!((el.data && el.data.hidden) || el._condHide);
+    n.visible(!hid || revealHidden);
+    const baseOp = (el.data && el.data.marker) ? (el.data.opacity != null ? el.data.opacity : 0.4) : 1; // маркер — полупрозрачный, не затирать
+    if (typeof n.opacity === 'function') n.opacity(hid && revealHidden ? 0.3 : baseOp);
+    if (typeof n.listening === 'function') n.listening(!(hid && !revealHidden));
+  }
+  function setHidden(ids, hidden) {
+    ids.forEach((id) => {
+      const el = elements.get(id); if (!el) return;
+      const before = clone(el); el.data.hidden = hidden ? true : undefined;
+      applyElVisibility(el); histUpd(before, el); send({ action: 'element_update', element: el });
+      if (hidden && selected.has(id)) selected.delete(id);
+    });
+    refreshTransformer(); syncAlgebra(); layer.batchDraw();
+  }
+  function toggleRevealHidden() {
+    revealHidden = !revealHidden;
+    elements.forEach((el) => applyElVisibility(el));
+    const btn = document.getElementById('reveal-hidden'); if (btn) btn.classList.toggle('on', revealHidden);
+    layer.batchDraw();
+    boardHint(revealHidden ? 'Скрытые объекты показаны (полупрозрачно)' : 'Скрытые объекты спрятаны');
+  }
+
+  function recomputeGeometry() {
+    elements.forEach((el) => {
+      if (el.type === 'point' && el.data.frame) {
+        const fr = elements.get(el.data.frame), n = nodes.get(el.id);
+        if (!(fr && n)) return;
+        if (el.data.on && el.data.on.isect) {
+          // ЖЁСТКО в пересечении двух фигур: позиция = решение по их уравнениям.
+          // k — которая из двух точек. Нет пересечения → точку прячем.
+          const o1 = elements.get(el.data.on.isect[0]), o2 = elements.get(el.data.on.isect[1]);
+          const g1 = o1 ? curveGeom(o1) : null, g2 = o2 ? curveGeom(o2) : null;
+          const pts = (g1 && g2) ? intersectCurves(g1, g2) : [];
+          const P = pts[el.data.on.k || 0];
+          if (P) {
+            n.position(P); n.visible(nodeVisible(el));
+            const m = frameLocalToMath(fr, P.x, P.y); el.data.mx = m.mx; el.data.my = m.my; // кэш
+          } else if (n.visible()) { n.visible(false); }
+        } else if (el.data.on && el.data.on.line) {
+          // ЖЁСТКО на линии: позиция = base + t·u (в локальных коорд окна), t неизменен.
+          const line = elements.get(el.data.on.line), G = line ? lineGeom(line) : null;
+          if (G) {
+            const t = el.data.on.t || 0, lx = G.base.x + G.u.x * t, ly = G.base.y + G.u.y * t;
+            n.position({ x: lx, y: ly });
+            const m = frameLocalToMath(fr, lx, ly); el.data.mx = m.mx; el.data.my = m.my; // кэш
+          }
+        } else if (el.data.on && el.data.on.circle) {
+          // ЖЁСТКО на окружности: позиция = центр + r·(cos a, sin a), угол a неизменен.
+          const circ = elements.get(el.data.on.circle), C = circ ? circleGeom(circ) : null;
+          if (C) {
+            const a = el.data.on.a || 0, lx = C.cx + C.r * Math.cos(a), ly = C.cy + C.r * Math.sin(a);
+            n.position({ x: lx, y: ly });
+            const m = frameLocalToMath(fr, lx, ly); el.data.mx = m.mx; el.data.my = m.my; // кэш
+          }
+        } else if (el.data.on && el.data.on.regpoly) {
+          // ЖЁСТКО на вершине правильного многоугольника (индекс k).
+          const host = elements.get(el.data.on.regpoly), vs = host ? regPolyVertices(host) : null;
+          const V = vs && vs[el.data.on.k];
+          if (V) {
+            n.position(V); n.visible(nodeVisible(el));
+            const m = frameLocalToMath(fr, V.x, V.y); el.data.mx = m.mx; el.data.my = m.my; // кэш
+          } else if (n.visible()) { n.visible(false); }
+        } else if (el.data.on && el.data.on.centroid) {
+          // Центр масс (середина): среднее локальных координат исходных точек.
+          let sx = 0, sy = 0, cnt = 0;
+          el.data.on.centroid.forEach((pid) => { const pe = elements.get(pid); if (pe && pe.type === 'point' && pe.data.frame === el.data.frame) { const L = frameMathToLocal(fr, pe.data.mx || 0, pe.data.my || 0); sx += L.x; sy += L.y; cnt++; } });
+          if (cnt) { const V = { x: sx / cnt, y: sy / cnt }; n.position(V); const m = frameLocalToMath(fr, V.x, V.y); el.data.mx = m.mx; el.data.my = m.my; }
+        } else if (el.data.on && el.data.on.ratio) {
+          // Деление отрезка AB в отношении t: P = A + t·(B−A).
+          const R = el.data.on.ratio, A = elements.get(R.a), B = elements.get(R.b);
+          if (A && B && A.data.frame === el.data.frame && B.data.frame === el.data.frame) {
+            const la = frameMathToLocal(fr, A.data.mx || 0, A.data.my || 0), lb = frameMathToLocal(fr, B.data.mx || 0, B.data.my || 0);
+            const t = R.t || 0, V = { x: la.x + t * (lb.x - la.x), y: la.y + t * (lb.y - la.y) };
+            n.position(V); const m = frameLocalToMath(fr, V.x, V.y); el.data.mx = m.mx; el.data.my = m.my;
+          }
+        } else if (el.data.on && el.data.on.xform) {
+          // Образ преобразования: T применяется к позиции исходной точки.
+          const src = elements.get(el.data.on.src);
+          if (src && src.type === 'point' && src.data.frame === el.data.frame) {
+            const sp = frameMathToLocal(fr, src.data.mx || 0, src.data.my || 0);
+            const V = applyXform(fr, el.data.on.xform, sp);
+            if (V) { n.position(V); n.visible(nodeVisible(el)); const m = frameLocalToMath(fr, V.x, V.y); el.data.mx = m.mx; el.data.my = m.my; }
+            else if (n.visible()) n.visible(false);
+          }
+        } else {
+          // привязанная к окну точка: позиция = матем. коорды → локальные px окна
+          const L = frameMathToLocal(fr, el.data.mx || 0, el.data.my || 0); n.position({ x: L.x, y: L.y });
+        }
+        updatePointLabel(el);
+      } else if (el.type === 'point' && el.data.on) {
+        const circle = elements.get(el.data.on.c);
+        if (circle && circle.type === 'circle') {
+          const r = circle.data.r || 0, a = el.data.on.a || 0;
+          el.data.x = circle.data.x + r * Math.cos(a);
+          el.data.y = circle.data.y + r * Math.sin(a);
+          const n = nodes.get(el.id);
+          if (n) n.position({ x: el.data.x, y: el.data.y });
+        }
+      } else if (CONSTRUCT_LINES.indexOf(el.type) >= 0) {
+        // Линия рисуется sceneFunc'ом по опорам при каждой перерисовке слоя —
+        // отдельно точки задавать не нужно (layer.batchDraw перерисует форму).
+      } else if (el.type === 'vector') {
+        const n = nodes.get(el.id), pts = vecEnds(el); if (n && pts) n.points(pts);
+      } else if (isFilledPoly(el.type)) {
+        const n = nodes.get(el.id), pts = shapeOutline(el);
+        if (n && pts) n.points(pts);
+      } else if (el.type === 'circ') {
+        const n = nodes.get(el.id), C = circleGeom(el);
+        if (n) {
+          if (!C) { if (n.visible()) n.visible(false); }
+          else { n.visible(nodeVisible(el)); if (el.data.kind !== 'semi') { n.position({ x: C.cx, y: C.cy }); n.radius(C.r); } }
+        }
+      } else if (el.type === 'measure') {
+        const n = nodes.get(el.id); if (!n) return;
+        const info = measureInfo(el);
+        if (info) {
+          const t = n.findOne('.mtext'); if (t && t.text() !== info.text) t.text(info.text);
+          const off = el.data.off || { x: 12, y: -14 };
+          n.position({ x: info.x + off.x, y: info.y + off.y });
+          n.visible(nodeVisible(el));
+        } else if (n.visible()) n.visible(false);
+      }
+    });
+    updateTraces();
+    applyConditions();
+  }
+  // ── Именованные значения окна (для условий/динам. текста) ──────────────
+  // Имя → число: ползунки, параметры окна, измерения. Точки — не число, поэтому
+  // доступны через функции x(A)/y(A)/dist(A,B) прямо в вычислителе (см. compileNum).
+  function frameVars(frame) {
+    const vars = {}, pts = {}, fid = frame && frame.id;
+    elements.forEach((e) => {
+      if (!e.data) return;
+      if (e.type === 'slider' && e.data.name) vars[e.data.name] = Number(e.data.value);
+      else if (e.type === 'measure' && e.data.name) { const v = measureValue(e); if (v != null && isFinite(v)) vars[e.data.name] = v; }
+      else if (e.type === 'point' && e.data.label && (!fid || e.data.frame === fid)) pts[((e.data.label || '') + (e.data.idx ? e.data.idx : '')).toUpperCase()] = { x: e.data.mx || 0, y: e.data.my || 0 };
+    });
+    if (frame && frame.data && frame.data.params) for (const k in frame.data.params) vars[k] = Number(frame.data.params[k].v);
+    vars._pts = pts;
+    return vars;
+  }
+  // ── Условная видимость: data.showIf — булево выражение; ложь → объект скрыт ──
+  function applyConditions() {
+    const varCache = new Map();
+    const varsFor = (fr) => { const key = fr ? fr.id : '_'; if (!varCache.has(key)) varCache.set(key, frameVars(fr)); return varCache.get(key); };
+    let changed = false;
+    elements.forEach((el) => {
+      if (!el.data) return;
+      const src = el.data.showIf;
+      if (!src) { if (el._condHide) { el._condHide = false; applyElVisibility(el); changed = true; } el._condFn = null; el._condSrc = null; return; }
+      if (el._condSrc !== src) { el._condSrc = src; el._condFn = compileNum(src); }
+      let vis = true;
+      if (el._condFn) { try { const r = el._condFn(varsFor(el.data.frame ? elements.get(el.data.frame) : null)); vis = isNaN(r) ? true : !!r; } catch (_) { vis = true; } }
+      const hide = !vis;
+      if (!!el._condHide !== hide) { el._condHide = hide; applyElVisibility(el); changed = true; }
+    });
+    if (changed) layer.batchDraw();
+    refreshDynamicTexts();
+  }
+  // ── Динамический текст: {выражение} в тексте → живое значение ────────────
+  function renderDynamicText(html, frame) {
+    if (!html || html.indexOf('{') < 0) return html;
+    const env = frameVars(frame);
+    return html.replace(/\{([^{}]+)\}/g, (m, expr) => {
+      const f = compileNum(expr); if (!f) return m; // не выражение — оставляем как есть
+      let v; try { v = f(env); } catch (_) { return m; }
+      return isFinite(v) ? fmtMeasure(v) : m;
+    });
+  }
+  function refreshDynamicTexts() {
+    if (typeof widgetItems === 'undefined') return;
+    widgetItems.forEach((it) => {
+      if (!it || !it.isTbox || it.editing) return;
+      const el = it.el; if (!el || !el.data || (el.data.html || '').indexOf('{') < 0) return;
+      if (document.activeElement === it.ed) return;
+      const h = sanitizeHtml(renderDynamicText(el.data.html || '', el.data.frame ? elements.get(el.data.frame) : null));
+      if (it.ed.innerHTML !== h) it.ed.innerHTML = h;
+    });
+  }
+  // ── След точки (locus): точка с data.trace оставляет траекторию (локально) ──
+  const traceLines = new Map(); // pointId → Konva.Line (не сохраняется, копится при движении)
+  function ensureTrace(el) {
+    if (!el || !el.data.trace) { const tl = traceLines.get(el && el.id); if (tl) { tl.destroy(); traceLines.delete(el.id); } return; }
+    if (!traceLines.has(el.id)) { const tl = new Konva.Line({ points: [], stroke: el.data.color || '#e7505a', strokeWidth: 1.5, opacity: 0.85, listening: false, lineCap: 'round', lineJoin: 'round' }); layer.add(tl); tl.moveToBottom(); traceLines.set(el.id, tl); }
+  }
+  function updateTraces() {
+    traceLines.forEach((tl, id) => {
+      const el = elements.get(id);
+      if (!el || !el.data.trace) { tl.destroy(); traceLines.delete(id); return; }
+      const w = pointWorld(el); if (!w) return;
+      const pts = tl.points(), n = pts.length;
+      if (n < 2 || Math.hypot(w.x - pts[n - 2], w.y - pts[n - 1]) > 0.5) { pts.push(w.x, w.y); if (pts.length > 1600) pts.splice(0, pts.length - 1600); tl.points(pts); tl.stroke(el.data.color || '#e7505a'); }
+    });
+  }
+  function toggleTrace(id) {
+    const el = elements.get(id); if (!el || el.type !== 'point') return;
+    const before = clone(el); const on = !el.data.trace;
+    el.data.trace = on ? true : undefined;
+    const tl = traceLines.get(id); if (tl) { tl.destroy(); traceLines.delete(id); } // сброс траектории
+    ensureTrace(el); updateTraces();
+    histUpd(before, el); send({ action: 'element_update', element: el }); layer.batchDraw();
+    boardHint(on ? 'След включён — двигайте точку' : 'След выключен');
+  }
+  // Перетаскивание подписи-измерения: запоминаем смещение от точки привязки.
+  function onMeasureDragEnd(id, node) {
+    const el = elements.get(id); if (!el) return;
+    const before = clone(el), info = measureInfo(el);
+    if (info) el.data.off = { x: node.x() - info.x, y: node.y() - info.y };
+    histUpd(before, el); send({ action: 'element_update', element: el });
+    commitDragFollowers(id); dragStart = null; // синкнуть ведомых группы и сбросить
+  }
+
+  // Выбор/создание точки для построения: ближайшая существующая или новая.
+  let pendingPicks = [];
+  function pickPointId(p) {
+    const THRESH = 14 / stage.scaleX();
+    let best = null, bd = THRESH;
+    elements.forEach((el) => { if (el.type !== 'point') return; const w = pointWorld(el); const d = Math.hypot(p.x - w.x, p.y - w.y); if (d < bd) { bd = d; best = el; } });
+    if (best) return best.id;
+    return newPointAt(p).id;
+  }
+  // Существующая точка под курсором (для приоритета выделения над линиями/фоном).
+  function pickSelectablePointNear(w) {
+    const TH = 12 / stage.scaleX();
+    let best = null, bd = TH;
+    elements.forEach((el) => { if (el.type !== 'point' || (el.data.hidden && !revealHidden)) return; const wp = pointWorld(el); const d = Math.hypot(w.x - wp.x, w.y - wp.y); if (d < bd) { bd = d; best = el; } });
+    return best;
+  }
+  // Точка внутри многоугольника (луч-алгоритм; flat = [x0,y0,x1,y1,...]).
+  function pointInPolygon(p, flat) {
+    let inside = false; const n = flat.length / 2;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = flat[2 * i], yi = flat[2 * i + 1], xj = flat[2 * j], yj = flat[2 * j + 1];
+      if (((yi > p.y) !== (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  // Многоугольник (обычный/правильный) под курсором — по заливке (клик внутри).
+  function polygonAtWorld(w) {
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
+    let found = null;
+    elements.forEach((el) => {
+      if (el.data.frame !== fr.id || !isFilledPoly(el.type)) return;
+      const outline = shapeOutline(el);
+      if (outline && pointInPolygon(lw, outline)) found = el; // последний = верхний
+    });
+    return found;
+  }
+  function distToPolyEdges(p, flat) {
+    let best = Infinity; const n = flat.length / 2;
+    for (let i = 0, j = n - 1; i < n; j = i++) { const d = distPointToSeg(p, { x: flat[2 * j], y: flat[2 * j + 1] }, { x: flat[2 * i], y: flat[2 * i + 1] }); if (d < best) best = d; }
+    return best;
+  }
+  // ЕДИНЫЙ выбор объекта под курсором (геометрически, не полагаясь на hit-граф):
+  // точка → ближайшая граница (линия/окружность-кольцо/ребро многоугольника) → заливка многоугольника.
+  // Расстояние клика (в лок. коорд окна) до дуги угла, если попадает в его сектор.
+  function angleArcDist(el, lp) {
+    const pos = ptPosFor(el), A = pos(el.data.a), V = pos(el.data.b), C = pos(el.data.c);
+    if (!A || !V || !C) return Infinity;
+    const R = 34, dr = Math.abs(Math.hypot(lp.x - V.x, lp.y - V.y) - R);
+    const a1 = Math.atan2(A.y - V.y, A.x - V.x), a2 = Math.atan2(C.y - V.y, C.x - V.x);
+    let diff = a2 - a1; while (diff <= -Math.PI) diff += 2 * Math.PI; while (diff > Math.PI) diff -= 2 * Math.PI;
+    const aw = Math.atan2(lp.y - V.y, lp.x - V.x);
+    let da = aw - a1; while (da <= -Math.PI) da += 2 * Math.PI; while (da > Math.PI) da -= 2 * Math.PI;
+    const within = diff >= 0 ? (da >= -0.2 && da <= diff + 0.2) : (da <= 0.2 && da >= diff - 0.2);
+    return within ? dr : Infinity;
+  }
+  function pickObjectAtWorld(w) {
+    const p = pickSelectablePointNear(w); if (p) return p; // точки — высший приоритет
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const lw = { x: w.x - fr.data.x, y: w.y - fr.data.y }, TH = 12 / stage.scaleX();
+    let best = null, bd = TH, insidePoly = null;
+    elements.forEach((el) => {
+      if (el.data.frame !== fr.id || (el.data.hidden && !revealHidden)) return;
+      if (isFilledPoly(el.type)) { const o = shapeOutline(el); if (o) { if (pointInPolygon(lw, o)) insidePoly = el; const d = distToPolyEdges(lw, o); if (d < bd) { bd = d; best = el; } } return; }
+      let d = Infinity;
+      if (CONSTRUCT_LINES.indexOf(el.type) >= 0) { const P = constructionParams(el); if (P) d = P.seg ? distPointToSeg(lw, { x: P.seg[0], y: P.seg[1] }, { x: P.seg[2], y: P.seg[3] }) : distPointToLine(lw, P.base, P.u); }
+      else if (el.type === 'circ') { const C = circleGeom(el); if (C) { d = Math.abs(Math.hypot(lw.x - C.cx, lw.y - C.cy) - C.r); if (C.semi && !pointOnArc(C, lw)) d += 1e6; } }
+      else if (el.type === 'angle') { d = angleArcDist(el, lw); }
+      if (d < bd) { bd = d; best = el; }
+    });
+    return best || insidePoly; // граница ближе → её; иначе — заливку многоугольника
+  }
+  // Новая точка: привязанная к активному окну (если курсор внутри) или свободная.
+  function newPointAt(p) {
+    const fr = frameForCreation();
+    let el;
+    if (fr) {
+      // Приоритет: пересечение двух линий → точка на линии → свободная в окне.
+      const X = pickIntersectionAt(fr, p);
+      // На месте пересечения уже есть точка — берём её, новую не плодим.
+      if (X) { const ex = existingPointAtLocal(fr, X.p.x, X.p.y); if (ex) return ex; }
+      const line = X ? null : pickLineAt(p);
+      const info = line ? onLineInfo(fr, line, p) : null;
+      let m, on = null;
+      if (X) { m = frameLocalToMath(fr, X.p.x, X.p.y); on = { isect: [X.a, X.b], k: X.k || 0 }; }
+      else if (info) { m = info; on = info.on; }
+      else { m = frameWorldToMath(fr, p.x, p.y); }
+      const data = { frame: fr.id, mx: m.mx, my: m.my, label: nextPointLabel(), color: strokeColor };
+      if (on) data.on = on;
+      el = { id: uuid(), type: 'point', z: 0, data: data };
+    } else {
+      const s = snapPoint(p);
+      el = { id: uuid(), type: 'point', z: 0, data: { x: s.x, y: s.y, label: nextPointLabel(), color: strokeColor, on: s.on || undefined } };
+    }
+    applyTypeDefaults(el.data, 'point'); // новые точки — по настройкам типа
+    // Привязка к сетке при СОЗДАНИИ (для свободной точки в окне): округляем матем. коорды.
+    if (el.data.snap && el.data.frame && !el.data.on) {
+      el.data.mx = Math.round(el.data.mx * 2) / 2;
+      el.data.my = Math.round(el.data.my * 2) / 2;
+    }
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    return el;
+  }
+  function createConstruction(type, ids) {
+    const el = { id: uuid(), type, z: 0, data: { color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    if (type === 'conic') { el.data.pts = ids.slice(0, 5); } // коника по 5 точкам — хранит массив точек, как многоугольник
+    else { el.data.a = ids[0]; el.data.b = ids[1]; if (ids.length >= 3) el.data.c = ids[2]; }
+    applyTypeDefaults(el.data, type === 'segment' ? 'segment' : type === 'angle' ? 'angle' : 'line'); // по настройкам своего типа
+    // Привязка к окну: если все опорные точки принадлежат одному окну —
+    // построение тоже его (рисуется в коорд. окна и обрезается границей).
+    const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
+    const commonFrame = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null;
+    // Бесконечное построение без общего окна не создаём (страховка; обычно
+    // отсекается ещё на кликах в handleConstructPick).
+    if (INFINITE_CONSTRUCTS.indexOf(type) >= 0 && !commonFrame) return;
+    if (commonFrame) el.data.frame = commonFrame;
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    // Опорные точки — поверх линии построения, чтобы их можно было схватить.
+    if (el.data.frame) {
+      const fnode = nodes.get(el.data.frame), h = fnode && fnode.findOne('.fheader');
+      ids.forEach((pid) => { const n = nodes.get(pid); if (n && h) n.zIndex(h.zIndex()); }); // над линией, под шапкой
+    } else {
+      ids.forEach((pid) => { const n = nodes.get(pid); if (n) n.moveToTop(); });
+    }
+    layer.batchDraw();
+  }
+  // Вектор AB (стрелка, следует за точками).
+  let vectorPicks = [];
+  function createVector(ids) {
+    const el = { id: uuid(), type: 'vector', z: 0, data: { a: ids[0], b: ids[1], color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
+    const cf = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null; if (cf) el.data.frame = cf;
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    if (el.data.frame) { const fn = nodes.get(el.data.frame), h = fn && fn.findOne('.fheader'); ids.forEach((pid) => { const n = nodes.get(pid); if (n && h) n.zIndex(h.zIndex()); }); }
+    else ids.forEach((pid) => { const n = nodes.get(pid); if (n) n.moveToTop(); });
+    layer.batchDraw();
+  }
+  function handleVectorPick(w) {
+    const id = pickPointId(w); if (!id) return;
+    vectorPicks.push(id);
+    if (vectorPicks.length >= 2) { const ids = vectorPicks.slice(); vectorPicks = []; createVector(ids); }
+    else boardHint('Теперь конец вектора');
+  }
+  // ── Анализ функций: выбор графика под курсором и создание элементов ────
+  function pickFuncAt(w) {
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const m = planeMap(fr), env = frameParamEnv(fr), lx = w.x - fr.data.x, ly = w.y - fr.data.y, planeX = m.P2X(lx);
+    let best = null, bd = 14 / stage.scaleX();
+    elements.forEach((e) => { if (e.type !== 'func' || e.data.frame !== fr.id) return; const fn = funcFnOf(e.id); if (!fn) return; let y; try { y = fn(planeX, env); } catch (err) { return; } if (!isFinite(y)) return; const dpx = Math.abs(m.Y2P(y) - ly); if (dpx < bd) { bd = dpx; best = { func: e, x0: planeX, fr: fr }; } });
+    return best;
+  }
+  function createAnalysis(type, data) { const el = { id: uuid(), type: type, z: 0, data: data }; upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); layer.batchDraw(); if (typeof syncAlgebra === 'function') syncAlgebra(); }
+  let areaPicks = [], fintPicks = [];
+  function handleTangentPick(w) { const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; } createAnalysis('ftangent', { frame: p.fr.id, func: p.func.id, x0: p.x0 }); boardHint('Касательная построена'); }
+  function handleAreaPick(w) {
+    const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; }
+    if (!areaPicks.length) { areaPicks = [{ func: p.func.id, frame: p.fr.id, x: p.x0 }]; boardHint('Теперь вторая граница (по этому же графику)'); return; }
+    const a = areaPicks[0]; areaPicks = []; createAnalysis('farea', { frame: a.frame, func: a.func, a: a.x, b: p.x0 }); boardHint('Площадь построена');
+  }
+  function handleFIntersectPick(w) {
+    const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; }
+    if (!fintPicks.length) { fintPicks = [p.func.id, p.fr.id]; boardHint('Теперь второй график'); return; }
+    const f = fintPicks[0]; const fid = fintPicks[1]; fintPicks = []; if (f === p.func.id) { boardHint('Нужны два разных графика'); return; }
+    createAnalysis('fintersect', { frame: fid, f: f, g: p.func.id }); boardHint('Точки пересечения отмечены');
+  }
+  // ── Неравенства / области ──────────────────────────────────────────────
+  function createRegion(frameId, parts) { const el = { id: uuid(), type: 'region', z: 0, data: { frame: frameId, parts: parts, color: '#2e86de' } }; upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); layer.batchDraw(); if (typeof syncAlgebra === 'function') syncAlgebra(); return el; }
+  function handleRegionPick(w) { const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; } createRegion(p.fr.id, [{ func: p.func.id, sense: 'gt' }]); boardHint('Область y ≥ f(x) закрашена — «выше/ниже» переключается в панели «Алгебра окна»'); }
+  let regionParts = [], regionFrame = null;
+  function handleRegionSysPick(w) {
+    const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; }
+    if (regionFrame && regionFrame !== p.fr.id) { boardHint('Все условия — в одном окне'); return; }
+    regionFrame = p.fr.id; regionParts.push({ func: p.func.id, sense: 'gt' });
+    boardHint('Условий: ' + regionParts.length + '. Ещё график — или Enter, чтобы закрасить систему');
+  }
+  function finishRegionSys() { if (!regionParts.length || !regionFrame) { regionParts = []; regionFrame = null; return; } createRegion(regionFrame, regionParts.slice()); regionParts = []; regionFrame = null; setTool('select'); boardHint('Система неравенств закрашена'); }
+  function toggleRegionSense(regionId, partIdx) {
+    const el = elements.get(regionId); if (!el || !el.data.parts || !el.data.parts[partIdx]) return;
+    el.data.parts[partIdx].sense = el.data.parts[partIdx].sense === 'gt' ? 'lt' : 'gt';
+    send({ action: 'element_update', element: el }); layer.batchDraw(); if (activeFrameId) renderFuncList(activeFrameId);
+  }
+  // Перпендикуляр/параллель «по линии»: строит объект со ссылкой на линию-основу и точку.
+  function createPerpParallelByLine(type, lineId, throughId, frameId) {
+    const el = { id: uuid(), type, z: 0, data: { color: strokeColor, strokeWidth: Math.max(2, strokeWidth), line: lineId, through: throughId, frame: frameId } };
+    applyTypeDefaults(el.data, 'line'); // новые прямые — по настройкам типа
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    const fnode = nodes.get(frameId), h = fnode && fnode.findOne('.fheader');
+    const n = nodes.get(throughId); if (n && h) n.zIndex(h.zIndex()); // точка над линией
+    layer.batchDraw();
+  }
+  // ── Построение окружностей по точкам ───────────────────────────────────
+  const CIRCLE_PICKS = { circ_cp: 2, circ_cr: 1, circ_3: 3, semi: 2, compass: 3 };
+  const CIRCLE_KIND = { circ_cp: 'cp', circ_cr: 'cr', circ_3: 'c3', semi: 'semi', compass: 'compass' };
+  function createCircle(kind, ids, extra) {
+    const el = { id: uuid(), type: 'circ', z: 0, data: { kind: kind, color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    applyTypeDefaults(el.data, 'circle'); // новые окружности — по настройкам типа
+    if (kind === 'cp') { el.data.center = ids[0]; el.data.through = ids[1]; }
+    else if (kind === 'cr') { el.data.center = ids[0]; el.data.r = extra.r; }
+    else if (kind === 'c3') { el.data.a = ids[0]; el.data.b = ids[1]; el.data.c = ids[2]; }
+    else if (kind === 'semi') { el.data.a = ids[0]; el.data.b = ids[1]; }
+    else if (kind === 'compass') { el.data.a = ids[0]; el.data.b = ids[1]; el.data.center = ids[2]; }
+    // Привязка к окну, если все опорные точки в одном (окружность конечна — но
+    // живёт в координатах окна, чтобы двигаться с плоскостью и пересекаться).
+    const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
+    const commonFrame = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null;
+    if (commonFrame) el.data.frame = commonFrame;
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    if (el.data.frame) { const fnode = nodes.get(el.data.frame), h = fnode && fnode.findOne('.fheader'); ids.forEach((pid) => { const n = nodes.get(pid); if (n && h) n.zIndex(h.zIndex()); }); }
+    else { ids.forEach((pid) => { const n = nodes.get(pid); if (n) n.moveToTop(); }); }
+    layer.batchDraw();
+  }
+  function handleCirclePick() {
+    pendingPicks.push(pickPointId(worldPoint()));
+    if (tool === 'circ_cr') { // центр задан — спрашиваем радиус
+      const txt = prompt('Радиус окружности (в единицах окна):', '2');
+      const r = parseFloat((txt || '').replace(',', '.'));
+      if (isFinite(r) && r > 0) createCircle('cr', pendingPicks, { r: r });
+      pendingPicks = [];
+      return;
+    }
+    if (pendingPicks.length >= CIRCLE_PICKS[tool]) { createCircle(CIRCLE_KIND[tool], pendingPicks); pendingPicks = []; }
+  }
+  // ── Многоугольник по вершинам ──────────────────────────────────────────
+  function createPolygon(ids) {
+    const el = { id: uuid(), type: 'polygon', z: 0, data: { pts: ids.slice(), color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    applyTypeDefaults(el.data, 'polygon');
+    const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
+    const commonFrame = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null;
+    if (commonFrame) el.data.frame = commonFrame;
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    // Вершины — поверх многоугольника, чтобы их можно было схватить.
+    if (el.data.frame) { const fnode = nodes.get(el.data.frame), h = fnode && fnode.findOne('.fheader'); ids.forEach((pid) => { const n = nodes.get(pid); if (n && h) n.zIndex(h.zIndex()); }); }
+    else { ids.forEach((pid) => { const n = nodes.get(pid); if (n) n.moveToTop(); }); }
+    layer.batchDraw();
+  }
+  let polyPicks = [], polyPreview = null;
+  function updatePolyPreview(cursorWorld) {
+    if (!polyPicks.length) { if (polyPreview) { polyPreview.destroy(); polyPreview = null; layer.batchDraw(); } return; }
+    if (!polyPreview) { polyPreview = new Konva.Line({ points: [], stroke: '#4d7cfe', strokeWidth: 1.5, dash: [6, 4], listening: false }); layer.add(polyPreview); }
+    const flat = [];
+    polyPicks.forEach((id) => { const e = elements.get(id); if (e && e.type === 'point') { const w = pointWorld(e); flat.push(w.x, w.y); } });
+    if (cursorWorld) flat.push(cursorWorld.x, cursorWorld.y);
+    polyPreview.points(flat); polyPreview.moveToTop(); layer.batchDraw();
+  }
+  function clearPolyPicks() { polyPicks = []; if (polyPreview) { polyPreview.destroy(); polyPreview = null; } layer.batchDraw(); }
+  function finishPolygon() { if (polyPicks.length >= 3) createPolygon(polyPicks); clearPolyPicks(); }
+  function handlePolygonPick() {
+    const w = worldPoint();
+    // Замыкание: клик по ПЕРВОЙ вершине (при ≥3 вершинах).
+    if (polyPicks.length >= 3) {
+      const first = elements.get(polyPicks[0]);
+      if (first) { const fp = pointWorld(first); if (Math.hypot(w.x - fp.x, w.y - fp.y) < 14 / stage.scaleX()) { finishPolygon(); return; } }
+    }
+    const id = pickPointId(w);
+    if (polyPicks[polyPicks.length - 1] !== id) polyPicks.push(id); // не дублируем ту же вершину подряд
+    updatePolyPreview(null);
+  }
+  // ── Правильный многоугольник (центр+вершина / две вершины) ──────────────
+  const REGPOLY_KIND = { regpoly_center: 'center', regpoly_edge: 'edge' };
+  function createRegPoly(kind, ids, n) {
+    const el = { id: uuid(), type: 'regpoly', z: 0, data: { kind: kind, n: n, color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    applyTypeDefaults(el.data, 'polygon'); // общие дефолты с многоугольником
+    if (kind === 'center') { el.data.center = ids[0]; el.data.vertex = ids[1]; }
+    else { el.data.a = ids[0]; el.data.b = ids[1]; }
+    const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
+    const commonFrame = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null;
+    if (commonFrame) el.data.frame = commonFrame;
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    // Точки-вершины: управляющие (center: vertex=k0; edge: a=k0,b=k1) уже есть,
+    // остальные создаём как производные точки on:{regpoly,k} — по ним строят диагонали.
+    const startK = (kind === 'center') ? 1 : 2;
+    const vptIds = [];
+    for (let k = startK; k < n; k++) {
+      const vp = { id: uuid(), type: 'point', z: 0, data: { frame: el.data.frame, on: { regpoly: el.id, k: k }, label: nextPointLabel(), color: strokeColor } };
+      applyTypeDefaults(vp.data, 'point');
+      upsertNode(vp); send({ action: 'element_add', element: vp }); histAdd(vp);
+      vptIds.push(vp.id);
+    }
+    recomputeGeometry();
+    // Все точки (управляющие + вершины) — поверх фигуры, чтобы их можно было схватить/кликнуть.
+    const allPts = ids.concat(vptIds);
+    if (el.data.frame) { const fnode = nodes.get(el.data.frame), h = fnode && fnode.findOne('.fheader'); allPts.forEach((pid) => { const p = nodes.get(pid); if (p && h) p.zIndex(h.zIndex()); }); }
+    else { allPts.forEach((pid) => { const p = nodes.get(pid); if (p) p.moveToTop(); }); }
+    layer.batchDraw();
+  }
+  function handleRegPolyPick() {
+    pendingPicks.push(pickPointId(worldPoint()));
+    if (pendingPicks.length >= 2) {
+      const txt = prompt('Число сторон правильного многоугольника:', '5');
+      const n = parseInt((txt || '').trim(), 10);
+      if (isFinite(n) && n >= 3) createRegPoly(REGPOLY_KIND[tool], pendingPicks, Math.min(200, n));
+      pendingPicks = [];
+    }
+  }
+  // ── Производная точка со ссылками (центр масс / деление отрезка) ─────────
+  function createDerivedPoint(onData, ids) {
+    const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
+    const commonFrame = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null;
+    if (!commonFrame) { boardHint('Опорные точки должны быть в одном окне'); return null; }
+    const el = { id: uuid(), type: 'point', z: 0, data: { frame: commonFrame, on: onData, label: nextPointLabel(), color: strokeColor } };
+    applyTypeDefaults(el.data, 'point');
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    const fnode = nodes.get(commonFrame), h = fnode && fnode.findOne('.fheader');
+    ids.forEach((pid) => { const p = nodes.get(pid); if (p && h) p.zIndex(h.zIndex()); });
+    const self = nodes.get(el.id); if (self && h) self.zIndex(h.zIndex());
+    layer.batchDraw();
+    return el;
+  }
+  // Середина / центр масс: копим точки, Enter — построить (≥2). Esc — отмена.
+  let midPicks = [];
+  function handleMidpointPick() {
+    const id = pickPointId(worldPoint());
+    if (midPicks[midPicks.length - 1] !== id) midPicks.push(id);
+    boardHint(midPicks.length < 2 ? 'Ещё точки; Enter — построить центр' : 'Enter — построить центр (или ещё точки)');
+  }
+  function finishMidpoint() {
+    if (midPicks.length >= 2) createDerivedPoint({ centroid: midPicks.slice() }, midPicks);
+    midPicks = [];
+  }
+  // Деление отрезка AB в отношении: 2 точки + запрос m:n или числа t.
+  function parseRatio(s) {
+    s = (s || '').trim(); if (!s) return null;
+    if (s.indexOf(':') >= 0) { const parts = s.split(':').map((x) => parseFloat(x.replace(',', '.'))); const m = parts[0], nn = parts[1]; if (isFinite(m) && isFinite(nn) && (m + nn) !== 0) return m / (m + nn); return null; }
+    const v = parseFloat(s.replace(',', '.')); return isFinite(v) ? v : null;
+  }
+  function handleRatioPick() {
+    pendingPicks.push(pickPointId(worldPoint()));
+    if (pendingPicks.length >= 2) {
+      const txt = prompt('Деление отрезка A→B: отношение m:n или число t (0..1):', '1:1');
+      const t = parseRatio(txt);
+      if (t != null) createDerivedPoint({ ratio: { a: pendingPicks[0], b: pendingPicks[1], t: t } }, pendingPicks);
+      pendingPicks = [];
+    }
+  }
+  // ── Преобразования: образы точек и фигур (связаны с источником через on:{xform}) ──
+  // Опорные точки фигуры (какие переносим/образуем).
+  function definingPoints(el) {
+    const d = el.data;
+    if (el.type === 'point') return [el.id];
+    if (el.type === 'polygon') return (d.pts || []).slice();
+    if (el.type === 'regpoly') return (d.kind === 'center' ? [d.center, d.vertex] : [d.a, d.b]).filter(Boolean);
+    if (el.type === 'circ') return [d.center, d.through, d.a, d.b, d.c].filter(Boolean);
+    if ((el.type === 'perp' || el.type === 'parallel') && d.line) return [d.through].filter(Boolean);
+    if (isConstruction(el.type)) return [d.a, d.b, d.c].filter(Boolean);
+    return [];
+  }
+  // Образ точки src под преобразованием xf (переиспользуем через pmap).
+  function imagePointOf(srcId, xf, pmap) {
+    if (pmap[srcId]) return pmap[srcId];
+    const src = elements.get(srcId); if (!src || src.type !== 'point') return null;
+    // Образ наследует БУКВУ источника, а индекс = индекс источника + 1 (A₁→A₂→A₃…).
+    const el = { id: uuid(), type: 'point', z: 0, data: { frame: src.data.frame, on: { xform: xf, src: srcId }, label: src.data.label || nextPointLabel(), idx: (src.data.idx || 0) + 1, color: strokeColor } };
+    applyTypeDefaults(el.data, 'point');
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    pmap[srcId] = el.id;
+    return el.id;
+  }
+  // Образ объекта src: та же фигура на образах опорных точек. objMap — против циклов/дублей.
+  function imageObjOf(src, xf, pmap, objMap) {
+    if (!src) return null;
+    if (objMap[src.id]) return objMap[src.id];
+    if (src.type === 'point') { const iid = imagePointOf(src.id, xf, pmap); if (iid) objMap[src.id] = iid; return iid; }
+    if (!(isConstruction(src.type) || src.type === 'circ' || isFilledPoly(src.type))) return null; // прочее (виджеты/рисунки) не преобразуем
+    const nd = { frame: src.data.frame };
+    ['color', 'stroke', 'strokeWidth', 'style', 'kind', 'n', 'r'].forEach((k) => { if (src.data[k] !== undefined) nd[k] = src.data[k]; });
+    let ok = true;
+    ['a', 'b', 'c', 'center', 'through', 'vertex'].forEach((k) => { if (src.data[k] !== undefined) { const iid = imagePointOf(src.data[k], xf, pmap); if (!iid) ok = false; else nd[k] = iid; } });
+    if (src.data.pts) { nd.pts = src.data.pts.map((pid) => imagePointOf(pid, xf, pmap)); if (nd.pts.some((x) => !x)) ok = false; }
+    if (src.data.line) { const rl = elements.get(src.data.line); const il = rl ? imageObjOf(rl, xf, pmap, objMap) : null; if (!il) ok = false; else nd.line = il; }
+    if (!ok) return null;
+    const el = { id: uuid(), type: src.type, z: 0, data: nd };
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    objMap[src.id] = el.id;
+    return el.id;
+  }
+  function applyTransform(sourceIds, xf) {
+    if (!sourceIds || !sourceIds.length) { boardHint('Сначала выделите объект(ы), затем преобразование'); return; }
+    const pmap = {}, objMap = {}, imgPts = [];
+    const before = elements.size;
+    sourceIds.forEach((sid) => { const src = elements.get(sid); if (src) imageObjOf(src, xf, pmap, objMap); });
+    if (elements.size === before) { boardHint('Не удалось построить образ'); return; }
+    recomputeGeometry();
+    // Точки-образы — поверх фигур-образов.
+    Object.values(pmap).forEach((pid) => { const p = nodes.get(pid); const pe = elements.get(pid); if (p && pe && pe.data.frame) { const fnode = nodes.get(pe.data.frame), h = fnode && fnode.findOne('.fheader'); if (h) p.zIndex(h.zIndex()); } else if (p) p.moveToTop(); });
+    layer.batchDraw();
+    boardHint('Образ построен');
+  }
+  // Инструменты-преобразования: собирают параметры (точки/прямую) кликами + числа prompt'ом.
+  const XFORM_SPEC = {
+    csym:   { picks: ['point'], nums: [], hint: 'Кликните центр симметрии' },
+    asym:   { picks: ['line'],  nums: [], hint: 'Кликните ось (прямую)' },
+    rot:    { picks: ['point'], nums: [['angle', 'Угол поворота (°, + против часовой):', '90']], hint: 'Кликните центр поворота' },
+    trans:  { picks: ['point', 'point'], nums: [], hint: 'Кликните начало вектора, затем конец' },
+    homo:   { picks: ['point'], nums: [['k', 'Коэффициент гомотетии k:', '2']], hint: 'Кликните центр гомотетии' },
+    spiral: { picks: ['point'], nums: [['angle', 'Угол (°):', '90'], ['k', 'Коэффициент k:', '2']], hint: 'Кликните центр' },
+  };
+  let xformSources = [], xformPicks = [];
+  // Активация инструмента: источники = текущее выделение (если было). Дальше можно
+  // добавлять кликами (Shift — несколько). setTool сохраняет выделение для xform-инструментов.
+  function startXformTool() { xformSources = Array.from(selected); xformPicks = []; const s = XFORM_SPEC[tool]; if (s) boardHint(xformSources.length ? ('Shift — ещё объект; ' + s.hint) : 'Кликните объект (Shift — несколько), затем параметр'); }
+  function addXformSource(id) { if (xformSources.indexOf(id) < 0) xformSources.push(id); selected.add(id); refreshTransformer(); }
+  function handleXformPick(w, shift) {
+    const spec = XFORM_SPEC[tool]; if (!spec) return;
+    // Фаза выбора источника: Shift — добавить; первый обычный клик — задать источник.
+    if (shift || !xformSources.length) {
+      const obj = pickObjectAtWorld(w);
+      if (obj) { addXformSource(obj.id); boardHint('Shift — ещё объект; затем: ' + spec.hint); }
+      else boardHint('Кликните по объекту для преобразования');
+      return;
+    }
+    // Источники есть, клик без Shift — задаём ПАРАМЕТР преобразования.
+    const want = spec.picks[xformPicks.length];
+    if (want === 'point') xformPicks.push(pickPointId(w));
+    else if (want === 'line') { const ln = pickLineAt(w); if (!ln) { boardHint('Кликните по прямой (ось)'); return; } xformPicks.push(ln.id); }
+    if (xformPicks.length < spec.picks.length) { boardHint(spec.hint + ' — ещё'); return; }
+    const xf = { kind: tool };
+    if (tool === 'csym' || tool === 'rot' || tool === 'homo' || tool === 'spiral') xf.c = xformPicks[0];
+    else if (tool === 'asym') xf.line = xformPicks[0];
+    else if (tool === 'trans') { xf.a = xformPicks[0]; xf.b = xformPicks[1]; }
+    let ok = true;
+    spec.nums.forEach((nm) => { if (!ok) return; const txt = prompt(nm[1], nm[2]); const v = parseFloat((txt || '').replace(',', '.')); if (!isFinite(v)) ok = false; else xf[nm[0]] = v; });
+    if (ok) applyTransform(xformSources, xf);
+    xformSources = []; xformPicks = []; clearSelection(); setTool('select');
+  }
+  function cancelXform() { xformSources = []; xformPicks = []; clearSelection(); }
+  // ── Инструмент «точка пересечения»: клик по двум фигурам → их пересечения ──
+  let pickCurve1 = null;
+  function handleIsectPick(w) {
+    const c = pickCurveAt(w);
+    if (!c) { boardHint('Кликните по фигуре (прямой или окружности)'); return; }
+    if (!pickCurve1) { pickCurve1 = c.id; boardHint('Теперь вторая фигура'); return; }
+    if (c.id === pickCurve1) { boardHint('Выберите другую фигуру'); return; }
+    createIntersectionPoints(pickCurve1, c.id);
+    pickCurve1 = null;
+  }
+  // Существующая точка окна в этом месте (локальные коорд), или null. exclude — id, которые игнорировать.
+  function existingPointAtLocal(fr, lx, ly, exclude) {
+    const tol = 8 / stage.scaleX();
+    let found = null;
+    elements.forEach((el) => {
+      if (found || el.type !== 'point' || el.data.frame !== fr.id) return;
+      if (exclude && exclude.indexOf(el.id) >= 0) return;
+      const p = frameMathToLocal(fr, el.data.mx || 0, el.data.my || 0);
+      if (Math.hypot(p.x - lx, p.y - ly) <= tol) found = el;
+    });
+    return found;
+  }
+  function createIntersectionPoints(id1, id2) {
+    const o1 = elements.get(id1), o2 = elements.get(id2);
+    if (!o1 || !o2) { pickCurve1 = null; return; }
+    if (o1.data.frame !== o2.data.frame || !o1.data.frame) { boardHint('Фигуры должны быть в одном окне'); return; }
+    const g1 = curveGeom(o1), g2 = curveGeom(o2);
+    const pts = (g1 && g2) ? intersectCurves(g1, g2) : [];
+    if (!pts.length) { boardHint('Фигуры не пересекаются'); return; }
+    const fr = elements.get(o1.data.frame);
+    let added = 0;
+    pts.forEach((p, k) => {
+      if (existingPointAtLocal(fr, p.x, p.y)) return; // на этом месте уже есть точка — не дублируем
+      const m = frameLocalToMath(fr, p.x, p.y);
+      const el = { id: uuid(), type: 'point', z: 0, data: { frame: fr.id, mx: m.mx, my: m.my, on: { isect: [id1, id2], k: k }, label: nextPointLabel(), color: strokeColor } };
+      upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); added++;
+    });
+    if (!added) boardHint('Точки пересечения уже отмечены');
+    recomputeGeometry(); layer.batchDraw();
+  }
+  // Расстояние от точки до бесконечной прямой (u единичный) и до отрезка.
+  function distPointToLine(p, base, u) { const vx = p.x - base.x, vy = p.y - base.y; return Math.abs(vx * u.y - vy * u.x); }
+  function distPointToSeg(p, a, b) {
+    const abx = b.x - a.x, aby = b.y - a.y, len2 = abx * abx + aby * aby || 1;
+    let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2; t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t));
+  }
+  // Линия-построение под курсором (только видимая внутри окна под курсором).
+  function pickLineAt(w) {
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const THRESH = 12 / stage.scaleX();
+    const lw = { x: w.x - fr.data.x, y: w.y - fr.data.y }; // курсор в локальных коорд окна
+    let best = null, bd = THRESH;
+    elements.forEach((el) => {
+      if (el.data.frame !== fr.id || CONSTRUCT_LINES.indexOf(el.type) < 0) return;
+      const P = constructionParams(el); if (!P) return;
+      const dist = P.seg ? distPointToSeg(lw, { x: P.seg[0], y: P.seg[1] }, { x: P.seg[2], y: P.seg[3] })
+                         : distPointToLine(lw, P.base, P.u);
+      if (dist < bd) { bd = dist; best = el; }
+    });
+    return best;
+  }
+  // Геометрия линии в ЛОКАЛЬНЫХ коорд окна: база, единичное направление и
+  // допустимый диапазон параметра t (для «точки на линии» — точка = base+t·u).
+  function lineGeom(el) {
+    const P = constructionParams(el); if (!P) return null;
+    if (P.seg) {
+      const A = { x: P.seg[0], y: P.seg[1] }, B = { x: P.seg[2], y: P.seg[3] };
+      const len = Math.hypot(B.x - A.x, B.y - A.y) || 1;
+      return { base: A, u: { x: (B.x - A.x) / len, y: (B.y - A.y) / len }, tmin: 0, tmax: len };
+    }
+    return { base: P.base, u: P.u, tmin: (P.tlo === -Infinity ? -Infinity : 0), tmax: Infinity };
+  }
+  // Опорные («собственные») точки фигуры — их двигаем при параллельном переносе.
+  function lineOwnPoints(el) {
+    const d = el.data;
+    if ((el.type === 'perp' || el.type === 'parallel') && d.line) return d.through ? [d.through] : [];
+    if (el.type === 'circ') return [d.center, d.through, d.a, d.b, d.c].filter(Boolean);
+    if (el.type === 'polygon' || el.type === 'conic') return (d.pts || []).slice();
+    if (el.type === 'regpoly') return (d.kind === 'center' ? [d.center, d.vertex] : [d.a, d.b]).filter(Boolean);
+    return [d.a, d.b, d.c].filter(Boolean);
+  }
+  // Параметры «точки на линии»: проекция мировой точки w на линию → {on, mx, my, lx, ly}.
+  function onLineInfo(fr, line, w) {
+    const G = lineGeom(line); if (!G) return null;
+    const lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
+    let t = (lw.x - G.base.x) * G.u.x + (lw.y - G.base.y) * G.u.y;
+    t = Math.max(G.tmin, Math.min(G.tmax, t));
+    const lx = G.base.x + G.u.x * t, ly = G.base.y + G.u.y * t;
+    const m = frameLocalToMath(fr, lx, ly);
+    return { on: { line: line.id, t: t }, mx: m.mx, my: m.my, lx: lx, ly: ly };
+  }
+  // Пересечение двух линий (геометрии в локальных коорд окна). Возвращает {p} —
+  // точку пересечения, либо null (параллельны или пересечение вне отрезка/луча).
+  function cross2(ax, ay, bx, by) { return ax * by - ay * bx; }
+  function lineLineIntersect(G1, G2) {
+    const den = cross2(G1.u.x, G1.u.y, G2.u.x, G2.u.y);
+    if (Math.abs(den) < 1e-9) return null; // параллельны
+    const dx = G2.base.x - G1.base.x, dy = G2.base.y - G1.base.y;
+    const t = cross2(dx, dy, G2.u.x, G2.u.y) / den;
+    const p = { x: G1.base.x + G1.u.x * t, y: G1.base.y + G1.u.y * t };
+    const s = (p.x - G2.base.x) * G2.u.x + (p.y - G2.base.y) * G2.u.y;
+    if (t < G1.tmin - 1e-6 || t > G1.tmax + 1e-6) return null; // вне диапазона первой
+    if (s < G2.tmin - 1e-6 || s > G2.tmax + 1e-6) return null; // вне диапазона второй
+    return { p: p, t: t, s: s };
+  }
+  // ── Окружности по точкам (5 построений) и кривые для пересечений ────────
+  function isCircle(t) { return t === 'circ'; }
+  function isCurveType(t) { return CONSTRUCT_LINES.indexOf(t) >= 0 || t === 'circ'; }
+  // Центр описанной окружности треугольника ABC (или null, если точки коллинеарны).
+  function circumcenter(A, B, C) {
+    const d = 2 * (A.x * (B.y - C.y) + B.x * (C.y - A.y) + C.x * (A.y - B.y));
+    if (Math.abs(d) < 1e-9) return null;
+    const A2 = A.x * A.x + A.y * A.y, B2 = B.x * B.x + B.y * B.y, C2 = C.x * C.x + C.y * C.y;
+    return {
+      x: (A2 * (B.y - C.y) + B2 * (C.y - A.y) + C2 * (A.y - B.y)) / d,
+      y: (A2 * (C.x - B.x) + B2 * (A.x - C.x) + C2 * (B.x - A.x)) / d,
+    };
+  }
+  // Геометрия окружности в ЛОКАЛЬНЫХ коорд окна: центр (cx,cy), радиус r,
+  // для полуокружности — флаг semi и углы концов a0,a1.
+  //   kind: cp (центр+точка), cr (центр+радиус), c3 (по 3 точкам),
+  //         compass (циркуль: радиус=|AB|, центр=C), semi (полукруг на диаметре AB).
+  function circleGeom(el) {
+    const pos = ptPosFor(el), d = el.data;
+    const fr = d.frame ? elements.get(d.frame) : null;
+    const unit = fr ? (fr.data.unit || 40) : 1;
+    if (d.kind === 'cp') { const C = pos(d.center), T = pos(d.through); if (!C || !T) return null; return { cx: C.x, cy: C.y, r: Math.hypot(T.x - C.x, T.y - C.y) }; }
+    if (d.kind === 'cr') { const C = pos(d.center); if (!C) return null; return { cx: C.x, cy: C.y, r: (d.r || 0) * unit }; }
+    if (d.kind === 'compass') { const A = pos(d.a), B = pos(d.b), C = pos(d.center); if (!A || !B || !C) return null; return { cx: C.x, cy: C.y, r: Math.hypot(B.x - A.x, B.y - A.y) }; }
+    if (d.kind === 'c3') { const A = pos(d.a), B = pos(d.b), Cc = pos(d.c); if (!A || !B || !Cc) return null; const O = circumcenter(A, B, Cc); if (!O) return null; return { cx: O.x, cy: O.y, r: Math.hypot(A.x - O.x, A.y - O.y) }; }
+    if (d.kind === 'semi') { const A = pos(d.a), B = pos(d.b); if (!A || !B) return null; const cx = (A.x + B.x) / 2, cy = (A.y + B.y) / 2; return { cx: cx, cy: cy, r: Math.hypot(B.x - A.x, B.y - A.y) / 2, semi: true, a0: Math.atan2(A.y - cy, A.x - cx), a1: Math.atan2(B.y - cy, B.x - cx) }; }
+    return null;
+  }
+  // Единое описание кривой (линия | окружность | дуга) для пересечений/выбора.
+  function curveGeom(el) {
+    if (CONSTRUCT_LINES.indexOf(el.type) >= 0) { const G = lineGeom(el); return G ? { type: 'line', base: G.base, u: G.u, tmin: G.tmin, tmax: G.tmax } : null; }
+    if (el.type === 'circ') { const C = circleGeom(el); return C ? { type: C.semi ? 'arc' : 'circle', cx: C.cx, cy: C.cy, r: C.r, a0: C.a0, semi: C.semi } : null; }
+    return null;
+  }
+  // Точка на дуге полуокружности? (полукруг рисуем от a0 против часовой на π.)
+  function pointOnArc(C, p) {
+    if (!C.semi) return true;
+    let d = Math.atan2(p.y - C.cy, p.x - C.cx) - C.a0;
+    while (d < 0) d += 2 * Math.PI; while (d >= 2 * Math.PI) d -= 2 * Math.PI;
+    return d <= Math.PI + 1e-6;
+  }
+  // Пересечения (в локальных коорд). Порядок точек стабилен (по t / по стороне),
+  // чтобы «которая из двух» (k) не прыгала при движении фигур.
+  function lineCircleIntersect(L, C) {
+    const dx = L.base.x - C.cx, dy = L.base.y - C.cy;
+    const b = dx * L.u.x + dy * L.u.y, c = dx * dx + dy * dy - C.r * C.r;
+    const disc = b * b - c; if (disc < -1e-9) return [];
+    const sq = Math.sqrt(Math.max(0, disc));
+    const ts = (Math.abs(disc) < 1e-9) ? [-b] : [-b - sq, -b + sq];
+    const res = [];
+    ts.forEach((t) => {
+      if (t < L.tmin - 1e-6 || t > L.tmax + 1e-6) return;
+      const p = { x: L.base.x + L.u.x * t, y: L.base.y + L.u.y * t };
+      if (pointOnArc(C, p)) res.push(p);
+    });
+    return res;
+  }
+  function circleCircleIntersect(C1, C2) {
+    const dx = C2.cx - C1.cx, dy = C2.cy - C1.cy, D = Math.hypot(dx, dy);
+    if (D < 1e-9) return [];
+    if (D > C1.r + C2.r + 1e-6 || D < Math.abs(C1.r - C2.r) - 1e-6) return [];
+    const a = (C1.r * C1.r - C2.r * C2.r + D * D) / (2 * D);
+    const h = Math.sqrt(Math.max(0, C1.r * C1.r - a * a));
+    const mx = C1.cx + a * dx / D, my = C1.cy + a * dy / D, ex = -dy / D, ey = dx / D;
+    const cand = (h < 1e-9) ? [{ x: mx, y: my }] : [{ x: mx + h * ex, y: my + h * ey }, { x: mx - h * ex, y: my - h * ey }];
+    return cand.filter((p) => pointOnArc(C1, p) && pointOnArc(C2, p));
+  }
+  function intersectCurves(g1, g2) {
+    const line1 = g1.type === 'line', line2 = g2.type === 'line';
+    if (line1 && line2) { const X = lineLineIntersect(g1, g2); return X ? [X.p] : []; }
+    if (line1 && !line2) return lineCircleIntersect(g1, g2);
+    if (!line1 && line2) return lineCircleIntersect(g2, g1);
+    return circleCircleIntersect(g1, g2);
+  }
+  function distToCurve(g, p) {
+    if (g.type === 'line') {
+      if (g.tmin === -Infinity && g.tmax === Infinity) return distPointToLine(p, g.base, g.u);
+      let t = (p.x - g.base.x) * g.u.x + (p.y - g.base.y) * g.u.y; t = Math.max(g.tmin, Math.min(g.tmax, t));
+      return Math.hypot(p.x - (g.base.x + g.u.x * t), p.y - (g.base.y + g.u.y * t));
+    }
+    let d = Math.abs(Math.hypot(p.x - g.cx, p.y - g.cy) - g.r);
+    if (g.semi && !pointOnArc(g, p)) d += 1e6; // вне дуги — недоступна
+    return d;
+  }
+  // Кривая (линия/окружность) под курсором внутри окна.
+  function pickCurveAt(w) {
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const THRESH = 12 / stage.scaleX(), lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
+    let best = null, bd = THRESH;
+    elements.forEach((el) => {
+      if (el.data.frame !== fr.id || !isCurveType(el.type)) return;
+      const g = curveGeom(el); if (!g) return;
+      const d = distToCurve(g, lw); if (d < bd) { bd = d; best = el; }
+    });
+    return best;
+  }
+  // Пересечение двух кривых окна рядом с курсором → {a, b, k, p} (для точки-инструмента).
+  function pickIntersectionAt(fr, w) {
+    const THRESH = 12 / stage.scaleX(), lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
+    const curves = [];
+    elements.forEach((el) => { if (el.data.frame !== fr.id || !isCurveType(el.type)) return; const g = curveGeom(el); if (g) curves.push({ id: el.id, g: g }); });
+    let best = null, bd = THRESH;
+    for (let i = 0; i < curves.length; i++) for (let j = i + 1; j < curves.length; j++) {
+      const pts = intersectCurves(curves[i].g, curves[j].g);
+      pts.forEach((p, k) => { const d = Math.hypot(p.x - lw.x, p.y - lw.y); if (d < bd) { bd = d; best = { a: curves[i].id, b: curves[j].id, k: k, p: p }; } });
+    }
+    return best;
+  }
+  // Ненавязчивая всплывающая подсказка вверху холста (~1.6 c). Монохром, без иконок.
+  let hintEl = null, hintTimer = null;
+  function boardHint(msg) {
+    if (!hintEl) {
+      hintEl = document.createElement('div');
+      hintEl.style.cssText = 'position:fixed;left:50%;top:76px;transform:translateX(-50%);background:#1f2937;color:#fff;font:13px/1.4 sans-serif;padding:6px 12px;border-radius:8px;z-index:60;pointer-events:none;opacity:0;transition:opacity .15s;box-shadow:0 6px 24px rgba(0,0,0,.18);';
+      document.body.appendChild(hintEl);
+    }
+    hintEl.textContent = msg; hintEl.style.opacity = '1';
+    clearTimeout(hintTimer); hintTimer = setTimeout(() => { hintEl.style.opacity = '0'; }, 1600);
+  }
+  let pickFrame = null;   // окно, в котором идёт текущее бесконечное построение
+  let pickRefLine = null; // выбранная линия-основа (режим «линия + точка»)
+  // Валидная точка внутри целевого окна pickFrame (иначе подсказка). Возвращает id или null.
+  function pickPointInFrame(w) {
+    const fr = frameAtWorld(w.x, w.y, true);
+    if (!fr) { boardHint('Бесконечные построения — только внутри матокна'); return null; }
+    if (pickFrame && fr.id !== pickFrame) { boardHint('Все точки — в одном матокне'); return null; }
+    pickFrame = pickFrame || fr.id;
+    const id = pickPointId(w), pe = elements.get(id);
+    if (!pe || pe.data.frame !== pickFrame) { boardHint('Точка вне матокна'); return null; }
+    return id;
+  }
+  // Угол заданной градусной меры: клик по точке-стороне A, затем вершине V, ввод
+  // градусов → строим A′ (поворот A вокруг V) и луч VA′ — вторую сторону угла.
+  let angleDegPicks = [];
+  function handleAngleDegPick(w) {
+    const id = pickPointInFrame(w); if (!id) return; // как лучи — строго в одном окне
+    angleDegPicks.push(id);
+    if (angleDegPicks.length < 2) { boardHint('Теперь вершина угла'); return; }
+    const aId = angleDegPicks[0], vId = angleDegPicks[1]; angleDegPicks = []; pickFrame = null;
+    const A = elements.get(aId), V = elements.get(vId);
+    if (!A || !V || !A.data.frame || A.data.frame !== V.data.frame) { boardHint('Обе точки — в одном окне'); return; }
+    const txt = prompt('Градусная мера угла (против часовой):', '90');
+    const deg = parseFloat(String(txt == null ? '' : txt).replace(',', '.'));
+    if (!isFinite(deg)) return;
+    // A′ — производная точка: поворот A вокруг V на deg (следит за A и V).
+    const el = { id: uuid(), type: 'point', z: 0, data: { frame: A.data.frame, on: { xform: { kind: 'rot', c: vId, angle: deg }, src: aId }, label: nextPointLabel(), color: strokeColor } };
+    applyTypeDefaults(el.data, 'point');
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+    createConstruction('ray', [vId, el.id]); // вторая сторона угла
+    boardHint('Угол ' + deg + '° построен');
+  }
+  // Перпендикуляр/параллель: первый клик по существующей линии → режим «линия + точка»;
+  // по пустому месту → режим «три точки» (A,B задают направление, C — через какую точку).
+  function handlePerpParallelPick(w) {
+    if (pendingPicks.length === 0 && !pickRefLine) {
+      const line = pickLineAt(w);
+      if (line) { pickRefLine = line.id; pickFrame = line.data.frame; boardHint('Теперь точка, через которую провести'); return; }
+    }
+    if (pickRefLine) {
+      const fr = frameAtWorld(w.x, w.y, true);
+      if (!fr || fr.id !== pickFrame) { boardHint('Точка — в том же матокне'); return; }
+      const id = pickPointId(w), pe = elements.get(id);
+      if (!pe || pe.data.frame !== pickFrame) { boardHint('Точка вне матокна'); return; }
+      createPerpParallelByLine(tool, pickRefLine, id, pickFrame);
+      pendingPicks = []; pickRefLine = null; pickFrame = null;
+      return;
+    }
+    const id = pickPointInFrame(w); if (!id) return;
+    pendingPicks.push(id);
+    if (pendingPicks.length >= 3) { createConstruction(tool, pendingPicks); pendingPicks = []; pickFrame = null; }
+  }
+  function handleConstructPick() {
+    const w = worldPoint();
+    if (tool === 'perp' || tool === 'parallel') { handlePerpParallelPick(w); return; }
+    if (INFINITE_CONSTRUCTS.indexOf(tool) >= 0) {
+      // Прочие бесконечные построения — строго внутри одного матокна.
+      const id = pickPointInFrame(w); if (!id) return;
+      pendingPicks.push(id);
+    } else {
+      pendingPicks.push(pickPointId(w)); // конечные (отрезок, угол) — где угодно
+    }
+    if (pendingPicks.length >= CONSTRUCT_PICKS[tool]) { createConstruction(tool, pendingPicks); pendingPicks = []; pickFrame = null; }
+  }
+
+  // ── Измерения: выбор опор и создание ──────────────────────────────────
+  let measurePicks = [];
+  // Залитый многоугольник под курсором (контур → мировые коорды → тест «внутри»).
+  function pickFilledPolyAt(w) {
+    let found = null;
+    elements.forEach((el) => {
+      if (!isFilledPoly(el.type)) return;
+      const flat = shapeOutline(el); if (!flat || flat.length < 6) return;
+      const fr = el.data.frame ? elements.get(el.data.frame) : null;
+      const wf = []; for (let i = 0; i < flat.length; i += 2) { wf.push(flat[i] + (fr ? fr.data.x : 0), flat[i + 1] + (fr ? fr.data.y : 0)); }
+      if (pointInPolygon(w, wf)) found = el;
+    });
+    return found;
+  }
+  function handleMeasurePick(w) {
+    if (tool === 'measure_area') {
+      const poly = pickFilledPolyAt(w);
+      if (!poly) { boardHint('Кликните внутрь многоугольника'); return; }
+      createMeasure('area', [poly.id], poly.data.frame);
+      return;
+    }
+    const id = pickPointId(w); if (!id) return;
+    measurePicks.push(id);
+    const need = MEASURE_PICKS[tool];
+    if (measurePicks.length < need) { boardHint('Точка ' + measurePicks.length + ' из ' + need); return; }
+    const kind = 'length'; // осталось только измерение длины (measure_len); угол — см. angle_deg
+    const frs = measurePicks.map((pid) => { const e = elements.get(pid); return e ? e.data.frame : undefined; });
+    const common = frs.every((f) => f && f === frs[0]) ? frs[0] : undefined;
+    createMeasure(kind, measurePicks.slice(), common);
+    measurePicks = [];
+  }
+  function createMeasure(kind, refs, frame) {
+    const data = { kind, refs, color: '#1f2937', name: nextObjName() };
+    if (frame) data.frame = frame;
+    const el = { id: uuid(), type: 'measure', z: 0, data };
+    upsertNode(el); recomputeGeometry();
+    send({ action: 'element_add', element: el }); histAdd(el);
+    layer.batchDraw();
+    boardHint(kind === 'length' ? 'Длина измерена' : kind === 'angle' ? 'Угол измерен' : 'Площадь измерена');
+  }
+
+  // ── Пометка «прямой угол»: 3 точки (A, вершина, B); повторный клик снимает ──
+  let markPicks = [];
+  function sameMarkRefs(r1, r2) { return r1[1] === r2[1] && ((r1[0] === r2[0] && r1[2] === r2[2]) || (r1[0] === r2[2] && r1[2] === r2[0])); }
+  function findMark(refs) { let f = null; elements.forEach((el) => { if (el.type === 'mark' && el.data.kind === 'right' && el.data.refs && el.data.refs.length === 3 && sameMarkRefs(el.data.refs, refs)) f = el; }); return f; }
+  function handleMarkPick(w) {
+    const id = pickPointId(w); if (!id) return;
+    markPicks.push(id);
+    if (markPicks.length < 3) { boardHint('Точка ' + markPicks.length + ' из 3'); return; }
+    const refs = markPicks.slice(); markPicks = [];
+    const ex = findMark(refs);
+    if (ex) { deleteMarkEl(ex); return; }
+    const el = { id: uuid(), type: 'mark', z: 0, data: { kind: 'right', refs, count: 1, color: '#1f2937' } };
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); layer.batchDraw();
+    boardHint('Прямой угол отмечен');
+  }
+  function deleteMarkEl(el) { histDel(el); send({ action: 'element_delete', id: el.id }); removeNode(el.id); layer.batchDraw(); }
+
+  // ── Пользовательские инструменты (макросы): записать конструкцию и применять ──
+  // Пользователь выбирает исходные точки, затем итоговые объекты. Записываем
+  // «рецепт» (цепочку зависимостей) и переигрываем его на новых точках.
+  const MACRO_KEY = 'board-macros-v1';
+  function loadMacros() { try { return JSON.parse(localStorage.getItem(MACRO_KEY) || '[]'); } catch (e) { return []; } }
+  function saveMacros(list) { try { localStorage.setItem(MACRO_KEY, JSON.stringify(list)); } catch (e) {} }
+  function renderMacroTools() {
+    const box = document.getElementById('macro-list'); if (!box) return;
+    const list = loadMacros();
+    box.innerHTML = list.length ? list.map((m, i) =>
+      '<div class="macro-tool" data-macro="' + i + '" title="' + escapeAttr(m.name) + ' — кликните ' + m.nInputs + ' точк(и)"><span class="macro-name">' + escapeHtml(m.name) + '</span><button class="macro-del" data-macro="' + i + '" title="Удалить">×</button></div>'
+    ).join('') : '<div class="macro-empty">пока нет — нажмите «Создать инструмент»</div>';
+  }
+  // Id-ссылки, на которые опирается элемент (обратное к directDependents).
+  function elemRefs(el) {
+    const d = el.data, out = [];
+    ['a', 'b', 'c', 'center', 'through', 'line', 'vertex'].forEach((k) => { if (d[k]) out.push(d[k]); });
+    (d.pts || []).forEach((id) => out.push(id));
+    (d.refs || []).forEach((id) => out.push(id));
+    if (d.on) { const o = d.on;
+      ['line', 'c', 'circle', 'regpoly'].forEach((k) => { if (o[k]) out.push(o[k]); });
+      (o.isect || []).forEach((id) => out.push(id));
+      (o.centroid || []).forEach((id) => out.push(id));
+      if (o.ratio) { if (o.ratio.a) out.push(o.ratio.a); if (o.ratio.b) out.push(o.ratio.b); }
+      if (o.xform) ['src', 'c', 'a', 'b', 'line'].forEach((k) => { if (o.xform[k]) out.push(o.xform[k]); });
+    }
+    return out;
+  }
+  // Заменить в данных все id-ссылки по карте (uuid → uuid); строки-неид не трогаем.
+  function remapIds(v, map) {
+    if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) { if (typeof v[i] === 'string') { if (map[v[i]]) v[i] = map[v[i]]; } else if (v[i] && typeof v[i] === 'object') remapIds(v[i], map); } return; }
+    if (v && typeof v === 'object') { for (const k in v) { const val = v[k]; if (typeof val === 'string') { if (map[val]) v[k] = map[val]; } else if (val && typeof val === 'object') remapIds(val, map); } }
+  }
+  function buildMacroRecipe(inputIds, outputIds) {
+    const inputSet = new Set(inputIds), closure = new Set(), stack = outputIds.slice();
+    while (stack.length) { const id = stack.pop(); if (closure.has(id) || inputSet.has(id)) continue; const el = elements.get(id); if (!el) continue; closure.add(id); elemRefs(el).forEach((r) => { if (!inputSet.has(r)) stack.push(r); }); }
+    const steps = []; // в порядке создания (Map хранит порядок вставки = топологический)
+    elements.forEach((el) => { if (closure.has(el.id)) steps.push({ id: el.id, type: el.type, data: clone(el.data) }); });
+    return { name: '', nInputs: inputIds.length, inputIds: inputIds.slice(), steps: steps };
+  }
+  function applyMacro(macro, newInputIds) {
+    if (!macro || newInputIds.length < macro.nInputs) return;
+    const idMap = {};
+    macro.inputIds.forEach((oldId, i) => { idMap[oldId] = newInputIds[i]; });
+    macro.steps.forEach((s) => { idMap[s.id] = uuid(); });
+    const p0 = elements.get(newInputIds[0]), targetFrame = p0 ? p0.data.frame : undefined;
+    macro.steps.forEach((s) => {
+      const data = clone(s.data); remapIds(data, idMap);
+      if (targetFrame) data.frame = targetFrame; else delete data.frame;
+      if (s.type === 'point') { data.label = nextPointLabel(); data.idx = undefined; }
+      const el = { id: idMap[s.id], type: s.type, z: 0, data: data };
+      upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    });
+    recomputeGeometry(); layer.batchDraw();
+    boardHint('Инструмент «' + macro.name + '» применён');
+  }
+
+  // Запись макроса (двухфазный выбор: исходные точки → итоговые объекты).
+  let macroMode = null, macroInputs = [], macroOutputs = [], activeMacro = null, macroPickPts = [];
+  function startMacroRecord() {
+    macroMode = 'inputs'; macroInputs = []; macroOutputs = []; clearSelection();
+    setTool('macro_record');
+    boardHint('Шаг 1: кликните исходные точки по порядку, затем Enter');
+  }
+  function handleMacroRecordPick(w) {
+    if (macroMode === 'inputs') {
+      const p = pickSelectablePointNear(w); if (!p) { boardHint('Кликайте по существующим точкам'); return; }
+      if (macroInputs.indexOf(p.id) < 0) macroInputs.push(p.id);
+      boardHint('Исходных точек: ' + macroInputs.length + ' (Enter — дальше)');
+    } else if (macroMode === 'outputs') {
+      const o = pickObjectAtWorld(w); if (!o) { boardHint('Кликайте по итоговым объектам'); return; }
+      if (macroOutputs.indexOf(o.id) < 0) macroOutputs.push(o.id);
+      boardHint('Итоговых объектов: ' + macroOutputs.length + ' (Enter — сохранить)');
+    }
+  }
+  function macroRecordEnter() {
+    if (macroMode === 'inputs') {
+      if (!macroInputs.length) { boardHint('Сначала выберите хотя бы одну исходную точку'); return; }
+      macroMode = 'outputs'; boardHint('Шаг 2: кликните итоговые объекты, затем Enter');
+    } else if (macroMode === 'outputs') {
+      if (!macroOutputs.length) { boardHint('Выберите хотя бы один итоговый объект'); return; }
+      const recipe = buildMacroRecipe(macroInputs, macroOutputs);
+      const name = prompt('Название инструмента:', 'Мой инструмент');
+      if (name && name.trim()) { recipe.name = name.trim(); const list = loadMacros(); list.push(recipe); saveMacros(list); renderMacroTools(); boardHint('Инструмент «' + recipe.name + '» создан'); }
+      macroMode = null; setTool('select');
+    }
+  }
+  function cancelMacro() { macroMode = null; macroInputs = []; macroOutputs = []; activeMacro = null; macroPickPts = []; }
+  function startMacroApply(macro) { activeMacro = macro; macroPickPts = []; setTool('macro'); boardHint('Инструмент «' + macro.name + '»: кликните ' + macro.nInputs + ' точк(и)'); }
+  function handleMacroApplyPick(w) {
+    if (!activeMacro) return;
+    const id = pickPointId(w); if (!id) return;
+    macroPickPts.push(id);
+    if (macroPickPts.length >= activeMacro.nInputs) { const m = activeMacro, pts = macroPickPts.slice(); macroPickPts = []; applyMacro(m, pts); }
+    else boardHint('Точка ' + macroPickPts.length + ' из ' + activeMacro.nInputs);
+  }
+
+  // ── Виджеты (таблица, канбан, таймер, колесо) — DOM-оверлей ─────────────
+  const widgetLayerEl = document.getElementById('widget-layer');
+  const widgetItems = new Map();
+  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card'];
+
+  function repositionWidgets() {
+    const s = stage.scaleX();
+    widgetItems.forEach((it) => {
+      const d = it.el.data;
+      it.wrapper.style.transform = 'translate(' + ((d.x || 0) * s + stage.x()) + 'px,' + ((d.y || 0) * s + stage.y()) + 'px) scale(' + s + ')';
+    });
+    if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
+    if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
+  }
+  function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '' }[el.type] || ''; }
+  function syncWidget(it) { send({ action: 'element_update', element: it.el }); }
+
+  function upsertWidget(el) {
+    let it = widgetItems.get(el.id);
+    if (it) { it.el = el; if (it.update) it.update(el); repositionWidgets(); return; }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'wgt wgt-' + el.type;
+    const bar = document.createElement('div'); bar.className = 'wgt-bar';
+    bar.innerHTML = '<span class="wgt-title">' + widgetTitle(el) + '</span><button class="wgt-del" title="Удалить">×</button>';
+    const body = document.createElement('div'); body.className = 'wgt-body';
+    wrapper.appendChild(bar); wrapper.appendChild(body);
+    widgetLayerEl.appendChild(wrapper);
+    it = { el, wrapper, bar, body, update: null, timer: null };
+    widgetItems.set(el.id, it);
+    enableWidgetDrag(it, bar);
+    bar.querySelector('.wgt-del').addEventListener('click', () => { histDel(it.el); send({ action: 'element_delete', id: el.id }); removeWidget(el.id); });
+    buildWidgetContent(it);
+    repositionWidgets();
+  }
+  function removeWidget(id) {
+    const it = widgetItems.get(id);
+    if (!it) return;
+    if (it.timer) clearInterval(it.timer);
+    it.wrapper.remove();
+    widgetItems.delete(id);
+    elements.delete(id);
+  }
+  function enableWidgetDrag(it, handle) {
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.wgt-del')) return;
+      e.preventDefault();
+      if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
+      const s = stage.scaleX();
+      const sx = e.clientX, sy = e.clientY, ox = it.el.data.x || 0, oy = it.el.data.y || 0;
+      const before = clone(it.el);
+      const mv = (ev) => { it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s; repositionWidgets(); };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); syncWidget(it); histUpd(before, it.el); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+  }
+
+  function insertWidget(type, data) {
+    const p = worldPoint() || { x: -stage.x() / stage.scaleX() + 200, y: -stage.y() / stage.scaleX() + 200 };
+    const el = { id: uuid(), type, z: 0, data: Object.assign({ x: p.x, y: p.y }, data) };
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    setTool('select');
+  }
+  function insertTable() { insertWidget('table', { rows: 3, cols: 3, cells: [['', '', ''], ['', '', ''], ['', '', '']] }); }
+  function insertKanban() { insertWidget('kanban', { columns: [{ title: 'To do', cards: [] }, { title: 'В работе', cards: [] }, { title: 'Готово', cards: [] }] }); }
+  function insertTimer() { insertWidget('timer', { duration: 300, remaining: 300, running: false, startedAt: 0 }); }
+  function insertWheel() { insertWidget('wheel', { options: ['Аня', 'Боря', 'Вера', 'Гена'] }); }
+
+  function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+  function buildWidgetContent(it) {
+    if (it.el.type === 'table') buildTable(it);
+    else if (it.el.type === 'kanban') buildKanban(it);
+    else if (it.el.type === 'timer') buildTimer(it);
+    else if (it.el.type === 'wheel') buildWheel(it);
+    else if (it.el.type === 'slider') buildSlider(it);
+    else if (it.el.type === 'sticky') buildSticky(it);
+    else if (it.el.type === 'card') buildCard(it);
+  }
+
+  // — Стикер — цветная заметка с текстом —
+  const STICKY_COLORS = ['#fff7ae', '#ffd18c', '#c8f7c5', '#a8e6ff', '#ffc9de', '#e6d6ff', '#ffffff'];
+  function buildSticky(it) {
+    const render = () => {
+      const d = it.el.data, col = d.color || STICKY_COLORS[0];
+      it.wrapper.style.background = col;
+      it.body.innerHTML = '<div class="stk-colors">' + STICKY_COLORS.map((c) => '<span class="stk-c' + (c === col ? ' on' : '') + '" data-c="' + c + '" style="background:' + c + '"></span>').join('') + '</div>'
+        + '<textarea class="stk-text" placeholder="Заметка…">' + escapeAttr(d.text || '') + '</textarea>';
+      const ta = it.body.querySelector('.stk-text');
+      ta.addEventListener('input', () => { it.el.data.text = ta.value; syncWidget(it); });
+      it.body.querySelectorAll('.stk-c').forEach((s) => s.addEventListener('click', () => { it.el.data.color = s.dataset.c; render(); syncWidget(it); }));
+    };
+    it.update = render; render();
+  }
+  function insertSticky() { insertWidget('sticky', { text: '', color: STICKY_COLORS[0] }); }
+
+  // — Карточка (двусторонняя): вопрос ↔ ответ, переворот по кнопке (как в Quizlet) —
+  // Содержимое (front/back/цвет) синхронизируется; ТЕКУЩАЯ сторона — локальная у
+  // каждого зрителя (переворот не мешает соседям, как настоящие карточки).
+  const CARD_COLORS = STICKY_COLORS;
+  const CARD_FLIP_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>';
+  function buildCard(it) {
+    if (it._side == null) it._side = 0; // 0 — лицо (вопрос), 1 — оборот (ответ); ЛОКАЛЬНО
+    const render = () => {
+      const d = it.el.data, col = d.color || CARD_COLORS[0], back = !!it._side;
+      it.wrapper.style.background = col;
+      it.body.innerHTML = '<div class="stk-colors">' + CARD_COLORS.map((c) => '<span class="stk-c' + (c === col ? ' on' : '') + '" data-c="' + c + '" style="background:' + c + '"></span>').join('') + '</div>'
+        + '<div class="card-head"><span class="card-label">' + (back ? 'Ответ' : 'Вопрос') + '</span><button class="card-flip" title="Перевернуть карточку">' + CARD_FLIP_SVG + ' Перевернуть</button></div>'
+        + '<textarea class="stk-text card-text" placeholder="' + (back ? 'Ответ…' : 'Вопрос…') + '">' + escapeAttr(back ? (d.back || '') : (d.front || '')) + '</textarea>';
+      const ta = it.body.querySelector('.card-text');
+      ta.addEventListener('input', () => { if (it._side) it.el.data.back = ta.value; else it.el.data.front = ta.value; syncWidget(it); });
+      it.body.querySelector('.card-flip').addEventListener('click', () => { it._side = it._side ? 0 : 1; render(); });
+      it.body.querySelectorAll('.stk-c').forEach((s) => s.addEventListener('click', () => { it.el.data.color = s.dataset.c; render(); syncWidget(it); }));
+    };
+    it.update = render; render();
+  }
+  function insertCard() { insertWidget('card', { front: '', back: '', color: CARD_COLORS[0] }); }
+
+  // ── ОБЫЧНЫЙ ТЕКСТ (textbox) — живой HTML на доске, правится на месте ───────
+  // Не картинка и не Konva-узел: DOM-элемент на #widget-layer (как виджеты).
+  // Клик — правка прямо в нём; тянешь — двигаешь; клик мимо — готово. Без рамок.
+  function applyTboxStyle(ed, d) {
+    ed.style.fontFamily = d.font || TEXT_FONT;
+    ed.style.fontSize = (d.fontSize || 20) + 'px';
+    ed.style.color = d.color || '#1f2937';
+    ed.style.textAlign = d.align || 'left';
+    ed.style.background = d.boxBg || '';
+    if (d.wrapWidth) { ed.style.width = d.wrapWidth + 'px'; ed.style.maxWidth = 'none'; }
+    else { ed.style.width = ''; ed.style.maxWidth = '640px'; }
+  }
+  let activeTbox = null;
+  const tboxSyncTimers = {};
+  function tboxSyncSoon(it) { const el = it._realEl || it.el, id = el.id; if (tboxSyncTimers[id]) clearTimeout(tboxSyncTimers[id]); tboxSyncTimers[id] = setTimeout(() => { send({ action: 'element_update', element: el }); }, 250); }
+  function upsertTextbox(el) {
+    let it = widgetItems.get(el.id);
+    if (it && it.isTbox) {
+      it.el = el;
+      if (document.activeElement !== it.ed) { const h = sanitizeHtml(renderDynamicText(el.data.html || '', el.data.frame ? elements.get(el.data.frame) : null)); if (it.ed.innerHTML !== h) it.ed.innerHTML = h; }
+      applyTboxStyle(it.ed, el.data); repositionWidgets(); return;
+    }
+    const wrapper = document.createElement('div'); wrapper.className = 'tbox';
+    const ed = document.createElement('div'); ed.className = 'tbox-edit'; ed.setAttribute('spellcheck', 'false'); ed.setAttribute('data-ph', 'Текст…');
+    ed.innerHTML = sanitizeHtml(renderDynamicText(el.data.html || '', el.data.frame ? elements.get(el.data.frame) : null));
+    applyTboxStyle(ed, el.data);
+    wrapper.appendChild(ed); widgetLayerEl.appendChild(wrapper);
+    it = { el, wrapper, ed, isTbox: true, editing: false, editBefore: null };
+    widgetItems.set(el.id, it);
+    enableTboxInteract(it);
+    repositionWidgets();
+    if (el.data._new) { delete el.data._new; startTboxEdit(it, null); } // только что созданный — сразу правим
+  }
+  function enableTboxInteract(it) {
+    const ed = it.ed, wrapper = it.wrapper;
+    wrapper.addEventListener('mousedown', (e) => {
+      if (it.editing || viewOnly) return; // уже правим / только-просмотр — не перехватываем
+      e.preventDefault();
+      if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
+      const s = stage.scaleX(), sx = e.clientX, sy = e.clientY, ox = it.el.data.x || 0, oy = it.el.data.y || 0;
+      const before = clone(it.el); let moved = false;
+      const mv = (ev) => {
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) { moved = true; wrapper.classList.add('moving'); }
+        if (moved) { it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s; repositionWidgets(); }
+      };
+      const up = (ev) => {
+        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); wrapper.classList.remove('moving');
+        if (moved) { send({ action: 'element_update', element: it.el }); histUpd(before, it.el); }
+        else startTboxEdit(it, ev); // клик без перетаскивания → правка
+      };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    ed.addEventListener('input', () => { it.el.data.html = ed.innerHTML; tboxSyncSoon(it); });
+    ed.addEventListener('blur', () => { setTimeout(() => {
+      if (!it.editing || document.activeElement === ed || (tboxBar && tboxBar.contains(document.activeElement))) return;
+      // Свежесозданное пустое поле теряет фокус из-за mousedown по холсту — вернуть фокус, не удалять.
+      if (it.grace && !(ed.textContent || '').trim()) { ed.focus(); return; }
+      endTboxEdit(it);
+    }, 0); });
+    ed.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); ed.blur(); } });
+  }
+  function startTboxEdit(it, ev) {
+    if (it.editing) return;
+    activeTbox = it; it.editing = true; it.editBefore = clone(it.el); it.wrapper.classList.add('editing');
+    // Правим ИСХОДНИК (с {выражениями}), а не подставленные значения.
+    if ((it.el.data.html || '').indexOf('{') >= 0) it.ed.innerHTML = sanitizeHtml(it.el.data.html || '');
+    it.ed.setAttribute('contenteditable', 'true'); it.ed.focus();
+    it.grace = true; setTimeout(() => { it.grace = false; }, 400); // окно защиты от «мгновенной потери фокуса»
+    requestAnimationFrame(() => { if (it.editing && document.activeElement !== it.ed) it.ed.focus(); }); // добить фокус после mousedown
+    if (ev && document.caretRangeFromPoint) { try { const r = document.caretRangeFromPoint(ev.clientX, ev.clientY); if (r) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } } catch (e) {} }
+    else { const r = document.createRange(); r.selectNodeContents(it.ed); r.collapse(false); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+    showTboxBar(it);
+  }
+  function endTboxEdit(it) {
+    if (!it.editing) return;
+    it.editing = false; it.wrapper.classList.remove('editing'); it.ed.setAttribute('contenteditable', 'false');
+    it.el.data.html = it.ed.innerHTML;
+    if (activeTbox === it) activeTbox = null;
+    hideTboxBar();
+    if (!(it.ed.textContent || '').trim()) { histDel(it.el); send({ action: 'element_delete', id: it.el.id }); removeWidget(it.el.id); return; }
+    send({ action: 'element_update', element: it.el }); if (it.editBefore) histUpd(it.editBefore, it.el);
+  }
+  function insertTextbox() {
+    const p = worldPoint() || viewportCenterWorld();
+    const el = { id: uuid(), type: 'textbox', z: 0, data: { x: p.x, y: p.y, html: '', color: strokeColor, fontSize: 20, font: TEXT_FONT, align: 'left', _new: true } };
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    setTool('select');
+  }
+  // — Плавающая панель форматирования обычного текста (.tbox) —
+  const tboxBar = document.getElementById('tbox-bar');
+  const tbFontSel = document.getElementById('tb-font');
+  const tbSizeInp = document.getElementById('tb-size');
+  let tbBuilt = false;
+  function tbCloseP() { ['tb-color-pop', 'tb-hilite-pop', 'tb-boxbg-pop'].forEach((id) => { const e = document.getElementById(id); if (e) e.classList.add('ps-hidden'); }); }
+  function tbAfterExec() { if (!activeTbox) return; activeTbox.el.data.html = activeTbox.ed.innerHTML; tboxSyncSoon(activeTbox); syncTboxBar(); }
+  function tbExec(cmd, val) { if (!activeTbox) return; activeTbox.ed.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} document.execCommand(cmd, false, val == null ? null : val); tbAfterExec(); }
+  function syncTboxBar() { tboxBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => { let on = false; try { on = document.queryCommandState(b.dataset.cmd); } catch (e) {} b.classList.toggle('te-on', on); }); }
+  function buildTboxBar() {
+    if (tbBuilt) return; tbBuilt = true;
+    TEXT_FONTS.forEach((f) => { const o = document.createElement('option'); o.value = f.css; o.textContent = f.label; o.style.fontFamily = f.css; tbFontSel.appendChild(o); });
+    const mk = (gridId, onPick, noneLabel) => {
+      const grid = document.getElementById(gridId);
+      if (noneLabel) { const n = document.createElement('div'); n.className = 'cp-none'; n.textContent = noneLabel; n.addEventListener('mousedown', (e) => e.preventDefault()); n.addEventListener('click', () => onPick('')); grid.appendChild(n); }
+      BASE_COLORS.forEach((c) => { const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c; sw.addEventListener('mousedown', (e) => e.preventDefault()); sw.addEventListener('click', () => onPick(c)); grid.appendChild(sw); });
+    };
+    mk('tb-color-grid', (c) => { const col = c || '#1f2937'; tbExec('foreColor', col); if (activeTbox) activeTbox.el.data.color = col; document.getElementById('tb-color-dot').style.background = col; tbCloseP(); });
+    mk('tb-hilite-grid', (c) => { const col = c || 'transparent'; if (activeTbox) activeTbox.ed.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} if (!document.execCommand('hiliteColor', false, col)) document.execCommand('backColor', false, col); tbAfterExec(); tbCloseP(); }, 'Убрать фон');
+    mk('tb-boxbg-grid', (c) => { if (!activeTbox) return; activeTbox.el.data.boxBg = c; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); tbCloseP(); }, 'Прозрачный');
+    tboxBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => { b.addEventListener('mousedown', (e) => e.preventDefault()); b.addEventListener('click', () => tbExec(b.dataset.cmd)); });
+    // всё, кроме select/number, не должно уводить фокус из редактируемого поля
+    tboxBar.addEventListener('mousedown', (e) => { if (!e.target.closest('#tb-font, #tb-size')) e.preventDefault(); });
+    const pop = (btnId, popId) => { document.getElementById(btnId).addEventListener('click', (e) => { e.stopPropagation(); const el = document.getElementById(popId); const wasHidden = el.classList.contains('ps-hidden'); tbCloseP(); if (wasHidden) el.classList.remove('ps-hidden'); }); };
+    pop('tb-color-btn', 'tb-color-pop'); pop('tb-hilite-btn', 'tb-hilite-pop'); pop('tb-boxbg-btn', 'tb-boxbg-pop');
+    tbFontSel.addEventListener('change', () => { if (!activeTbox) return; activeTbox.el.data.font = tbFontSel.value; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); activeTbox.ed.focus(); });
+    tbSizeInp.addEventListener('change', () => { if (!activeTbox) return; const v = Math.max(8, Math.min(200, parseInt(tbSizeInp.value, 10) || 20)); tbSizeInp.value = v; activeTbox.el.data.fontSize = v; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); activeTbox.ed.focus(); });
+    document.addEventListener('mousedown', (e) => { if (!tboxBar.classList.contains('ps-hidden') && !e.target.closest('#tbox-bar')) tbCloseP(); }, true);
+  }
+  function positionTboxBar(it) {
+    const r = it.wrapper.getBoundingClientRect();
+    const w = tboxBar.offsetWidth || 380, h = tboxBar.offsetHeight || 44;
+    let left = r.left, top = r.top - h - 8;
+    if (top < 8) top = r.bottom + 8;
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+    tboxBar.style.left = left + 'px'; tboxBar.style.top = top + 'px';
+  }
+  function showTboxBar(it) {
+    buildTboxBar();
+    tbFontSel.value = it.el.data.font || TEXT_FONT;
+    tbSizeInp.value = it.el.data.fontSize || 20;
+    document.getElementById('tb-color-dot').style.background = it.el.data.color || '#1f2937';
+    // «Фон окна» не нужен тексту внутри фигуры — у фигуры своя заливка (конфликт).
+    document.getElementById('tb-boxbg-btn').style.display = it.isShapeText ? 'none' : '';
+    tboxBar.classList.remove('ps-hidden');
+    positionTboxBar(it);
+    syncTboxBar();
+  }
+  function hideTboxBar() { tboxBar.classList.add('ps-hidden'); tbCloseP(); }
+
+  // ── ЛАТЕХ-ТЕКСТ (тип 'text') — живой DOM на доске с формулами (MathJax), БЕЗ Konva ──
+  // Отображение — DOM-элемент .mtext на #widget-layer (как textbox/стикер), поэтому нет
+  // Konva-узла и трансформера → нет «чёрной рамки». Правка — через окно предпросмотра.
+  function applyMtextStyle(body, d) {
+    body.style.fontFamily = d.font || TEXT_FONT;
+    body.style.fontSize = (d.fontSize || 20) + 'px';
+    body.style.color = d.color || '#1f2937';
+    body.style.textAlign = d.align || 'left';
+    body.style.background = d.boxBg || '';
+    if (d.wrapWidth) { body.style.width = d.wrapWidth + 'px'; body.style.maxWidth = 'none'; }
+    else { body.style.width = ''; body.style.maxWidth = '720px'; }
+  }
+  function renderMtext(it) {
+    const d = it.el.data;
+    applyMtextStyle(it.body, d);
+    const html = textContentHtml(d);
+    it.body.innerHTML = (html && html.trim()) ? linkifyHtml(html) : '<span style="color:#b0b0ba">пусто</span>';
+    if (!d.plain && window.MathJax && MathJax.typesetPromise) {
+      it.body.querySelectorAll('mjx-assistive-mml').forEach((e) => e.remove());
+      MathJax.typesetPromise([it.body]).then(() => { it.body.querySelectorAll('mjx-assistive-mml').forEach((e) => e.remove()); repositionWidgets(); }).catch(() => {});
+    }
+  }
+  function upsertMathText(el) {
+    let it = widgetItems.get(el.id);
+    if (it && it.isMtext) { it.el = el; renderMtext(it); repositionWidgets(); return; }
+    const wrapper = document.createElement('div'); wrapper.className = 'mtext';
+    const body = document.createElement('div'); body.className = 'mtext-body';
+    const del = document.createElement('button'); del.className = 'mtext-del'; del.title = 'Удалить'; del.textContent = '×';
+    wrapper.appendChild(body); wrapper.appendChild(del);
+    widgetLayerEl.appendChild(wrapper);
+    it = { el, wrapper, body, del, isMtext: true };
+    widgetItems.set(el.id, it);
+    renderMtext(it);
+    enableMtextInteract(it);
+    repositionWidgets();
+  }
+  function enableMtextInteract(it) {
+    const wrapper = it.wrapper;
+    wrapper.addEventListener('mousedown', (e) => {
+      if (viewOnly || e.target.closest('.mtext-del')) return;
+      e.preventDefault();
+      if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
+      const s = stage.scaleX(), sx = e.clientX, sy = e.clientY, ox = it.el.data.x || 0, oy = it.el.data.y || 0;
+      const before = clone(it.el); let moved = false;
+      const mv = (ev) => {
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) { moved = true; wrapper.classList.add('moving'); }
+        if (moved) { it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s; repositionWidgets(); }
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); wrapper.classList.remove('moving');
+        if (moved) { send({ action: 'element_update', element: it.el }); histUpd(before, it.el); }
+      };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    wrapper.addEventListener('dblclick', (e) => { if (viewOnly) return; e.preventDefault(); e.stopPropagation(); openTextEditorFor(it.el); });
+    it.del.addEventListener('click', (e) => { e.stopPropagation(); if (viewOnly) return; histDel(it.el); send({ action: 'element_delete', id: it.el.id }); removeWidget(it.el.id); });
+  }
+
+  // — Ползунок-параметр — имя (a,b,k…), диапазон и текущее значение; функции его читают —
+  function buildSlider(it) {
+    const render = () => {
+      const d = it.el.data;
+      it.body.innerHTML =
+        '<div class="sld-top"><input class="sld-name" value="' + escapeAttr(d.name || 'k') + '" maxlength="3" title="Имя параметра"> = <span class="sld-val">' + fmtMeasure(d.value) + '</span></div>'
+        + '<input type="range" class="sld-range" min="' + d.min + '" max="' + d.max + '" step="' + (d.step || 0.1) + '" value="' + d.value + '">'
+        + '<div class="sld-bounds"><input class="sld-min" type="number" step="any" value="' + d.min + '"><input class="sld-max" type="number" step="any" value="' + d.max + '"></div>';
+      const range = it.body.querySelector('.sld-range'), valEl = it.body.querySelector('.sld-val');
+      range.addEventListener('input', () => { it.el.data.value = parseFloat(range.value); valEl.textContent = fmtMeasure(it.el.data.value); redrawFuncs(); applyConditions(); });
+      range.addEventListener('change', () => syncWidget(it));
+      it.body.querySelector('.sld-name').addEventListener('change', (e) => { it.el.data.name = (e.target.value.trim() || 'k'); syncWidget(it); redrawFuncs(); applyConditions(); });
+      const mn = it.body.querySelector('.sld-min'), mx = it.body.querySelector('.sld-max');
+      const updB = () => { it.el.data.min = parseFloat(mn.value); it.el.data.max = parseFloat(mx.value); range.min = it.el.data.min; range.max = it.el.data.max; syncWidget(it); };
+      mn.addEventListener('change', updB); mx.addEventListener('change', updB);
+      redrawFuncs(); // удалённое изменение значения тоже перерисует графики
+    };
+    it.update = render; render();
+  }
+  function nextParamName() { const used = new Set(); elements.forEach((e) => { if (e.type === 'slider' && e.data.name) used.add(e.data.name); }); for (const L of ['k', 'a', 'b', 'c', 'm', 'n', 'p', 'q', 't']) if (!used.has(L)) return L; return 'k'; }
+  function insertSlider() { insertWidget('slider', { name: nextParamName(), min: -5, max: 5, value: 1, step: 0.1 }); }
+
+  // — Таблица —
+  function buildTable(it) {
+    const render = () => {
+      const d = it.el.data;
+      let html = '<table class="wgt-table">';
+      for (let r = 0; r < d.rows; r++) {
+        html += '<tr>';
+        for (let c = 0; c < d.cols; c++) html += '<td contenteditable="true" data-r="' + r + '" data-c="' + c + '">' + escapeAttr((d.cells[r] && d.cells[r][c]) || '') + '</td>';
+        html += '</tr>';
+      }
+      html += '</table><div class="wgt-actions"><button data-act="addrow">+ строка</button><button data-act="addcol">+ столбец</button></div>';
+      it.body.innerHTML = html;
+      it.body.querySelectorAll('td').forEach((td) => td.addEventListener('blur', () => {
+        const r = +td.dataset.r, c = +td.dataset.c;
+        if (!it.el.data.cells[r]) it.el.data.cells[r] = [];
+        it.el.data.cells[r][c] = td.textContent;
+        syncWidget(it);
+      }));
+      it.body.querySelector('[data-act="addrow"]').addEventListener('click', () => { it.el.data.rows++; it.el.data.cells.push(new Array(it.el.data.cols).fill('')); syncWidget(it); render(); });
+      it.body.querySelector('[data-act="addcol"]').addEventListener('click', () => { it.el.data.cols++; it.el.data.cells.forEach((row) => row.push('')); syncWidget(it); render(); });
+    };
+    it.update = render; render();
+  }
+
+  // — Канбан —
+  function buildKanban(it) {
+    const render = () => {
+      const d = it.el.data;
+      let html = '<div class="kb-cols">';
+      d.columns.forEach((col, ci) => {
+        html += '<div class="kb-col"><div class="kb-coltitle" contenteditable="true" data-ci="' + ci + '">' + escapeAttr(col.title) + '</div>';
+        col.cards.forEach((card, di) => {
+          html += '<div class="kb-card" data-ci="' + ci + '" data-di="' + di + '"><span contenteditable="true">' + escapeAttr(card) + '</span>'
+            + '<button class="kb-mv" data-ci="' + ci + '" data-di="' + di + '" data-dir="-1" title="Влево"' + (ci === 0 ? ' disabled' : '') + '>‹</button>'
+            + '<button class="kb-mv" data-ci="' + ci + '" data-di="' + di + '" data-dir="1" title="Вправо"' + (ci === d.columns.length - 1 ? ' disabled' : '') + '>›</button>'
+            + '<button class="kb-cardel" data-ci="' + ci + '" data-di="' + di + '">×</button></div>';
+        });
+        html += '<button class="kb-add" data-ci="' + ci + '">+ карточка</button></div>';
+      });
+      html += '</div>';
+      it.body.innerHTML = html;
+      it.body.querySelectorAll('.kb-coltitle').forEach((t) => t.addEventListener('blur', () => { it.el.data.columns[+t.dataset.ci].title = t.textContent; syncWidget(it); }));
+      it.body.querySelectorAll('.kb-card span').forEach((sp) => sp.addEventListener('blur', () => { const card = sp.parentElement; it.el.data.columns[+card.dataset.ci].cards[+card.dataset.di] = sp.textContent; syncWidget(it); }));
+      it.body.querySelectorAll('.kb-add').forEach((b) => b.addEventListener('click', () => { it.el.data.columns[+b.dataset.ci].cards.push('Новая карточка'); syncWidget(it); render(); }));
+      it.body.querySelectorAll('.kb-cardel').forEach((b) => b.addEventListener('click', () => { it.el.data.columns[+b.dataset.ci].cards.splice(+b.dataset.di, 1); syncWidget(it); render(); }));
+      it.body.querySelectorAll('.kb-mv').forEach((b) => b.addEventListener('click', () => {
+        const ci = +b.dataset.ci, di = +b.dataset.di, to = ci + (+b.dataset.dir);
+        const cols = it.el.data.columns; if (to < 0 || to >= cols.length) return;
+        const card = cols[ci].cards.splice(di, 1)[0]; cols[to].cards.push(card);
+        syncWidget(it); render();
+      }));
+    };
+    it.update = render; render();
+  }
+
+  // — Таймер —
+  function buildTimer(it) {
+    const fmt = (s) => { s = Math.max(0, Math.round(s)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
+    const calcRemaining = () => {
+      const d = it.el.data;
+      if (d.running && d.startedAt) return Math.max(0, d.remaining - (Date.now() - d.startedAt) / 1000);
+      return d.remaining;
+    };
+    const tick = () => { const disp = it.body.querySelector('.tm-disp'); if (disp) disp.textContent = fmt(calcRemaining()); if (calcRemaining() <= 0 && it.timer) { clearInterval(it.timer); it.timer = null; } };
+    const render = () => {
+      it.body.innerHTML = '<div class="tm-disp">' + fmt(calcRemaining()) + '</div>'
+        + '<div class="wgt-actions"><button data-act="toggle">' + (it.el.data.running ? 'Пауза' : 'Старт') + '</button>'
+        + '<button data-act="reset">Сброс</button><button data-act="m1">−1м</button><button data-act="p1">+1м</button></div>';
+      it.body.querySelector('[data-act="toggle"]').addEventListener('click', () => {
+        const d = it.el.data;
+        if (d.running) { d.remaining = calcRemaining(); d.running = false; d.startedAt = 0; }
+        else { d.running = true; d.startedAt = Date.now(); }
+        syncWidget(it); render();
+      });
+      it.body.querySelector('[data-act="reset"]').addEventListener('click', () => { const d = it.el.data; d.running = false; d.startedAt = 0; d.remaining = d.duration; syncWidget(it); render(); });
+      it.body.querySelector('[data-act="m1"]').addEventListener('click', () => { const d = it.el.data; d.duration = Math.max(0, d.duration - 60); d.remaining = Math.max(0, calcRemaining() - 60); d.startedAt = d.running ? Date.now() : 0; syncWidget(it); render(); });
+      it.body.querySelector('[data-act="p1"]').addEventListener('click', () => { const d = it.el.data; d.duration += 60; d.remaining = calcRemaining() + 60; d.startedAt = d.running ? Date.now() : 0; syncWidget(it); render(); });
+      if (it.timer) clearInterval(it.timer);
+      it.timer = setInterval(tick, 250);
+    };
+    it.update = render; render();
+  }
+
+  // — Колесо случайного выбора —
+  function buildWheel(it) {
+    const render = () => {
+      const opts = it.el.data.options || [];
+      it.body.innerHTML = '<canvas class="wh-canvas" width="180" height="180"></canvas>'
+        + '<div class="wh-result"></div>'
+        + '<textarea class="wh-opts" rows="3" placeholder="по одному варианту в строке">' + escapeAttr(opts.join('\n')) + '</textarea>'
+        + '<div class="wgt-actions"><button data-act="spin">Крутить</button></div>';
+      const cv = it.body.querySelector('.wh-canvas');
+      const draw = (rot) => {
+        const o = it.el.data.options || []; const ctx = cv.getContext('2d'); const n = Math.max(1, o.length);
+        ctx.clearRect(0, 0, 180, 180); ctx.save(); ctx.translate(90, 90); ctx.rotate(rot || 0);
+        const palette = ['#e7505a', '#27ae60', '#4d7cfe', '#e67e22', '#8e44ad', '#16a2b8', '#d63384', '#f1c40f'];
+        for (let i = 0; i < n; i++) {
+          const a0 = i / n * 2 * Math.PI, a1 = (i + 1) / n * 2 * Math.PI;
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 84, a0, a1); ctx.closePath();
+          ctx.fillStyle = palette[i % palette.length]; ctx.fill();
+          ctx.save(); ctx.rotate((a0 + a1) / 2); ctx.fillStyle = '#fff'; ctx.font = '11px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(String(o[i] || '').slice(0, 10), 78, 4); ctx.restore();
+        }
+        ctx.restore();
+        ctx.beginPath(); ctx.moveTo(174, 90); ctx.lineTo(186, 84); ctx.lineTo(186, 96); ctx.closePath(); ctx.fillStyle = '#333'; ctx.fill();
+      };
+      draw(it._rot || 0);
+      it.body.querySelector('.wh-opts').addEventListener('blur', (e) => { it.el.data.options = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean); syncWidget(it); render(); });
+      it.body.querySelector('[data-act="spin"]').addEventListener('click', () => {
+        const o = it.el.data.options || []; if (!o.length) return;
+        const pick = Math.floor(Math.random() * o.length);
+        const target = 2 * Math.PI * 5 + (2 * Math.PI - (pick + 0.5) / o.length * 2 * Math.PI);
+        const start = it._rot || 0, t0 = Date.now(), dur = 2600;
+        const anim = () => {
+          const k = Math.min(1, (Date.now() - t0) / dur);
+          const ease = 1 - Math.pow(1 - k, 3);
+          it._rot = start + (target - start) * ease;
+          draw(it._rot);
+          if (k < 1) requestAnimationFrame(anim);
+          else { it.body.querySelector('.wh-result').textContent = 'Выпало: ' + o[pick]; }
+        };
+        anim();
+      });
+    };
+    it.update = render; render();
+  }
+
+  function onGeoDragMove(id, node) {
+    const el = elements.get(id);
+    if (!el) return;
+    if (isDerivedPoint(el)) { recomputeGeometry(); return; } // пересечение не двигается
+    captureDragSnap(dragStart ? Array.from(selected) : [id]); // для истории — всё выделение при групповом переносе
+    if (el.type === 'point') {
+      if (el.data.frame) {
+        const fr = elements.get(el.data.frame);
+        if (fr && el.data.on && el.data.on.line) {
+          // Точка ЖЁСТКО на линии: тащим — скользит вдоль (проекция на линию → t).
+          const line = elements.get(el.data.on.line), G = line ? lineGeom(line) : null;
+          if (G) {
+            let t = (node.x() - G.base.x) * G.u.x + (node.y() - G.base.y) * G.u.y;
+            t = Math.max(G.tmin, Math.min(G.tmax, t));
+            el.data.on.t = t;
+            const lx = G.base.x + G.u.x * t, ly = G.base.y + G.u.y * t;
+            node.position({ x: lx, y: ly });
+            const m = frameLocalToMath(fr, lx, ly); el.data.mx = m.mx; el.data.my = m.my;
+            recomputeGeometry();
+          }
+        } else if (fr && el.data.on && el.data.on.circle) {
+          // Точка ЖЁСТКО на окружности: тащим — скользит по дуге (угол a от центра).
+          const circ = elements.get(el.data.on.circle), C = circ ? circleGeom(circ) : null;
+          if (C) {
+            const a = Math.atan2(node.y() - C.cy, node.x() - C.cx);
+            el.data.on.a = a;
+            const lx = C.cx + C.r * Math.cos(a), ly = C.cy + C.r * Math.sin(a);
+            node.position({ x: lx, y: ly });
+            const m = frameLocalToMath(fr, lx, ly); el.data.mx = m.mx; el.data.my = m.my;
+            recomputeGeometry();
+          }
+        } else if (fr) {
+          // привязанная точка: локальная позиция узла → матем. коорды окна (+ привязка к сетке)
+          let m = frameLocalToMath(fr, node.x(), node.y());
+          if (el.data.snap) { m = { mx: Math.round(m.mx * 2) / 2, my: Math.round(m.my * 2) / 2 }; const L = frameMathToLocal(fr, m.mx, m.my); node.position({ x: L.x, y: L.y }); }
+          el.data.mx = m.mx; el.data.my = m.my; recomputeGeometry();
+        }
+        updatePointLabel(el);
+      } else {
+        const s = snapPoint({ x: node.x(), y: node.y() }, id);
+        node.position({ x: s.x, y: s.y });
+        el.data.x = s.x; el.data.y = s.y; el.data.on = s.on || undefined;
+        recomputeGeometry(); // живой пересчёт зависимого (отрезки, измерения) при перетаскивании свободной точки
+      }
+    } else if (el.type === 'circle') {
+      el.data.x = node.x(); el.data.y = node.y();
+      recomputeGeometry();
+    }
+    moveDragFollowers(id, node); // тащим остальную группу за точкой/окружностью (не замораживаем)
+    positionHandles();
+    layer.batchDraw();
+  }
+
+  function onGeoDragEnd(id, node) {
+    const el = elements.get(id);
+    if (!el) return;
+    if (el.type === 'circle') { el.data.x = node.x(); el.data.y = node.y(); }
+    send({ action: 'element_update', element: el });
+    // Точки, привязанные к этой окружности, изменили положение — пусть и у
+    // других участников пересчитается (их `on.a` тот же, x/y они посчитают сами).
+    commitDragFollowers(id); dragStart = null; // синкнуть ведомых группы + сбросить (иначе оставался «висеть»)
+    recomputeGeometry();
+    commitDragSnap();
+    positionHandles();
+  }
+
+  function nextPointLabel() {
+    // Первая свободная буква (образы переиспользуют букву источника, буквы не пропускаем).
+    const used = new Set();
+    elements.forEach((el) => { if (el.type === 'point' && el.data.label) used.add(el.data.label); });
+    for (let i = 0; i < 26; i++) { const L = String.fromCharCode(65 + i); if (!used.has(L)) return L; }
+    for (let k = 1; ; k++) { const L = 'P' + k; if (!used.has(L)) return L; }
+  }
+
+  function placePoint() { newPointAt(worldPoint()); }
+
+  // ── Математические рамки (окна с собственной системой координат) ───────
+  // Окно: прямоугольник (x,y,width,height в координатах доски) + своя матем.
+  // система (cx,cy — матем. координата центра окна, unit — px на 1 ед.). Внутри
+  // рисуются оси/сетка и (позже) обрезанные по границе графики/прямые.
+  const FRAME_HEADER = 22;
+  let frameMove = null;   // перетаскивание окна по доске (за шапку)
+  let framePan = null;    // панорама матем. плоскости внутри окна
+  let lineDrag = null;    // параллельный перенос линии-построения (двигаем опорные точки)
+  const frameSyncTimers = {};
+
+  function fmtNum(v) { return String(+v.toFixed(6)); }
+  function niceStep(unit) {
+    const target = 48 / unit; // целимся ~48px между линиями
+    const p = Math.pow(10, Math.floor(Math.log10(target)));
+    const c = target / p;
+    const n = c < 1.5 ? 1 : c < 3.5 ? 2 : c < 7.5 ? 5 : 10;
+    return n * p;
+  }
+
+  function drawFrameGrid(ctx, el) {
+    if (!el) return;
+    const d = el.data;
+    const W = d.width || 0, H = d.height || 0, unit = d.unit || 40;
+    const plotTop = FRAME_HEADER, plotH = H - FRAME_HEADER;
+    if (W <= 0 || plotH <= 0) return;
+    const cxpx = W / 2, cypx = plotTop + plotH / 2;
+    const X2P = (mx) => cxpx + (mx - d.cx) * unit;
+    const Y2P = (my) => cypx - (my - d.cy) * unit;
+    const xL = d.cx - cxpx / unit, xR = d.cx + (W - cxpx) / unit;
+    const yB = d.cy - (H - cypx) / unit, yT = d.cy + (cypx - plotTop) / unit;
+    const step = niceStep(unit);
+    const sx = Math.ceil(xL / step) * step, sy = Math.ceil(yB / step) * step;
+    // Настройки фона окна (по умолчанию — сетка линиями + оси с подписями).
+    const gridOn = d.gridOn !== false, axesOn = d.axesOn !== false, dots = d.gridStyle === 'dots';
+    const gc = d.gridColor || '#e4e6ee'; // цвет рисунка окна (линии/точки)
+    ctx.save();
+    if (gridOn && dots) {
+      // Точки в узлах сетки.
+      ctx.fillStyle = gc;
+      for (let mx = sx; mx <= xR; mx += step) { const px = X2P(mx); for (let my = sy; my <= yT; my += step) { ctx.beginPath(); ctx.arc(px, Y2P(my), 1.1, 0, 2 * Math.PI); ctx.fill(); } }
+    } else if (gridOn) {
+      // Сетка линиями.
+      ctx.beginPath(); ctx.lineWidth = 1; ctx.strokeStyle = gc;
+      for (let mx = sx; mx <= xR; mx += step) { const px = X2P(mx); ctx.moveTo(px, plotTop); ctx.lineTo(px, H); }
+      for (let my = sy; my <= yT; my += step) { const py = Y2P(my); ctx.moveTo(0, py); ctx.lineTo(W, py); }
+      ctx.stroke();
+    }
+    // оси
+    const ax = X2P(0), ay = Y2P(0);
+    if (axesOn) {
+      // Оси и подписи перекрашиваются вместе с рисунком (d.gridColor), иначе — свои дефолты.
+      ctx.beginPath(); ctx.lineWidth = 1.4; ctx.strokeStyle = d.gridColor || '#b8b8c2';
+      if (ax >= 0 && ax <= W) { ctx.moveTo(ax, plotTop); ctx.lineTo(ax, H); }
+      if (ay >= plotTop && ay <= H) { ctx.moveTo(0, ay); ctx.lineTo(W, ay); }
+      ctx.stroke();
+      // подписи делений
+      ctx.fillStyle = d.gridColor || '#8a8a96'; ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      const ly = (ay >= plotTop && ay <= H - 14) ? ay + 3 : H - 14;
+      for (let mx = sx; mx <= xR; mx += step) { if (Math.abs(mx) < step / 2) continue; ctx.fillText(fmtNum(mx), X2P(mx), ly); }
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      const lx = (ax >= 2 && ax <= W - 20) ? ax + 4 : 3;
+      for (let my = sy; my <= yT; my += step) { if (Math.abs(my) < step / 2) continue; ctx.fillText(fmtNum(my), lx, Y2P(my)); }
+    }
+    ctx.restore();
+  }
+
+  function frameAtWorld(wx, wy, plotOnly) {
+    let found = null;
+    elements.forEach((el) => {
+      if (el.type !== 'frame') return;
+      const d = el.data;
+      const top = d.y + (plotOnly ? FRAME_HEADER : 0);
+      if (wx >= d.x && wx <= d.x + d.width && wy >= top && wy <= d.y + d.height) found = el;
+    });
+    return found;
+  }
+
+  // ── Координаты окна: матем. ↔ локальные px группы ↔ мировые ────────────
+  function frameCenters(d) {
+    const plotH = d.height - FRAME_HEADER;
+    return { cxpx: d.width / 2, cypx: FRAME_HEADER + plotH / 2 };
+  }
+  function frameMathToLocal(fr, mx, my) {
+    const d = fr.data, c = frameCenters(d);
+    return { x: c.cxpx + (mx - d.cx) * d.unit, y: c.cypx - (my - d.cy) * d.unit };
+  }
+  function frameLocalToMath(fr, lpx, lpy) {
+    const d = fr.data, c = frameCenters(d);
+    return { mx: d.cx + (lpx - c.cxpx) / d.unit, my: d.cy - (lpy - c.cypx) / d.unit };
+  }
+  function frameWorldToMath(fr, wx, wy) { return frameLocalToMath(fr, wx - fr.data.x, wy - fr.data.y); }
+  // Активное окно для создания фигуры: только если оно активно И курсор внутри.
+  function frameForCreation() {
+    // Привязываем к окну ПОД КУРСОРОМ (область графика), без требования «окно активно»:
+    // рисуешь внутри окна → фигура принадлежит окну. Активность нужна лишь для панорамы плоскости.
+    const w = worldPoint(); if (!w) return null;
+    return frameAtWorld(w.x, w.y, true);
+  }
+  // Мировые координаты точки (свободной или привязанной к окну).
+  function pointWorld(el) {
+    if (!el || el.type !== 'point') return null;
+    if (el.data.frame) {
+      const fr = elements.get(el.data.frame); if (!fr) return { x: 0, y: 0 };
+      const L = frameMathToLocal(fr, el.data.mx || 0, el.data.my || 0);
+      return { x: fr.data.x + L.x, y: fr.data.y + L.y };
+    }
+    return { x: el.data.x || 0, y: el.data.y || 0 };
+  }
+
+  function syncFrameSoon(id) {
+    if (frameSyncTimers[id]) clearTimeout(frameSyncTimers[id]);
+    frameSyncTimers[id] = setTimeout(() => {
+      const el = elements.get(id);
+      if (el) send({ action: 'element_update', element: el });
+    }, 250);
+  }
+
+  function attachFrameHandlers(node, id) {
+    const header = node.findOne('.fheader');
+    const hlabel = node.findOne('.fhlabel');
+    const del = node.findOne('.fdel');
+    const startMove = (e) => {
+      e.cancelBubble = true;
+      const el = elements.get(id); if (!el) return;
+      const w = worldPoint();
+      frameMove = { id, sx: w.x, sy: w.y, ox: el.data.x, oy: el.data.y, moved: false, shift: !!(e.evt && e.evt.shiftKey) };
+    };
+    header.on('mousedown', startMove);
+    if (hlabel) hlabel.on('mousedown', startMove);
+    del.on('mousedown', (e) => { e.cancelBubble = true; });
+    del.on('click tap', (e) => { e.cancelBubble = true; deleteWithDependents([id]); }); // окно + вся геометрия внутри
+  }
+
+  // Зум матем. плоскости внутри окна к точке курсора (lpx,lpy — лок. px окна).
+  function frameZoomAt(el, wp, deltaY) {
+    const d = el.data;
+    const lpx = wp.x - d.x, lpy = wp.y - d.y;
+    const plotH = d.height - FRAME_HEADER, cxpx = d.width / 2, cypx = FRAME_HEADER + plotH / 2;
+    const mx = d.cx + (lpx - cxpx) / d.unit;
+    const my = d.cy - (lpy - cypx) / d.unit;
+    const factor = Math.min(1.25, Math.max(0.8, Math.exp(-deltaY * 0.0015)));
+    d.unit = Math.min(4000, Math.max(2, d.unit * factor));
+    d.cx = mx - (lpx - cxpx) / d.unit;
+    d.cy = my + (lpy - cypx) / d.unit;
+    recomputeGeometry(); // привязанная геометрия следует за плоскостью
+    layer.batchDraw();
+    syncFrameSoon(el.id);
+  }
+
+  // ── Функции y=f(x) внутри окна ─────────────────────────────────────────
+  // График — дочерний Konva.Shape окна (обрезается его clip). Сэмплируем по x
+  // в координатах окна, рисуем ломаную с разрывами на асимптотах.
+  const FUNC_COLORS = ['#1f6feb', '#e7505a', '#27ae60', '#8e44ad', '#e67e22', '#16a2b8'];
+
+  // Компилирует выражение от x в функцию (или null). Поддержка: + - * / ^,
+  // скобки, неявное умножение (2x, (x+1)(x-1)), sin/cos/tan/sqrt/abs/exp/ln/
+  // log/lg/asin.../sinh.../cot, константы pi, e.
+  function compileFunc(src) {
+    let s = String(src).replace(/\s+/g, '').replace(/^y=/i, '').replace(/^f\(x\)=/i, '');
+    if (!s) return null;
+    let pos = 0; const peek = () => s[pos];
+    const FUNCS = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, lg: (v) => Math.log(v) / Math.LN10, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, cot: (v) => 1 / Math.tan(v) };
+    const CONSTS = { pi: Math.PI, e: Math.E };
+    // Каждый узел — функция (x, env): env — значения ползунков-параметров {имя:знач}.
+    function parseExpr() { let f = parseTerm(); while (peek() === '+' || peek() === '-') { const op = s[pos++]; const g = parseTerm(); const ff = f; f = (op === '+') ? (x, e) => ff(x, e) + g(x, e) : (x, e) => ff(x, e) - g(x, e); } return f; }
+    function parseTerm() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(); const ff = f; f = (c === '*') ? (x, e) => ff(x, e) * g(x, e) : (x, e) => ff(x, e) / g(x, e); } else if (c && /[0-9.a-zA-Z(]/.test(c)) { const g = parseFactor(); const ff = f; f = (x, e) => ff(x, e) * g(x, e); } else break; } return f; }
+    function parseUnary() { const c = peek(); if (c === '-') { pos++; const g = parseUnary(); return (x, e) => -g(x, e); } if (c === '+') { pos++; return parseUnary(); } return parseFactor(); }
+    function parseFactor() { let f = parseBase(); if (peek() === '^') { pos++; const g = parseUnary(); const ff = f; f = (x, e) => Math.pow(ff(x, e), g(x, e)); } return f; }
+    function parseBase() {
+      const c = peek();
+      if (c === '(') { pos++; const f = parseExpr(); if (peek() === ')') pos++; else throw 0; return f; }
+      if (/[0-9.]/.test(c)) { let n = ''; while (pos < s.length && /[0-9.]/.test(s[pos])) n += s[pos++]; const v = parseFloat(n); return () => v; }
+      if (/[a-zA-Z]/.test(c)) {
+        let name = ''; while (pos < s.length && /[a-zA-Z]/.test(s[pos])) name += s[pos++];
+        if (name === 'x') return (x) => x;
+        if (name in CONSTS) { const v = CONSTS[name]; return () => v; }
+        if (name in FUNCS) { if (peek() === '(') { pos++; const arg = parseExpr(); if (peek() === ')') pos++; else throw 0; const fn = FUNCS[name]; return (x, e) => fn(arg(x, e)); } throw 0; }
+        return (x, e) => (e && name in e) ? e[name] : NaN; // неизвестное имя — параметр-ползунок
+      }
+      throw 0;
+    }
+    try { const f = parseExpr(); if (pos < s.length) return null; return f; } catch (e) { return null; }
+  }
+
+  // Компилирует уравнение с ДВУМЯ переменными (x и y) в функцию F(x,y,env).
+  // «lhs = rhs» → F = lhs − rhs (нуль-контур F=0 и есть кривая). Без «=» — сам F.
+  // Синтаксис как у compileFunc + переменная y. Узлы — функции (x, y, e).
+  function compileImplicit(src) {
+    let s = String(src).replace(/\s+/g, '').replace(/^f\(x,?y?\)=/i, '');
+    if (!s) return null;
+    const eq = s.indexOf('=');
+    const lhs = eq >= 0 ? s.slice(0, eq) : s;
+    const rhs = eq >= 0 ? s.slice(eq + 1) : '0';
+    const FUNCS = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, lg: (v) => Math.log(v) / Math.LN10, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, cot: (v) => 1 / Math.tan(v) };
+    const CONSTS = { pi: Math.PI, e: Math.E };
+    function build(str) {
+      let pos = 0; const peek = () => str[pos];
+      function parseExpr() { let f = parseTerm(); while (peek() === '+' || peek() === '-') { const op = str[pos++]; const g = parseTerm(); const ff = f; f = (op === '+') ? (x, y, e) => ff(x, y, e) + g(x, y, e) : (x, y, e) => ff(x, y, e) - g(x, y, e); } return f; }
+      function parseTerm() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(); const ff = f; f = (c === '*') ? (x, y, e) => ff(x, y, e) * g(x, y, e) : (x, y, e) => ff(x, y, e) / g(x, y, e); } else if (c && /[0-9.a-zA-Z(]/.test(c)) { const g = parseFactor(); const ff = f; f = (x, y, e) => ff(x, y, e) * g(x, y, e); } else break; } return f; }
+      function parseUnary() { const c = peek(); if (c === '-') { pos++; const g = parseUnary(); return (x, y, e) => -g(x, y, e); } if (c === '+') { pos++; return parseUnary(); } return parseFactor(); }
+      function parseFactor() { let f = parseBase(); if (peek() === '^') { pos++; const g = parseUnary(); const ff = f; f = (x, y, e) => Math.pow(ff(x, y, e), g(x, y, e)); } return f; }
+      function parseBase() {
+        const c = peek();
+        if (c === '(') { pos++; const f = parseExpr(); if (peek() === ')') pos++; else throw 0; return f; }
+        if (/[0-9.]/.test(c)) { let n = ''; while (pos < str.length && /[0-9.]/.test(str[pos])) n += str[pos++]; const v = parseFloat(n); return () => v; }
+        if (/[a-zA-Z]/.test(c)) {
+          let name = ''; while (pos < str.length && /[a-zA-Z]/.test(str[pos])) name += str[pos++];
+          if (name === 'x') return (x) => x;
+          if (name === 'y') return (x, y) => y;
+          if (name in CONSTS) { const v = CONSTS[name]; return () => v; }
+          if (name in FUNCS) { if (peek() === '(') { pos++; const arg = parseExpr(); if (peek() === ')') pos++; else throw 0; const fn = FUNCS[name]; return (x, y, e) => fn(arg(x, y, e)); } throw 0; }
+          return (x, y, e) => (e && name in e) ? e[name] : NaN; // параметр-ползунок
+        }
+        throw 0;
+      }
+      try { const f = parseExpr(); if (pos < str.length) return null; return f; } catch (e) { return null; }
+    }
+    const L = build(lhs), R = build(rhs);
+    if (!L || !R) return null;
+    return (x, y, e) => L(x, y, e) - R(x, y, e);
+  }
+  // Нужна ли неявная кривая (двумерное уравнение), а не обычная y=f(x)?
+  // Признак: есть «=» (после снятия ведущего y=) или встречается переменная y.
+  function isImplicitExpr(raw) {
+    let s = String(raw || '').replace(/\s+/g, '').replace(/^y=/i, '').replace(/^f\(x\)=/i, '');
+    if (s.indexOf('=') >= 0) return true;
+    return /(^|[^a-zA-Z])y([^a-zA-Z]|$)/.test(s);
+  }
+
+  // Вычислитель числовых/логических выражений над ИМЕНОВАННЫМИ значениями окна
+  // (ползунки/параметры/измерения) + функции точек x(A)/y(A)/dist(A,B)/angle(A,B,C).
+  // env = {имя:число, _pts:{ИМЯ:{x,y}}}. Сравнения дают 1/0. null при ошибке разбора.
+  // Используется условной видимостью (data.showIf) и динамическим текстом ({expr}).
+  function compileNum(src) {
+    let s = String(src == null ? '' : src).replace(/\s+/g, '');
+    s = s.replace(/≤/g, '<=').replace(/≥/g, '>=').replace(/≠/g, '!=').replace(/∧/g, '&&').replace(/∨/g, '||');
+    if (!s) return null;
+    let pos = 0; const peek = () => s[pos], two = () => s.substr(pos, 2);
+    const F1 = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, lg: (v) => Math.log(v) / Math.LN10, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, cot: (v) => 1 / Math.tan(v), floor: Math.floor, ceil: Math.ceil, round: (v) => Math.round(v), sign: Math.sign };
+    const F2 = { min: Math.min, max: Math.max, mod: (a, b) => a % b, pow: Math.pow };
+    const CONST = { pi: Math.PI, e: Math.E };
+    function readName() { let n = ''; while (pos < s.length && /[a-zA-Z0-9_]/.test(s[pos])) n += s[pos++]; return n; }
+    function ptLook(e, nm) { return e && e._pts && e._pts[nm.toUpperCase()]; }
+    function parseOr() { let f = parseAnd(); while (two() === '||') { pos += 2; const g = parseAnd(), ff = f; f = (e) => (ff(e) || g(e)) ? 1 : 0; } return f; }
+    function parseAnd() { let f = parseCmp(); while (two() === '&&') { pos += 2; const g = parseCmp(), ff = f; f = (e) => (ff(e) && g(e)) ? 1 : 0; } return f; }
+    function parseCmp() {
+      let f = parseAdd(); const t = two();
+      if (t === '<=' || t === '>=' || t === '==' || t === '!=') { pos += 2; const g = parseAdd(), ff = f; return t === '<=' ? (e) => ff(e) <= g(e) ? 1 : 0 : t === '>=' ? (e) => ff(e) >= g(e) ? 1 : 0 : t === '==' ? (e) => ff(e) === g(e) ? 1 : 0 : (e) => ff(e) !== g(e) ? 1 : 0; }
+      const c = peek();
+      if (c === '<' || c === '>' || c === '=') { pos++; const g = parseAdd(), ff = f; return c === '<' ? (e) => ff(e) < g(e) ? 1 : 0 : c === '>' ? (e) => ff(e) > g(e) ? 1 : 0 : (e) => ff(e) === g(e) ? 1 : 0; }
+      return f;
+    }
+    function parseAdd() { let f = parseMul(); while (peek() === '+' || peek() === '-') { const op = s[pos++], g = parseMul(), ff = f; f = op === '+' ? (e) => ff(e) + g(e) : (e) => ff(e) - g(e); } return f; }
+    function parseMul() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(), ff = f; f = c === '*' ? (e) => ff(e) * g(e) : (e) => ff(e) / g(e); } else if (c && /[0-9.a-zA-Z(]/.test(c)) { const g = parseUnary(), ff = f; f = (e) => ff(e) * g(e); } else break; } return f; }
+    function parseUnary() { const c = peek(); if (c === '-') { pos++; const g = parseUnary(); return (e) => -g(e); } if (c === '!') { pos++; const g = parseUnary(); return (e) => g(e) ? 0 : 1; } if (c === '+') { pos++; return parseUnary(); } return parsePow(); }
+    function parsePow() { let f = parseBase(); if (peek() === '^') { pos++; const g = parseUnary(), ff = f; f = (e) => Math.pow(ff(e), g(e)); } return f; }
+    function parseBase() {
+      const c = peek();
+      if (c == null) throw 0; // конец строки на месте операнда — выражение неполное
+      if (c === '(') { pos++; const f = parseOr(); if (peek() === ')') pos++; else throw 0; return f; }
+      if (/[0-9.]/.test(c)) { let n = ''; while (pos < s.length && /[0-9.]/.test(s[pos])) n += s[pos++]; const v = parseFloat(n); return () => v; }
+      if (/[a-zA-Z_]/.test(c)) {
+        const name = readName();
+        if (name in CONST) { const v = CONST[name]; return () => v; }
+        if (peek() === '(') {
+          if (name === 'x' || name === 'y') { pos++; const p = readName(); if (peek() === ')') pos++; else throw 0; const key = name; return (e) => { const q = ptLook(e, p); return q ? (key === 'x' ? q.x : q.y) : NaN; }; }
+          if (name === 'dist') { pos++; const a = readName(); if (peek() === ',') pos++; else throw 0; const b = readName(); if (peek() === ')') pos++; else throw 0; return (e) => { const A = ptLook(e, a), B = ptLook(e, b); return (A && B) ? Math.hypot(B.x - A.x, B.y - A.y) : NaN; }; }
+          if (name === 'angle') { pos++; const a = readName(); if (peek() === ',') pos++; else throw 0; const b = readName(); if (peek() === ',') pos++; else throw 0; const cc = readName(); if (peek() === ')') pos++; else throw 0; return (e) => { const A = ptLook(e, a), V = ptLook(e, b), B = ptLook(e, cc); return (A && V && B) ? angleDeg(A, V, B) : NaN; }; }
+          pos++; const args = [parseOr()]; while (peek() === ',') { pos++; args.push(parseOr()); } if (peek() === ')') pos++; else throw 0;
+          if ((name in F1) && args.length === 1) { const fn = F1[name], a = args[0]; return (e) => fn(a(e)); }
+          if ((name in F2) && args.length === 2) { const fn = F2[name], a = args[0], b = args[1]; return (e) => fn(a(e), b(e)); }
+          throw 0;
+        }
+        return (e) => (e && name in e) ? Number(e[name]) : NaN;
+      }
+      throw 0;
+    }
+    try { const f = parseOr(); if (pos < s.length) return null; return f; } catch (_) { return null; }
+  }
+
+  // Значения всех ползунков-параметров: {имя: число}. Функции читают их при отрисовке.
+  const FUNC_NAMES = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sqrt', 'abs', 'exp', 'ln', 'log', 'lg', 'sinh', 'cosh', 'tanh', 'cot'];
+  // Незнакомые имена в формуле = параметры (не x, не pi/e, не имена функций).
+  function funcVarsOf(expr, exclude) {
+    const s = String(expr || '').replace(/^y=/i, '').replace(/^f\(x\)=/i, '');
+    const skip = exclude || [];
+    const out = [];
+    (s.match(/[a-zA-Z]+/g) || []).forEach((n) => {
+      if (n === 'x' || n === 'pi' || n === 'e' || FUNC_NAMES.indexOf(n) >= 0 || skip.indexOf(n) >= 0) return;
+      if (out.indexOf(n) < 0) out.push(n);
+    });
+    return out;
+  }
+  // Значения параметров для функции в окне: локальные параметры окна (frame.data.params)
+  // имеют приоритет, глобальные ползунки-виджеты — запасной вариант (совместимость).
+  function frameParamEnv(frameEl) {
+    const env = {};
+    elements.forEach((e) => { if (e.type === 'slider' && e.data.name) env[e.data.name] = Number(e.data.value); });
+    const p = (frameEl && frameEl.data.params) || {};
+    for (const k in p) env[k] = Number(p[k].v);
+    return env;
+  }
+  // Завести в окне недостающие локальные параметры для незнакомых переменных формулы.
+  function ensureFrameParams(fr, expr, exclude) {
+    fr.data.params = fr.data.params || {};
+    let changed = false;
+    funcVarsOf(expr, exclude).forEach((v) => { if (!fr.data.params[v]) { fr.data.params[v] = { v: 1, min: -5, max: 5 }; changed = true; } });
+    return changed;
+  }
+  function funcParamEnv() { const env = {}; elements.forEach((e) => { if (e.type === 'slider' && e.data.name) env[e.data.name] = Number(e.data.value); }); return env; }
+  // Перерисовать все графики (после изменения параметра-ползунка).
+  function redrawFuncs() { layer.batchDraw(); }
+  function drawFuncShape(ctx, shape) {
+    const fel = elements.get(shape.id());
+    if (!fel) return;
+    const frameEl = elements.get(fel.data.frame);
+    if (!frameEl) return;
+    const d = frameEl.data;
+    if (shape._expr !== fel.data.expr) { shape._fn = compileFunc(fel.data.expr); shape._expr = fel.data.expr; }
+    const fn = shape._fn; if (!fn) return;
+    const W = d.width, H = d.height, unit = d.unit;
+    const plotTop = FRAME_HEADER, plotH = H - plotTop;
+    if (W <= 0 || plotH <= 0) return;
+    const cxpx = W / 2, cypx = plotTop + plotH / 2;
+    const P2X = (px) => d.cx + (px - cxpx) / unit;
+    const Y2P = (my) => cypx - (my - d.cy) * unit;
+    const env = frameParamEnv(frameEl); // локальные параметры окна (+ глоб. ползунки)
+    ctx.save();
+    ctx.beginPath();
+    ctx.lineWidth = 2; ctx.strokeStyle = fel.data.color || '#1f6feb';
+    let pen = false, prevPy = 0;
+    for (let px = 0; px <= W; px += 2) {
+      let my; try { my = fn(P2X(px), env); } catch (e) { my = NaN; }
+      const py = Y2P(my);
+      if (!isFinite(py) || py < -plotH * 3 || py > H + plotH * 3) { pen = false; continue; }
+      if (pen && Math.abs(py - prevPy) > plotH * 2.5) { ctx.moveTo(px, py); } // разрыв (асимптота)
+      else if (!pen) { ctx.moveTo(px, py); }
+      else { ctx.lineTo(px, py); }
+      pen = true; prevPy = py;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── Анализ функций: касательная, площадь под кривой, пересечение графиков ──
+  function planeMap(fr) {
+    const d = fr.data, W = d.width, H = d.height, unit = d.unit, plotTop = FRAME_HEADER, plotH = H - plotTop, cxpx = W / 2, cypx = plotTop + plotH / 2;
+    return { W: W, H: H, unit: unit, X2P: (x) => cxpx + (x - d.cx) * unit, P2X: (px) => d.cx + (px - cxpx) / unit, Y2P: (y) => cypx - (y - d.cy) * unit, P2Y: (py) => d.cy - (py - cypx) / unit };
+  }
+  const funcFnCache = {}; // funcId → {expr, fn}
+  function funcFnOf(funcId) {
+    const f = elements.get(funcId); if (!f || f.type !== 'func') return null;
+    if (!funcFnCache[funcId] || funcFnCache[funcId].expr !== f.data.expr) funcFnCache[funcId] = { expr: f.data.expr, fn: compileFunc(f.data.expr) };
+    return funcFnCache[funcId].fn;
+  }
+  function drawTangent(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame), fn = funcFnOf(el.data.func); if (!fr || !fn) return;
+    const m = planeMap(fr), env = frameParamEnv(fr), x0 = el.data.x0; let y0, slope;
+    try { y0 = fn(x0, env); const h = 1e-4; slope = (fn(x0 + h, env) - fn(x0 - h, env)) / (2 * h); } catch (e) { return; }
+    if (!isFinite(y0) || !isFinite(slope)) return;
+    const col = el.data.color || '#e67e22', yAt = (px) => m.Y2P(y0 + slope * (m.P2X(px) - x0));
+    ctx.save(); ctx.beginPath(); ctx.lineWidth = 1.8; ctx.strokeStyle = col; ctx.moveTo(0, yAt(0)); ctx.lineTo(m.W, yAt(m.W)); ctx.stroke();
+    ctx.beginPath(); ctx.fillStyle = col; ctx.arc(m.X2P(x0), m.Y2P(y0), 3.5, 0, 2 * Math.PI); ctx.fill();
+    ctx.font = '12px sans-serif'; ctx.fillText('k = ' + (Math.round(slope * 100) / 100), m.X2P(x0) + 8, m.Y2P(y0) - 8); ctx.restore();
+  }
+  function drawArea(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame), fn = funcFnOf(el.data.func); if (!fr || !fn) return;
+    const m = planeMap(fr), env = frameParamEnv(fr), a = Math.min(el.data.a, el.data.b), b = Math.max(el.data.a, el.data.b), col = el.data.color || '#27ae60', y0px = m.Y2P(0);
+    ctx.save(); ctx.beginPath(); ctx.moveTo(m.X2P(a), y0px);
+    for (let px = m.X2P(a); px <= m.X2P(b); px += 2) { const x = m.P2X(px); let y; try { y = fn(x, env); } catch (e) { y = NaN; } ctx.lineTo(px, isFinite(y) ? m.Y2P(y) : y0px); }
+    ctx.lineTo(m.X2P(b), y0px); ctx.closePath(); ctx.fillStyle = hexToRgba(col, 0.20); ctx.fill(); ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
+    let S = 0; const steps = 240, dx = (b - a) / steps; for (let i = 0; i < steps; i++) { let y1, y2; try { y1 = fn(a + i * dx, env); y2 = fn(a + (i + 1) * dx, env); } catch (e) { y1 = y2 = 0; } if (isFinite(y1) && isFinite(y2)) S += (y1 + y2) / 2 * dx; }
+    ctx.fillStyle = col; ctx.font = '12px sans-serif'; ctx.fillText('S = ' + (Math.round(S * 100) / 100), (m.X2P(a) + m.X2P(b)) / 2 - 14, m.Y2P(0) - 6); ctx.restore();
+  }
+  function drawFIntersect(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame), fn = funcFnOf(el.data.f), gn = funcFnOf(el.data.g); if (!fr || !fn || !gn) return;
+    const m = planeMap(fr), env = frameParamEnv(fr), col = '#8e44ad', diff = (x) => { let a, b; try { a = fn(x, env); b = gn(x, env); } catch (e) { return NaN; } return a - b; };
+    // Ищем корни f−g на видимом диапазоне. Отдельно ловим случай, когда узел
+    // выборки попал ровно в корень (diff===0) — иначе целочисленные точки
+    // пересечения (частый случай в задачах) терялись бы из-за prevH*hv==0.
+    const roots = [];
+    let prevX = m.P2X(0), prevH = diff(prevX);
+    for (let px = 2; px <= m.W; px += 2) { const x = m.P2X(px), hv = diff(x);
+      if (isFinite(prevH) && isFinite(hv)) {
+        if (hv === 0) { roots.push(x); }
+        else if (prevH !== 0 && prevH * hv < 0) {
+          let lo = prevX, hi = x, flo = prevH; for (let it = 0; it < 40; it++) { const mid = (lo + hi) / 2, fm = diff(mid); if (!isFinite(fm)) break; if (fm === 0) { lo = hi = mid; break; } if (flo * fm < 0) hi = mid; else { lo = mid; flo = fm; } }
+          roots.push((lo + hi) / 2);
+        }
+      }
+      prevX = x; prevH = hv;
+    }
+    const uniq = []; roots.forEach((r) => { if (!uniq.some((u) => Math.abs(u - r) < 1e-6)) uniq.push(r); });
+    ctx.save();
+    uniq.forEach((xr) => { let yr; try { yr = fn(xr, env); } catch (e) { yr = NaN; } if (!isFinite(yr)) return;
+      const cx = m.X2P(xr), cy = m.Y2P(yr); ctx.beginPath(); ctx.fillStyle = col; ctx.arc(cx, cy, 4, 0, 2 * Math.PI); ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.fillStyle = col; ctx.font = '11px sans-serif'; ctx.fillText('(' + (Math.round(xr * 100) / 100) + '; ' + (Math.round(yr * 100) / 100) + ')', cx + 6, cy - 6); });
+    ctx.restore();
+  }
+  // Область неравенства / система: закрашиваем точки окна, где выполнены ВСЕ
+  // условия. Каждое условие — y ≥ f(x) (sense 'gt', выше кривой) или y ≤ f(x)
+  // ('lt', ниже). Идём по столбцам px: пересечение условий даёт интервал y.
+  function drawRegion(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame); if (!fr) return;
+    const parts = (el.data.parts || []).map((p) => ({ sense: p.sense, fn: funcFnOf(p.func) })).filter((p) => p.fn);
+    if (!parts.length) return;
+    const m = planeMap(fr), env = frameParamEnv(fr), col = el.data.color || '#2e86de', plotTop = FRAME_HEADER, plotBot = fr.data.height, step = 2;
+    ctx.save(); ctx.fillStyle = hexToRgba(col, 0.18);
+    for (let px = 0; px < m.W; px += step) {
+      const x = m.P2X(px + step / 2); let lower = -Infinity, upper = Infinity, ok = true;
+      for (let i = 0; i < parts.length; i++) { let v; try { v = parts[i].fn(x, env); } catch (e) { v = NaN; } if (!isFinite(v)) { ok = false; break; } if (parts[i].sense === 'gt') { if (v > lower) lower = v; } else { if (v < upper) upper = v; } }
+      if (!ok || lower >= upper) continue;
+      let yTop = upper === Infinity ? plotTop : m.Y2P(upper), yBot = lower === -Infinity ? plotBot : m.Y2P(lower);
+      if (yTop < plotTop) yTop = plotTop; if (yBot > plotBot) yBot = plotBot;
+      if (yBot > yTop) ctx.fillRect(px, yTop, step + 0.6, yBot - yTop);
+    }
+    ctx.restore();
+  }
+  // Неявная кривая F(x,y)=0 — марширующие квадраты по сетке окна. В каждой
+  // клетке по знакам F в углах рисуем отрезок нуль-контура (линейная интерполяция).
+  function drawImplicit(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame); if (!fr) return;
+    if (shape._iexpr !== el.data.expr) { shape._ifn = compileImplicit(el.data.expr); shape._iexpr = el.data.expr; }
+    const fn = shape._ifn; if (!fn) return;
+    const m = planeMap(fr), env = frameParamEnv(fr), plotTop = FRAME_HEADER, W = m.W, H = fr.data.height, step = 6;
+    const cols = Math.floor(W / step) + 1, rows = Math.floor((H - plotTop) / step) + 1;
+    const val = new Float64Array(cols * rows);
+    for (let j = 0; j < rows; j++) { const yy = m.P2Y(plotTop + j * step); for (let i = 0; i < cols; i++) { let v; try { v = fn(m.P2X(i * step), yy, env); } catch (e) { v = NaN; } val[j * cols + i] = v; } }
+    ctx.save(); ctx.strokeStyle = el.data.color || '#c0392b'; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
+    for (let j = 0; j < rows - 1; j++) {
+      for (let i = 0; i < cols - 1; i++) {
+        const a = val[j * cols + i], b = val[j * cols + i + 1], c = val[(j + 1) * cols + i + 1], d = val[(j + 1) * cols + i];
+        if (!(isFinite(a) && isFinite(b) && isFinite(c) && isFinite(d))) continue;
+        let idx = 0; if (a > 0) idx |= 1; if (b > 0) idx |= 2; if (c > 0) idx |= 4; if (d > 0) idx |= 8;
+        if (idx === 0 || idx === 15) continue;
+        const x0 = i * step, y0 = plotTop + j * step, x1 = x0 + step, y1 = y0 + step;
+        const T = () => [x0 + step * a / (a - b), y0], R = () => [x1, y0 + step * b / (b - c)], B = () => [x0 + step * d / (d - c), y1], L = () => [x0, y0 + step * a / (a - d)];
+        const link = (p, q) => { ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); };
+        switch (idx) {
+          case 1: case 14: link(L(), T()); break;
+          case 2: case 13: link(T(), R()); break;
+          case 3: case 12: link(L(), R()); break;
+          case 4: case 11: link(R(), B()); break;
+          case 6: case 9: link(T(), B()); break;
+          case 7: case 8: link(L(), B()); break;
+          case 5: link(L(), T()); link(R(), B()); break;
+          case 10: link(T(), R()); link(L(), B()); break;
+        }
+      }
+    }
+    ctx.stroke(); ctx.restore();
+  }
+  // ── Коника по 5 точкам ─────────────────────────────────────────────────
+  // Общая коника Ax²+Bxy+Cy²+Dx+Ey+F=0 проходит через 5 точек. Коэффициенты —
+  // знакопеременные миноры 6×6-определителя [x² xy y² x y 1; (5 строк точек)]=0.
+  function det5(m) { // определитель 5×5 методом Гаусса (частичный выбор)
+    const n = 5, a = m.map((r) => r.slice()); let det = 1;
+    for (let i = 0; i < n; i++) {
+      let p = i; for (let r = i + 1; r < n; r++) if (Math.abs(a[r][i]) > Math.abs(a[p][i])) p = r;
+      if (Math.abs(a[p][i]) < 1e-12) return 0;
+      if (p !== i) { const t = a[p]; a[p] = a[i]; a[i] = t; det = -det; }
+      det *= a[i][i];
+      for (let r = i + 1; r < n; r++) { const f = a[r][i] / a[i][i]; for (let c = i; c < n; c++) a[r][c] -= f * a[i][c]; }
+    }
+    return det;
+  }
+  function conicCoeffs(P) { // P: [{x,y}×≥5] → [A,B,C,D,E,F] или null (вырождено)
+    if (P.length < 5) return null;
+    const rows = P.slice(0, 5).map((p) => [p.x * p.x, p.x * p.y, p.y * p.y, p.x, p.y, 1]);
+    const co = [];
+    for (let k = 0; k < 6; k++) { const minor = rows.map((r) => r.filter((_, j) => j !== k)); co.push((k % 2 === 0 ? 1 : -1) * det5(minor)); }
+    const norm = Math.max.apply(null, co.map(Math.abs));
+    if (!(norm > 1e-9)) return null;
+    return co.map((c) => c / norm);
+  }
+  function conicPtsFor(el) { const pos = ptPosFor(el); return (el.data.pts || []).map(pos).filter(Boolean); }
+  // Трассируем контур F=0 в коорд. окна (marching squares) — общий для рисования и хит-теста.
+  function traceConic(ctx, el, fr, step) {
+    const P = conicPtsFor(el); if (P.length < 5) return false;
+    const co = conicCoeffs(P); if (!co) return false;
+    const A = co[0], B = co[1], C = co[2], D = co[3], E = co[4], G = co[5];
+    const plotTop = FRAME_HEADER, W = fr.data.width, H = fr.data.height;
+    const cols = Math.floor(W / step) + 1, rows = Math.floor((H - plotTop) / step) + 1;
+    const val = new Float64Array(cols * rows);
+    for (let j = 0; j < rows; j++) { const yy = plotTop + j * step; for (let i = 0; i < cols; i++) { const xx = i * step; val[j * cols + i] = A * xx * xx + B * xx * yy + C * yy * yy + D * xx + E * yy + G; } }
+    ctx.beginPath();
+    for (let j = 0; j < rows - 1; j++) {
+      for (let i = 0; i < cols - 1; i++) {
+        const a = val[j * cols + i], b = val[j * cols + i + 1], c = val[(j + 1) * cols + i + 1], d = val[(j + 1) * cols + i];
+        if (!(isFinite(a) && isFinite(b) && isFinite(c) && isFinite(d))) continue;
+        let idx = 0; if (a > 0) idx |= 1; if (b > 0) idx |= 2; if (c > 0) idx |= 4; if (d > 0) idx |= 8;
+        if (idx === 0 || idx === 15) continue;
+        const x0 = i * step, y0 = plotTop + j * step, x1 = x0 + step, y1 = y0 + step;
+        const T = () => [x0 + step * a / (a - b), y0], R = () => [x1, y0 + step * b / (b - c)], Bt = () => [x0 + step * d / (d - c), y1], L = () => [x0, y0 + step * a / (a - d)];
+        const link = (p, q) => { ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); };
+        switch (idx) {
+          case 1: case 14: link(L(), T()); break; case 2: case 13: link(T(), R()); break; case 3: case 12: link(L(), R()); break; case 4: case 11: link(R(), Bt()); break;
+          case 6: case 9: link(T(), Bt()); break; case 7: case 8: link(L(), Bt()); break; case 5: link(L(), T()); link(R(), Bt()); break; case 10: link(T(), R()); link(L(), Bt()); break;
+        }
+      }
+    }
+    return true;
+  }
+  function drawConicShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame); if (!fr) return;
+    ctx.save(); ctx.strokeStyle = el.data.color || el.data.stroke || '#c0392b'; ctx.lineWidth = el.data.strokeWidth || 2; ctx.lineJoin = 'round';
+    if (traceConic(ctx, el, fr, 6)) ctx.stroke();
+    ctx.restore();
+  }
+  function hitConicShape(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame); if (!fr) return;
+    if (traceConic(ctx, el, fr, 8)) ctx.strokeShape(shape);
+  }
+  // Привязать узел к группе окна и убрать ПОД шапку (над сеткой/предыдущими).
+  // Узлы, добавленные позже, оказываются выше ранее добавленных, но ниже шапки —
+  // поэтому точки (создаются после линий) лежат над линиями и доступны для захвата.
+  function attachToFrame(el, node) {
+    const frameNode = nodes.get(el.data.frame);
+    if (!frameNode) return false; // окна ещё нет — привяжем позже (reattach)
+    frameNode.add(node);
+    const header = frameNode.findOne('.fheader');
+    if (header) node.zIndex(header.zIndex());
+    // Точки должны лежать НАД линиями/окружностями: иначе клик по точке попадает в
+    // линию (она сверху), точку нельзя схватить и перетащить. После привязки любой
+    // НЕ-точки поднимаем точки этого окна обратно наверх (под шапку).
+    if (el.type !== 'point') raiseFramePoints(el.data.frame);
+    return true;
+  }
+  // Поднять все точки окна над остальной геометрией (но под шапку/подпись/крестик).
+  function raiseFramePoints(frameId) {
+    const frameNode = nodes.get(frameId); if (!frameNode) return;
+    elements.forEach((el) => {
+      if (el.type === 'point' && el.data.frame === frameId) {
+        const n = nodes.get(el.id); if (n && n.getParent() === frameNode) n.moveToTop();
+      }
+    });
+    ['.fheader', '.fhlabel', '.fdel'].forEach((s) => { const h = frameNode.findOne(s); if (h) h.moveToTop(); });
+  }
+  function attachFuncNode(el, node) { attachToFrame(el, node); }
+  function upsertFuncNode(el) {
+    let node = nodes.get(el.id);
+    if (!node) {
+      node = new Konva.Shape({ id: el.id, listening: false, sceneFunc: drawFuncShape });
+      nodes.set(el.id, node);
+      attachFuncNode(el, node);
+    } else {
+      node._expr = null; // пересобрать формулу при изменении
+    }
+    layer.batchDraw();
+  }
+  function reattachFuncs() {
+    elements.forEach((el) => {
+      if (el.type === 'func') {
+        const node = nodes.get(el.id), frameNode = nodes.get(el.data.frame);
+        if (node && frameNode && node.getParent() !== frameNode) attachFuncNode(el, node);
+      } else if (el.data && el.data.frame && (el.type === 'point' || el.type === 'circle' || isPointBoundLine(el) || el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit')) {
+        // привязанная геометрия — в группу окна (если окно загрузилось позже)
+        const node = nodes.get(el.id), frameNode = nodes.get(el.data.frame);
+        if (node && frameNode && node.getParent() !== frameNode) attachToFrame(el, node);
+      }
+    });
+    recomputeGeometry();
+    layer.batchDraw();
+  }
+  function addFunc(frameId, expr) {
+    expr = String(expr || '').trim();
+    if (!expr || !elements.get(frameId)) return;
+    let n = 0; elements.forEach((e) => { if (e.type === 'func' && e.data.frame === frameId) n++; });
+    const el = { id: uuid(), type: 'func', z: 0, data: { frame: frameId, expr, color: FUNC_COLORS[n % FUNC_COLORS.length], name: nextObjName() } };
+    upsertNode(el);
+    send({ action: 'element_add', element: el });
+    histAdd(el);
+    // Незнакомые переменные формулы → локальные параметры окна (со своими ползунками).
+    const fr = elements.get(frameId), before = clone(fr);
+    if (ensureFrameParams(fr, expr)) { histUpd(before, fr); send({ action: 'element_update', element: fr }); }
+    redrawFuncs();
+    return el;
+  }
+  // Неявная кривая F(x,y)=0 (например x^2+y^2=9). Параметры — как у функций, но
+  // из списка переменных исключаем y (иначе y стал бы ползунком).
+  function addImplicit(frameId, expr) {
+    expr = String(expr || '').trim();
+    if (!expr || !elements.get(frameId)) return;
+    if (!compileImplicit(expr)) { boardHint('Не понял уравнение — проверьте запись'); return; }
+    let n = 0; elements.forEach((e) => { if ((e.type === 'func' || e.type === 'implicit') && e.data.frame === frameId) n++; });
+    const el = { id: uuid(), type: 'implicit', z: 0, data: { frame: frameId, expr, color: FUNC_COLORS[n % FUNC_COLORS.length], name: nextObjName() } };
+    upsertNode(el);
+    send({ action: 'element_add', element: el });
+    histAdd(el);
+    const fr = elements.get(frameId), before = clone(fr);
+    if (ensureFrameParams(fr, expr, ['y'])) { histUpd(before, fr); send({ action: 'element_update', element: fr }); }
+    redrawFuncs();
+    return el;
+  }
+
+  // ── Формулы LaTeX → изображение ────────────────────────────────────────
+  // Хранится только исходник LaTeX + позиция + цвет; картинку каждый клиент
+  // рисует у себя через MathJax. Размер фиксируем в данных, чтобы раскладка
+  // совпадала у всех и после перезагрузки.
+  const latexMeasure = document.createElement('div');
+  latexMeasure.style.cssText = 'position:absolute;visibility:hidden;left:-99999px;top:0;';
+  document.body.appendChild(latexMeasure);
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // MathJax (fontCache: 'global') хранит контуры глифов в одном общем
+  // <svg id="MJX-SVG-global-cache">, а формулы ссылаются на них через <use>.
+  // При сериализации отдельного <svg> в картинку этот кэш не попадает и
+  // изображение выходит пустым. Поэтому встраиваем нужные определения глифов
+  // прямо в наш <svg>, делая его самодостаточным.
+  function inlineGlyphDefs(svg) {
+    if (!svg.querySelector('use')) return;
+    const cache = document.getElementById('MJX-SVG-global-cache');
+    if (!cache) return;
+    const cacheDefs = cache.querySelector('defs') || cache;
+    let defs = svg.querySelector('defs');
+    if (!defs) {
+      defs = document.createElementNS(SVG_NS, 'defs');
+      svg.insertBefore(defs, svg.firstChild);
+    }
+    // Клонируем все кэшированные глифы (≈5 КБ) — гарантированно покрывает и
+    // составные глифы, которые сами ссылаются на другие через <use>.
+    Array.from(cacheDefs.children).forEach((ch) => defs.appendChild(ch.cloneNode(true)));
+  }
+
+  // Готовность MathJax. tex-svg.js стартует асинхронно, поэтому формулы,
+  // восстановленные из БД на старте, могут попасть на ещё не готовый MathJax —
+  // ждём его. Заодно один раз отключаем общий кэш шрифтов (fontCache:'none'),
+  // чтобы каждый <svg> был самодостаточным и корректно растеризовался в картинку.
+  let mjFontCacheSet = false;
+  function whenMathJaxReady(fn) {
+    if (window.MathJax && MathJax.tex2svg) {
+      if (!mjFontCacheSet) {
+        try {
+          const out = MathJax.startup && MathJax.startup.output;
+          if (out && out.options) out.options.fontCache = 'none';
+        } catch (e) { /* не критично: останется подстраховка inlineGlyphDefs */ }
+        mjFontCacheSet = true;
+      }
+      fn();
+    } else if (window.MathJax && MathJax.startup && MathJax.startup.promise) {
+      MathJax.startup.promise.then(() => whenMathJaxReady(fn));
+    } else {
+      setTimeout(() => whenMathJaxReady(fn), 60);
+    }
+  }
+
+  function latexToImage(latex, color, cb) {
+    whenMathJaxReady(() => latexToImageNow(latex, color, cb));
+  }
+
+  function latexToImageNow(latex, color, cb) {
+    let svg;
+    try {
+      const container = MathJax.tex2svg(latex || '', { display: true });
+      svg = container.querySelector('svg');
+    } catch (e) { cb(null); return; }
+    if (!svg) { cb(null); return; }
+    svg.style.color = color || '#1f2937';
+    latexMeasure.innerHTML = '';
+    latexMeasure.appendChild(svg);
+    const r = svg.getBoundingClientRect();
+    const w = Math.max(2, Math.ceil(r.width));
+    const h = Math.max(2, Math.ceil(r.height));
+    svg.setAttribute('width', w);
+    svg.setAttribute('height', h);
+    inlineGlyphDefs(svg); // встроить глифы до сериализации
+    const xml = new XMLSerializer().serializeToString(svg);
+    latexMeasure.innerHTML = '';
+    const img = new Image();
+    img.onload = () => cb(img, w, h);
+    img.onerror = () => cb(null);
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+  }
+
+  function renderLatexInto(node, el) {
+    const d = el.data || {};
+    node._latex = (d.latex || '') + '|' + (d.color || '');
+    latexToImage(d.latex, d.color, (img, w, h) => {
+      if (!img) return;
+      node.image(img);
+      // Если размер ещё не зафиксирован — берём натуральный.
+      if (!d.width || !d.height) {
+        d.width = w; d.height = h;
+        node.width(w); node.height(h);
+        // Рассылает размер только автор формулы (у остальных он придёт обновлением),
+        // иначе клиенты затирали бы размеры друг друга.
+        const mine = (el.author == null || el.author === myId);
+        if (mine && el === elements.get(el.id)) send({ action: 'element_update', element: el });
+      }
+      layer.batchDraw();
+    });
+  }
+
+  // ── Текст с инлайн-формулами → изображение ─────────────────────────────
+  // Текст может содержать формулы в $...$. Верстаем его как HTML, прогоняем
+  // MathJax (формулы становятся самодостаточным SVG, т.к. fontCache:'none'),
+  // затем растеризуем через <foreignObject>. Хранится только исходный текст,
+  // цвет и размер — картинку каждый клиент строит у себя.
+  const TEXT_FONT = "-apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
+  // Доступные шрифты (только системные — SVG самодостаточен, без внешних загрузок).
+  const TEXT_FONTS = [
+    { label: 'Обычный', css: TEXT_FONT },
+    { label: 'С засечками', css: "Georgia, 'Times New Roman', serif" },
+    { label: 'Моноширинный', css: "'Courier New', monospace" },
+    { label: 'Times', css: "'Times New Roman', Times, serif" },
+    { label: 'Verdana', css: 'Verdana, Geneva, sans-serif' },
+    { label: 'Tahoma', css: 'Tahoma, Geneva, sans-serif' },
+    { label: 'Trebuchet', css: "'Trebuchet MS', sans-serif" },
+    { label: 'Comic', css: "'Comic Sans MS', cursive" },
+  ];
+  // Базовый стиль текстового окна: шрифт/кегль/цвет/выравнивание по умолчанию + ФОН
+  // ОКНА (на всю область). Фон ЗА текстом — это inline highlight внутри html.
+  function textBaseCss(d) {
+    d = d || {};
+    return 'font-family:' + (d.font || TEXT_FONT)
+      + ';color:' + (d.color || '#1f2937')
+      + ';font-size:' + (d.fontSize || 20) + 'px'
+      + ';text-align:' + (d.align || 'left')
+      + ';line-height:1.35;white-space:pre-wrap;word-wrap:break-word'
+      + ';' + (d.wrapWidth ? 'width:' + Math.max(40, d.wrapWidth) + 'px' : 'max-width:700px')
+      + ';display:inline-block;box-sizing:border-box;padding:6px 9px'
+      + (d.boxBg ? ';background:' + d.boxBg : '');
+  }
+  function textKey(d) { d = d || {}; return [d.html || '', d.text || '', d.color || '', d.fontSize || '', d.font || '', d.align || '', d.boxBg || '', d.wrapWidth || '', d.plain ? '1' : ''].join(''); }
+  const URL_RE = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/g;
+  // Обернуть «голые» ссылки в текстовых узлах в подсвеченный span (кроме уже-ссылок).
+  // ── Санитайзер HTML текста (защита от stored-XSS) ─────────────────────
+  // Текст элементов рендерится через innerHTML у ВСЕХ участников; злонамеренный
+  // редактор мог бы вписать <img onerror=…> и выполнить код в чужом браузере.
+  // Пропускаем только безопасные теги/атрибуты форматирования.
+  const SAN_TAGS = { B: 1, STRONG: 1, I: 1, EM: 1, U: 1, S: 1, STRIKE: 1, SPAN: 1, DIV: 1, P: 1, BR: 1, UL: 1, OL: 1, LI: 1, A: 1, FONT: 1, SUB: 1, SUP: 1 };
+  const SAN_DROP = { SCRIPT: 1, STYLE: 1, IFRAME: 1, OBJECT: 1, EMBED: 1, LINK: 1, META: 1, SVG: 1, IMG: 1, VIDEO: 1, AUDIO: 1, FORM: 1, INPUT: 1, BUTTON: 1 };
+  const SAN_STYLE_PROPS = { color: 1, background: 1, 'background-color': 1, 'font-weight': 1, 'font-style': 1, 'font-family': 1, 'font-size': 1, 'text-align': 1, 'text-decoration': 1, 'text-decoration-line': 1, 'text-decoration-style': 1 };
+  const SAN_ATTR_OK = { class: 1, target: 1, rel: 1, color: 1, face: 1, size: 1, align: 1 };
+  function sanitizeStyle(v) {
+    return String(v || '').split(';').map((s) => s.trim()).filter(Boolean).filter((decl) => {
+      const i = decl.indexOf(':'); if (i < 0) return false;
+      const prop = decl.slice(0, i).trim().toLowerCase(), val = decl.slice(i + 1).trim().toLowerCase();
+      if (!SAN_STYLE_PROPS[prop]) return false;
+      if (/url\(|expression|javascript:|<|@import/.test(val)) return false;
+      return true;
+    }).join('; ');
+  }
+  function sanitizeHtml(html) {
+    const root = document.createElement('div'); root.innerHTML = String(html == null ? '' : html);
+    (function walk(node) {
+      let child = node.firstChild;
+      while (child) {
+        const next = child.nextSibling;
+        if (child.nodeType === 1) {
+          const tag = child.tagName;
+          if (!SAN_TAGS[tag]) {
+            if (SAN_DROP[tag]) child.remove(); // опасный тег — вместе с содержимым
+            else { while (child.firstChild) node.insertBefore(child.firstChild, child); child.remove(); } // прочее — развернуть текст
+            child = next; continue;
+          }
+          Array.prototype.slice.call(child.attributes).forEach((a) => {
+            const name = a.name.toLowerCase();
+            if (name.indexOf('on') === 0) { child.removeAttribute(a.name); return; } // обработчики событий
+            if (name === 'style') { const s = sanitizeStyle(a.value); if (s) child.setAttribute('style', s); else child.removeAttribute('style'); return; }
+            if (name === 'href' || name === 'src' || name === 'xlink:href') { if (!/^(https?:|mailto:|#|\/)/i.test(a.value.trim())) child.removeAttribute(a.name); return; }
+            if (!SAN_ATTR_OK[name]) child.removeAttribute(a.name);
+          });
+          if (tag === 'A' && child.getAttribute('href')) { child.setAttribute('target', '_blank'); child.setAttribute('rel', 'noopener noreferrer nofollow'); }
+          walk(child);
+        } else if (child.nodeType !== 3) { child.remove(); } // комментарии/CDATA — убрать
+        child = next;
+      }
+    })(root);
+    return root.innerHTML;
+  }
+  function linkifyHtml(html) {
+    const root = document.createElement('div'); root.innerHTML = html || '';
+    (function walk(node) {
+      let child = node.firstChild;
+      while (child) {
+        const next = child.nextSibling;
+        if (child.nodeType === 3) {
+          const t = child.nodeValue; URL_RE.lastIndex = 0;
+          if (URL_RE.test(t)) {
+            URL_RE.lastIndex = 0; const frag = document.createDocumentFragment(); let last = 0, m;
+            while ((m = URL_RE.exec(t))) {
+              if (m.index > last) frag.appendChild(document.createTextNode(t.slice(last, m.index)));
+              const span = document.createElement('span'); span.className = 'lnk';
+              span.style.color = '#1f6feb'; span.style.textDecoration = 'underline'; span.textContent = m[0];
+              frag.appendChild(span); last = m.index + m[0].length;
+            }
+            if (last < t.length) frag.appendChild(document.createTextNode(t.slice(last)));
+            child.replaceWith(frag);
+          }
+        } else if (child.nodeType === 1) {
+          const tag = child.tagName, isLink = tag === 'A' || (child.classList && child.classList.contains('lnk'));
+          if (!isLink) walk(child);
+        }
+        child = next;
+      }
+    })(root);
+    return root.innerHTML;
+  }
+  // Содержимое элемента как html (миграция старого plain-text в html). Санитайзим —
+  // это единая точка получения html текста для отрисовки (защита от XSS).
+  function textContentHtml(d) {
+    if (d.html != null && d.html !== '') return sanitizeHtml(d.html);
+    const esc = escapeHtml(d.text || ' ').replace(/\n/g, '<br>');
+    return esc;
+  }
+
+  function textToImage(d, cb) {
+    whenMathJaxReady(() => {
+      const css = textBaseCss(d);
+      const inner = linkifyHtml(textContentHtml(d));
+      const host = document.createElement('div');
+      host.style.cssText = 'position:absolute;left:-99999px;top:0;' + css;
+      host.innerHTML = inner;
+      document.body.appendChild(host);
+      const finish = () => {
+        // MathJax добавляет невидимую в норме MathML-копию (mjx-assistive-mml) для
+        // скринридеров; её CSS в SVG-foreignObject не подхватывается → формула
+        // дублируется обычным шрифтом. Удаляем ДО замера и растеризации.
+        host.querySelectorAll('mjx-assistive-mml').forEach((e) => e.remove());
+        const r = host.getBoundingClientRect();
+        const w = Math.max(2, Math.ceil(r.width) + 2);
+        const h = Math.max(2, Math.ceil(r.height) + 2);
+        const rendered = host.innerHTML;
+        host.remove();
+        const styleBlock = '<style>div,p{margin:0}ul,ol{margin:0.2em 0;padding-left:1.5em}li{margin:0}a,.lnk{color:#1f6feb;text-decoration:underline}mjx-assistive-mml{display:none}</style>';
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
+          + '<foreignObject width="100%" height="100%">'
+          + '<div xmlns="http://www.w3.org/1999/xhtml" style="' + css + '">' + styleBlock + rendered + '</div>'
+          + '</foreignObject></svg>';
+        const img = new Image();
+        img.onload = () => cb(img, w, h);
+        img.onerror = () => cb(null);
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      };
+      // Обычный текст (d.plain) — БЕЗ MathJax: $…$ остаются как есть (как в Miro).
+      if (!d.plain && window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise([host]).then(finish).catch(finish);
+      else finish();
+    });
+  }
+
+  function renderTextInto(node, el) {
+    const d = el.data || {};
+    node._textKey = textKey(d);
+    textToImage(d, (img, w, h) => {
+      if (!img) return;
+      node.image(img);
+      // Размер всегда пересчитываем под контент (текст мог стать больше/меньше).
+      d.width = w; d.height = h; node.width(w); node.height(h);
+      const mine = (el.author == null || el.author === myId);
+      const resizingThis = resizeState && resizeState.id === el.id; // при ресайзе шлём один раз в конце
+      if (mine && el === elements.get(el.id) && !resizingThis) send({ action: 'element_update', element: el });
+      if (resizeState && resizeState.id === el.id) positionHandles(); // ручки за новым размером
+      layer.batchDraw();
+    });
+  }
+
+  // ── Импорт картинок и PDF ──────────────────────────────────────────────
+  function boardCodeStr() { const p = location.pathname.split('/').filter(Boolean); return p[1] || 'board'; }
+  function getCookie(name) { const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)'); return m ? m.pop() : ''; }
+  function viewportCenterWorld() { const s = stage.scaleX(); return { x: (-stage.x() + stage.width() / 2) / s, y: (-stage.y() + stage.height() / 2) / s }; }
+  function uploadFile(file) {
+    const fd = new FormData(); fd.append('file', file);
+    return fetch('/board/' + boardCodeStr() + '/upload/', { method: 'POST', body: fd, headers: { 'X-CSRFToken': getCookie('csrftoken') } }).then((r) => r.json());
+  }
+  function importFiles(files) {
+    const tasks = Array.from(files).map((f) => {
+      boardHint('Загрузка ' + f.name + '…');
+      return uploadFile(f).then((res) => {
+        if (!res || res.error) { boardHint('Ошибка загрузки: ' + ((res && res.error) || '')); return null; }
+        return (res.kind === 'image') ? createImageElement(res.url, f.name) : createPdfElement(res.url, f.name);
+      }).catch(() => { boardHint('Не удалось загрузить файл'); return null; });
+    });
+    Promise.all(tasks).then((ids) => { const good = ids.filter(Boolean); if (good.length >= 2) autoGridArrange(good); });
+  }
+  // Картинка: грузим в узел (при создании и при обновлении url).
+  function loadImageInto(node, el) {
+    const url = el.data.url; if (!url) return;
+    if (node._src === url) { node.width(el.data.width || node.width()); node.height(el.data.height || node.height()); return; }
+    node._src = url;
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => { node.image(img); node.width(el.data.width || img.naturalWidth); node.height(el.data.height || img.naturalHeight); layer.batchDraw(); };
+    img.src = url;
+  }
+  function createImageElement(url, name) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 440, sc = Math.min(1, maxW / img.naturalWidth);
+        const w = Math.round(img.naturalWidth * sc), h = Math.round(img.naturalHeight * sc), c = viewportCenterWorld();
+        const el = { id: uuid(), type: 'image', z: 0, data: { x: c.x - w / 2, y: c.y - h / 2, width: w, height: h, url: url, name: name } };
+        upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); setTool('select'); layer.batchDraw();
+        boardHint('Картинка добавлена'); resolve(el.id);
+      };
+      img.onerror = () => { boardHint('Не удалось открыть картинку'); resolve(null); };
+      img.src = url;
+    });
+  }
+  // ── PDF через pdf.js (CDN) ──────────────────────────────────────────────
+  const PDFJS_VER = '3.11.174';
+  function ensurePdfLib(cb, tries) {
+    if (window.pdfjsLib) { if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VER + '/build/pdf.worker.min.js'; cb(window.pdfjsLib); return; }
+    if ((tries || 0) > 40) { boardHint('pdf.js не загрузился'); return; }
+    setTimeout(() => ensurePdfLib(cb, (tries || 0) + 1), 150);
+  }
+  const pdfDocs = new Map(); // url → Promise<pdfDoc>
+  function getPdfDoc(url) {
+    if (pdfDocs.has(url)) return pdfDocs.get(url);
+    const base = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VER + '/';
+    const p = new Promise((res, rej) => {
+      ensurePdfLib((lib) => {
+        // cMap + стандартные шрифты нужны pdf.js 3.x, иначе отрисовка текста зависает/падает.
+        lib.getDocument({ url: url, cMapUrl: base + 'cmaps/', cMapPacked: true, standardFontDataUrl: base + 'standard_fonts/' }).promise.then(res, rej);
+      });
+    });
+    pdfDocs.set(url, p); return p;
+  }
+  function createPdfElement(url, name) {
+    return new Promise((resolve) => {
+      getPdfDoc(url).then((doc) => doc.getPage(1).then((page) => {
+        const vp = page.getViewport({ scale: 1 }), maxW = 460, sc = Math.min(1, maxW / vp.width);
+        const w = Math.round(vp.width * sc), h = Math.round(vp.height * sc), c = viewportCenterWorld();
+        const el = { id: uuid(), type: 'pdf', z: 0, data: { x: c.x - w / 2, y: c.y - h / 2, width: w, height: h, url: url, pages: doc.numPages, page: 1, name: name } };
+        upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); setTool('select'); layer.batchDraw();
+        boardHint('PDF добавлен (' + doc.numPages + ' стр.)'); resolve(el.id);
+      })).catch(() => { boardHint('Не удалось открыть PDF'); resolve(null); });
+    });
+  }
+  function renderPdfInto(node, el) {
+    const key = el.data.url + '#' + (el.data.page || 1);
+    if (node._pdfKey === key) return; node._pdfKey = key;
+    node.width(el.data.width || 300); node.height(el.data.height || 400);
+    getPdfDoc(el.data.url).then((doc) => {
+      const pg = Math.max(1, Math.min(doc.numPages, el.data.page || 1));
+      return doc.getPage(pg).then((page) => {
+        const vp0 = page.getViewport({ scale: 1 }), scale = ((el.data.width || 300) * 2) / vp0.width, vp = page.getViewport({ scale });
+        const cv = document.createElement('canvas'); cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+        return page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(() => { node.image(cv); layer.batchDraw(); });
+      });
+    }).catch(() => {});
+  }
+  function extractPdfPage(el, page, onDone) {
+    getPdfDoc(el.data.url).then((doc) => doc.getPage(page).then((pg) => {
+      const vp = pg.getViewport({ scale: 2 }), cv = document.createElement('canvas');
+      cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+      pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(() => cv.toBlob((blob) => {
+        const file = new File([blob], (el.data.name || 'pdf').replace(/\.pdf$/i, '') + '-стр' + page + '.png', { type: 'image/png' });
+        uploadFile(file).then((res) => {
+          if (!res || !res.url) { boardHint('Ошибка извлечения'); return; }
+          const w = el.data.width, h = el.data.height;
+          const iel = { id: uuid(), type: 'image', z: 0, data: { x: el.data.x + el.data.width + 20, y: el.data.y, width: w, height: h, url: res.url, name: file.name } };
+          upsertNode(iel); send({ action: 'element_add', element: iel }); histAdd(iel); layer.batchDraw();
+          boardHint('Страница ' + page + ' извлечена как картинка');
+          if (onDone) onDone(iel.id);
+        });
+      }, 'image/png'));
+    })).catch(() => boardHint('Ошибка извлечения страницы'));
+  }
+  function setPdfPage(el, page) {
+    page = Math.max(1, Math.min(el.data.pages || 1, page));
+    if (page === el.data.page) return;
+    const before = clone(el); el.data.page = page;
+    const node = nodes.get(el.id); if (node) { node._pdfKey = null; renderPdfInto(node, el); }
+    histUpd(before, el); send({ action: 'element_update', element: el });
+    updatePdfControls();
+  }
+  // Панель управления PDF показывается у выбранного PDF (листание + извлечение).
+  function selectedPdf() { if (selected.size !== 1) return null; const el = elements.get(Array.from(selected)[0]); return (el && el.type === 'pdf') ? el : null; }
+  function updatePdfControls() {
+    const bar = document.getElementById('pdf-controls'); if (!bar) return;
+    const el = (tool === 'select') ? selectedPdf() : null;
+    if (!el) { bar.hidden = true; return; }
+    bar.hidden = false;
+    const info = document.getElementById('pdf-page-info'); if (info) info.textContent = (el.data.page || 1) + ' / ' + (el.data.pages || 1);
+    const s = stage.scaleX(), sx = el.data.x * s + stage.x(), sy = el.data.y * s + stage.y() + 56;
+    bar.style.left = Math.max(8, Math.min(window.innerWidth - 300, sx)) + 'px';
+    bar.style.top = Math.max(62, sy - 42) + 'px';
+  }
+
+  // ── Рисование новых элементов ─────────────────────────────────────────
+  let drawing = null;        // текущий рисуемый элемент
+  let lastStreamAt = 0;
+
+  function worldPoint() {
+    // Координаты указателя в системе слоя (с учётом зума/панорамы).
+    return stage.getRelativePointerPosition();
+  }
+
+  function startDraw() {
+    if (selected.size) clearSelection(); // начали рисовать — снять прежнее выделение
+    const p = worldPoint();
+    const base = { stroke: strokeColor, strokeWidth: strokeWidth };
+    if (tool === 'pen') {
+      drawing = { id: uuid(), type: 'freehand', z: 0,
+        data: { ...base, x: p.x, y: p.y, points: [0, 0] } };
+    } else if (tool === 'marker') {
+      drawing = { id: uuid(), type: 'freehand', z: 0,
+        data: { stroke: markerColor, strokeWidth: markerWidth, opacity: markerOpacity, x: p.x, y: p.y, points: [0, 0], marker: true } };
+    } else if (tool === 'arrow') {
+      drawing = { id: uuid(), type: 'arrow', z: 0,
+        data: { ...base, strokeWidth: Math.max(2, strokeWidth), x: p.x, y: p.y, points: [0, 0, 0, 0], startCap: 'none', endCap: 'arrow' } };
+    } else if (tool === 'line') {
+      drawing = { id: uuid(), type: 'line', z: 0,
+        data: { ...base, x: p.x, y: p.y, points: [0, 0, 0, 0], startCap: 'none', endCap: 'none' } };
+    } else if (tool === 'divider') {
+      // Разделитель — строго горизонтальная/вертикальная линия (ось выберется при протяжке).
+      drawing = { id: uuid(), type: 'line', z: 0,
+        data: { ...base, x: p.x, y: p.y, points: [0, 0, 0, 0], startCap: 'none', endCap: 'none', divider: 'h' } };
+    } else if (tool === 'rect') {
+      drawing = { id: uuid(), type: 'rect', z: 0,
+        data: { ...base, x: p.x, y: p.y, width: 0, height: 0, _ax: p.x, _ay: p.y } };
+    } else if (tool === 'ellipse') {
+      drawing = { id: uuid(), type: 'ellipse', z: 0,
+        data: { ...base, x: p.x, y: p.y, radiusX: 0, radiusY: 0, _ax: p.x, _ay: p.y } };
+    } else if (SHAPE_TOOLS[tool]) {
+      drawing = { id: uuid(), type: 'shape', z: 0,
+        data: { ...base, color: strokeColor, x: p.x, y: p.y, width: 0, height: 0, _ax: p.x, _ay: p.y, kind: SHAPE_TOOLS[tool] } };
+    } else if (tool === 'circle') {
+      // Окружность: центр (с привязкой) фиксируем, радиус тянем мышью.
+      const c = snapPoint(p);
+      drawing = { id: uuid(), type: 'circle', z: 0,
+        data: { stroke: strokeColor, strokeWidth: Math.max(2, strokeWidth), x: c.x, y: c.y, r: 0 } };
+    } else if (tool === 'frame') {
+      drawing = { id: uuid(), type: 'frame', z: 0,
+        data: { x: p.x, y: p.y, width: 0, height: 0, _ax: p.x, _ay: p.y, cx: 0, cy: 0, unit: 40 } };
+    }
+    if (drawing) {
+      upsertNode(drawing);
+      send({ action: 'element_add', element: stripPrivate(drawing) });
+    }
+  }
+
+  function moveDraw(shift) {
+    if (!drawing) return;
+    const p = worldPoint();
+    const d = drawing.data;
+    if (drawing.type === 'freehand') {
+      d.points.push(p.x - d.x, p.y - d.y);
+    } else if (drawing.type === 'rect') {
+      const x = Math.min(p.x, d._ax), y = Math.min(p.y, d._ay);
+      d.x = x; d.y = y;
+      d.width = Math.abs(p.x - d._ax);
+      d.height = Math.abs(p.y - d._ay);
+    } else if (drawing.type === 'ellipse') {
+      d.x = (p.x + d._ax) / 2; d.y = (p.y + d._ay) / 2;
+      d.radiusX = Math.abs(p.x - d._ax) / 2;
+      d.radiusY = Math.abs(p.y - d._ay) / 2;
+    } else if (drawing.type === 'shape') {
+      d.x = Math.min(p.x, d._ax); d.y = Math.min(p.y, d._ay);
+      d.width = Math.abs(p.x - d._ax); d.height = Math.abs(p.y - d._ay);
+    } else if (drawing.type === 'circle') {
+      d.r = Math.hypot(p.x - d.x, p.y - d.y);
+    } else if (drawing.type === 'line' || drawing.type === 'arrow') {
+      let rx = p.x - d.x, ry = p.y - d.y;
+      if (d.divider) { // разделитель — строго горизонтально/вертикально
+        if (Math.abs(rx) >= Math.abs(ry)) { ry = 0; d.divider = 'h'; }
+        else { rx = 0; d.divider = 'v'; }
+      } else if (shift) { // Shift — привязка к ближайшему кратному 45° (проекция на луч)
+        const ang = Math.round(Math.atan2(ry, rx) / (Math.PI / 4)) * (Math.PI / 4);
+        const ux = Math.cos(ang), uy = Math.sin(ang), proj = rx * ux + ry * uy;
+        rx = proj * ux; ry = proj * uy;
+      }
+      d.points = [0, 0, rx, ry];
+    } else if (drawing.type === 'frame') {
+      // Создание окна — тот же снап угла: края/центры + равные интервалы к соседям.
+      const F = { x: d._ax, y: d._ay };
+      if (!guideRefs) guideRefs = collectGuideRefs([drawing.id]);
+      const R = frameCornerSnap({ x: p.x, y: p.y }, F);
+      d.x = Math.min(R.x, F.x); d.y = Math.min(R.y, F.y);
+      d.width = Math.abs(R.x - F.x); d.height = Math.abs(R.y - F.y);
+      drawGuides(R.marks);
+    }
+    upsertNode(drawing);
+    // Стримим рост штриха соседям, но не чаще ~30 мс.
+    const now = Date.now();
+    if (now - lastStreamAt > 30) {
+      lastStreamAt = now;
+      send({ action: 'element_update', element: stripPrivate(drawing) });
+    }
+  }
+
+  function endDraw() {
+    if (!drawing) return;
+    clearGuides(); // убрать направляющие создания окна (если были)
+    // Случайный «клик» рамкой без протяжки — не создаём вырожденное окно.
+    if (drawing.type === 'frame' && (drawing.data.width < 40 || drawing.data.height < 40)) {
+      send({ action: 'element_delete', id: drawing.id });
+      removeNode(drawing.id);
+      drawing = null;
+      return;
+    }
+    if (drawing.type === 'shape' && (drawing.data.width < 4 || drawing.data.height < 4)) {
+      send({ action: 'element_delete', id: drawing.id }); removeNode(drawing.id); drawing = null; return;
+    }
+    // Линия/стрелка/разделитель без протяжки (клик) — вырожденная, не создаём.
+    if ((drawing.type === 'line' || drawing.type === 'arrow')) {
+      const pp = drawing.data.points || [0, 0, 0, 0];
+      if (Math.hypot(pp[2] - pp[0], pp[3] - pp[1]) < 4) { send({ action: 'element_delete', id: drawing.id }); removeNode(drawing.id); drawing = null; return; }
+    }
+    send({ action: 'element_update', element: stripPrivate(drawing) });
+    histAdd(stripPrivate(drawing));
+    drawing = null;
+  }
+
+  function stripPrivate(el) {
+    // Не шлём служебные поля (_ax/_ay) по сети.
+    const data = {};
+    for (const k in el.data) if (k[0] !== '_') data[k] = el.data[k];
+    return { id: el.id, type: el.type, z: el.z, data };
+  }
+
+  // ── События указателя ─────────────────────────────────────────────────
+  // Выделение и захват старта перетаскивания — на mousedown (press-to-select),
+  // ДО того как Konva сдвинет узел. Это и устраняет рассинхрон группового
+  // перетаскивания (стартовые позиции точны), и убирает двойную обработку.
+  stage.on('mousedown touchstart', (e) => {
+    if (tool !== 'select') return;
+    // Клик по ручке/рамке трансформера — отдать Konva (ресайз), не обрабатывать.
+    if (e.target && (e.target === tr || (e.target.getParent && e.target.getParent() === tr))) return;
+    // Сначала ищем объект под курсором (включая привязанную к окну геометрию).
+    let resolved = e.target;
+    while (resolved && resolved !== stage && !(resolved.id && nodes.has(resolved.id()))) {
+      resolved = resolved.getParent();
+    }
+    let id = (resolved && resolved.id && nodes.has(resolved.id())) ? resolved.id() : null;
+    let rel = id ? elements.get(id) : null;
+
+    // ЕДИНЫЙ геометрический выбор объекта под курсором (надёжнее hit-графа Konva:
+    // точки/окружности/линии/заливка многоугольника ловятся по геометрии).
+    {
+      const wpp = stage.getRelativePointerPosition();
+      const g = wpp ? pickObjectAtWorld(wpp) : null;
+      if (g) { id = g.id; rel = g; }
+    }
+
+    // Под курсором окно (его фон/сетка) или пусто → панорама плоскости/активация.
+    if (!rel || rel.type === 'frame') {
+      const wpp = stage.getRelativePointerPosition();
+      const fp = wpp && frameAtWorld(wpp.x, wpp.y, true);
+      if (fp) {
+        if (activeFrameId === fp.id) {
+          framePan = { id: fp.id, sx: wpp.x, sy: wpp.y, cx0: fp.data.cx, cy0: fp.data.cy };
+        } else {
+          selectOnly(fp.id); // первый клик — активировать окно
+        }
+        dragStart = null;
+        return;
+      }
+      startMarquee(e); // пустое место → рамочное выделение
+      dragStart = null;
+      return;
+    }
+
+    // Линия/окружность — свой параллельный перенос (двигаем опорные точки).
+    if (rel && isPointBoundLine(rel)) {
+      if (e.evt && e.evt.shiftKey) { toggleSelect(id); }
+      else { selectOnly(id); startLineDrag(id); }
+      dragStart = null;
+      return;
+    }
+
+    // Под курсором обычный объект (или привязанная геометрия) — выделяем/тащим.
+    if (e.evt && e.evt.shiftKey) {
+      toggleSelect(id);            // Shift — добавить/убрать группу
+    } else if (!selected.has(id)) {
+      selectOnly(id);              // обычный клик по невыделенному — выбрать его группу
+    } // клик по уже выделенному без Shift — сохраняем выделение (чтобы тащить всё)
+
+    // Картинка/PDF «уносит» с собой надписи карандашом/маркером, лежащие на ней.
+    const clickedEl = elements.get(id);
+    let carry = [];
+    if (clickedEl && (clickedEl.type === 'image' || clickedEl.type === 'pdf')) {
+      carry = annotationsOnImage(clickedEl).filter((x) => x !== id && !selected.has(x));
+    }
+    if ((selected.has(id) && selected.size > 1) || carry.length) {
+      const lead = nodes.get(id);
+      const followerIds = new Set();
+      Array.from(selected).forEach((x) => { if (x !== id) followerIds.add(x); });
+      carry.forEach((x) => followerIds.add(x));
+      dragStart = {
+        leadId: id, leadX0: lead.x(), leadY0: lead.y(),
+        items: Array.from(followerIds)
+          .map((x) => {
+            // Геометрию по точкам НЕ смещаем узлом (это оторвёт её от точек) — она
+            // следует за своими точками через recomputeGeometry, если те в выделении.
+            if (isPointBound(elements.get(x))) return null;
+            const n = nodes.get(x); if (n) return { node: n, x0: n.x(), y0: n.y() };
+            const w = widgetItems.get(x); if (w) return { widget: w, wx0: (w.el.data.x || 0), wy0: (w.el.data.y || 0) };
+            return null;
+          })
+          .filter(Boolean),
+      };
+    } else {
+      dragStart = null;
+    }
+  });
+  // Надписи карандашом/маркером, лежащие «на» картинке/pdf (центр штриха внутри неё).
+  function annotationsOnImage(imgEl) {
+    const d = imgEl.data, ib = { x: d.x || 0, y: d.y || 0, width: d.width || 0, height: d.height || 0 };
+    if (ib.width <= 0 || ib.height <= 0) return [];
+    const res = [];
+    elements.forEach((el, eid) => {
+      if (el.type !== 'freehand') return; // карандаш и маркер
+      const n = nodes.get(eid); if (!n) return;
+      const b = n.getClientRect({ relativeTo: layer });
+      const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+      if (cx >= ib.x && cx <= ib.x + ib.width && cy >= ib.y && cy <= ib.y + ib.height) res.push(eid);
+    });
+    return res;
+  }
+  // Двойной клик по тексту — открыть редактор с его содержимым (в любом режиме).
+  stage.on('dblclick dbltap', (e) => {
+    let n = e.target;
+    while (n && n !== stage && !(n.id && nodes.has(n.id()))) n = n.getParent();
+    const id = (n && n.id && nodes.has(n.id())) ? n.id() : null;
+    let el = id ? elements.get(id) : null;
+    // Под курсором мог оказаться оверлей (ручка/рамка выделенного текста) — тогда
+    // ищем текст геометрически по рамке (иначе повторное редактирование не открывается).
+    if (!(el && el.type === 'text')) {
+      const w = stage.getRelativePointerPosition();
+      if (w) {
+        elements.forEach((t) => {
+          if (t.type !== 'text' || (t.data && t.data.hidden)) return;
+          const nn = nodes.get(t.id); if (!nn) return;
+          const b = nn.getClientRect({ relativeTo: layer });
+          if (w.x >= b.x && w.x <= b.x + b.width && w.y >= b.y && w.y <= b.y + b.height) el = t;
+        });
+      }
+    }
+    teLog({ ev: 'dblclick', resolvedType: el ? el.type : null, editorOpen: !textEditor.hidden });
+    if (el && el.type === 'text' && !(el.data && el.data.locked)) {
+      if (e.evt) e.evt.preventDefault();
+      // НЕ выделяем текст (иначе вокруг него рамка выделения) — сразу в редактор.
+      setTool('select'); openTextEditorFor(el);
+    } else if (el && (el.type === 'rect' || el.type === 'ellipse' || el.type === 'shape') && !(el.data && el.data.locked)) {
+      if (e.evt) e.evt.preventDefault();
+      setTool('select'); startShapeTextEdit(el); // двойной клик по фигуре — писать текст внутри
+    }
+  });
+  stage.on('mousedown touchstart', (e) => {
+    if (tool === 'select') return; // в режиме выделения сцена сама панорамит
+    if (tool === 'latex') { openLatexEditor(); return; }
+    if (tool === 'graph') { if (e.evt) e.evt.preventDefault(); handleGraphPick(worldPoint()); return; }
+    if (tool === 'text') { openTextEditor(false); return; }
+    if (tool === 'text_plain') { if (e.evt) e.evt.preventDefault(); insertTextbox(); return; }
+    if (tool === 'geogebra') { insertGeoGebra(); return; }
+    if (tool === 'point') { if (e.evt) e.evt.preventDefault(); placePoint(); return; }
+    if (tool === 'isect') { if (e.evt) e.evt.preventDefault(); handleIsectPick(worldPoint()); return; }
+    if (tool === 'polygon') { if (e.evt) e.evt.preventDefault(); handlePolygonPick(); return; }
+    if (tool === 'regpoly_center' || tool === 'regpoly_edge') { if (e.evt) e.evt.preventDefault(); handleRegPolyPick(); return; }
+    if (tool === 'midpoint') { if (e.evt) e.evt.preventDefault(); handleMidpointPick(); return; }
+    if (tool === 'ratio') { if (e.evt) e.evt.preventDefault(); handleRatioPick(); return; }
+    if (tool === 'angle_deg') { if (e.evt) e.evt.preventDefault(); handleAngleDegPick(worldPoint()); return; }
+    if (tool === 'vector') { if (e.evt) e.evt.preventDefault(); handleVectorPick(worldPoint()); return; }
+    if (tool === 'ftangent') { if (e.evt) e.evt.preventDefault(); handleTangentPick(worldPoint()); return; }
+    if (tool === 'farea') { if (e.evt) e.evt.preventDefault(); handleAreaPick(worldPoint()); return; }
+    if (tool === 'fintersect') { if (e.evt) e.evt.preventDefault(); handleFIntersectPick(worldPoint()); return; }
+    if (tool === 'region') { if (e.evt) e.evt.preventDefault(); handleRegionPick(worldPoint()); return; }
+    if (tool === 'regionsys') { if (e.evt) e.evt.preventDefault(); handleRegionSysPick(worldPoint()); return; }
+    if (tool === 'macro_record') { if (e.evt) e.evt.preventDefault(); handleMacroRecordPick(worldPoint()); return; }
+    if (tool === 'macro') { if (e.evt) e.evt.preventDefault(); handleMacroApplyPick(worldPoint()); return; }
+    if (MEASURE_PICKS[tool]) { if (e.evt) e.evt.preventDefault(); handleMeasurePick(worldPoint()); return; }
+    if (MARK_PICKS[tool]) { if (e.evt) e.evt.preventDefault(); handleMarkPick(worldPoint()); return; }
+    if (XFORM_SPEC[tool]) { if (e.evt) e.evt.preventDefault(); handleXformPick(worldPoint(), !!(e.evt && e.evt.shiftKey)); return; }
+    if (CIRCLE_PICKS[tool]) { if (e.evt) e.evt.preventDefault(); handleCirclePick(); return; }
+    if (CONSTRUCT_PICKS[tool]) { if (e.evt) e.evt.preventDefault(); handleConstructPick(); return; }
+    if (tool === 'table') { if (e.evt) e.evt.preventDefault(); insertTable(); return; }
+    if (tool === 'kanban') { if (e.evt) e.evt.preventDefault(); insertKanban(); return; }
+    if (tool === 'timer') { if (e.evt) e.evt.preventDefault(); insertTimer(); return; }
+    if (tool === 'wheel') { if (e.evt) e.evt.preventDefault(); insertWheel(); return; }
+    if (tool === 'slider') { if (e.evt) e.evt.preventDefault(); insertSlider(); return; }
+    if (tool === 'sticky') { if (e.evt) e.evt.preventDefault(); insertSticky(); return; }
+    if (tool === 'card') { if (e.evt) e.evt.preventDefault(); insertCard(); return; }
+    if (tool === 'laser') { if (e.evt) e.evt.preventDefault(); laserDown(); return; }
+    if (isEraser(tool)) { if (e.evt) e.evt.preventDefault(); eraserDown(); return; }
+    if (tool === 'lasso') { if (e.evt) e.evt.preventDefault(); lassoDown(); return; }
+    if (e.evt) e.evt.preventDefault();
+    startDraw();
+  });
+  stage.on('mousemove touchmove', (e) => {
+    sendCursor();
+    if (tool === 'laser') laserMove();
+    else if (isEraser(tool)) { eraserMove(); positionEraserRing(); }
+    else if (tool === 'lasso') lassoMove();
+    if (drawing) moveDraw(!!(e && e.evt && e.evt.shiftKey));
+    if (marquee) updateMarquee();
+    if (frameMove) doFrameMove();
+    if (framePan) doFramePan();
+    if (lineDrag) doLineDrag();
+    if (resizeState) doResize();
+    if (tool === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
+  });
+  stage.on('mouseup touchend', () => { endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); });
+  stage.on('mouseleave', () => { endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); if (eraserRing) eraserRing.style.display = 'none'; });
+
+  function doFrameMove() {
+    const el = elements.get(frameMove.id); if (!el) return;
+    const w = worldPoint();
+    // мелкое дрожание = клик (для выделения), а не перемещение
+    if (!frameMove.moved && Math.hypot(w.x - frameMove.sx, w.y - frameMove.sy) < 3 / stage.scaleX()) return;
+    frameMove.moved = true;
+    el.data.x = frameMove.ox + (w.x - frameMove.sx);
+    el.data.y = frameMove.oy + (w.y - frameMove.sy);
+    const n = nodes.get(frameMove.id);
+    if (n) {
+      n.position({ x: el.data.x, y: el.data.y });
+      if (!guideRefs) guideRefs = collectGuideRefs([frameMove.id]);
+      const snap = computeDragSnap({ x: el.data.x, y: el.data.y, w: el.data.width, h: el.data.height });
+      if (snap.dx || snap.dy) { el.data.x += snap.dx; el.data.y += snap.dy; n.position({ x: el.data.x, y: el.data.y }); }
+      drawGuides(snap.lines);
+    }
+    positionHandles();
+    tr.forceUpdate();
+    if (activeFrameId === frameMove.id) updateFuncEditor();
+    recomputeGeometry(); // как doFramePan/zoom/resize: векторы и подписи-измерения на главном слое, привязанные к точкам окна, тоже пересчитать
+    layer.batchDraw();
+  }
+  function doFramePan() {
+    const el = elements.get(framePan.id); if (!el) return;
+    const w = worldPoint();
+    const dpx = w.x - framePan.sx, dpy = w.y - framePan.sy; // сдвиг в px доски
+    el.data.cx = framePan.cx0 - dpx / el.data.unit; // тянем плоскость за курсором
+    el.data.cy = framePan.cy0 + dpy / el.data.unit;
+    recomputeGeometry();
+    layer.batchDraw();
+  }
+  function endFrameDrag() {
+    if (frameMove) {
+      const el = elements.get(frameMove.id);
+      if (frameMove.moved) { if (el) send({ action: 'element_update', element: el }); }
+      else if (frameMove.shift) { toggleSelect(frameMove.id); } // Shift+клик по шапке — добавить окно к выделению
+      else { selectOnly(frameMove.id); } // клик по шапке без сдвига — выделить окно (ручки)
+      frameMove = null;
+      clearGuides();
+    }
+    if (framePan) { const el = elements.get(framePan.id); if (el) send({ action: 'element_update', element: el }); framePan = null; }
+    if (lineDrag) { endLineDrag(); }
+  }
+
+  // ── Параллельный перенос линии-построения ──────────────────────────────
+  // Тащим линию → двигаем её опорные точки; точки НА линии (on:{line}) едут за
+  // ней автоматически (их пересчитывает recomputeGeometry по параметру t).
+  function startLineDrag(id) {
+    const el = elements.get(id); if (!el) return;
+    const fr = el.data.frame ? elements.get(el.data.frame) : null;
+    const w = worldPoint();
+    const s = fr ? { x: w.x - fr.data.x, y: w.y - fr.data.y } : w; // локальные коорд окна (или мировые)
+    const pts = lineOwnPoints(el).map((pid) => {
+      const pe = elements.get(pid); if (!pe) return null;
+      const l = fr ? frameMathToLocal(fr, pe.data.mx || 0, pe.data.my || 0) : { x: pe.data.x, y: pe.data.y };
+      return { id: pid, x0: l.x, y0: l.y };
+    }).filter(Boolean);
+    lineDrag = { id: id, fr: fr, sx: s.x, sy: s.y, pts: pts, moved: false };
+  }
+  function doLineDrag() {
+    const el = elements.get(lineDrag.id); if (!el) { lineDrag = null; return; }
+    const fr = lineDrag.fr, w = worldPoint();
+    const cur = fr ? { x: w.x - fr.data.x, y: w.y - fr.data.y } : w;
+    const dx = cur.x - lineDrag.sx, dy = cur.y - lineDrag.sy;
+    if (!lineDrag.moved && Math.hypot(dx, dy) < 3 / stage.scaleX()) return; // дрожание = клик
+    lineDrag.moved = true;
+    lineDrag.pts.forEach((p) => {
+      const pe = elements.get(p.id); if (!pe) return;
+      const nx = p.x0 + dx, ny = p.y0 + dy;
+      if (fr) { const m = frameLocalToMath(fr, nx, ny); pe.data.mx = m.mx; pe.data.my = m.my; }
+      else { pe.data.x = nx; pe.data.y = ny; }
+    });
+    recomputeGeometry();
+    positionHandles();
+    layer.batchDraw();
+  }
+  function endLineDrag() {
+    if (!lineDrag) return;
+    const el = elements.get(lineDrag.id);
+    if (lineDrag.moved && el) {
+      // Разослать сдвинутые опорные точки и точки, привязанные к этой линии.
+      const moved = new Set(lineDrag.pts.map((p) => p.id));
+      elements.forEach((e) => { if (e.type === 'point' && e.data.on && e.data.on.line === lineDrag.id) moved.add(e.id); });
+      moved.forEach((pid) => { const pe = elements.get(pid); if (pe) send({ action: 'element_update', element: pe }); });
+    } else if (el) {
+      selectOnly(lineDrag.id); // клик без сдвига — просто выделить
+    }
+    lineDrag = null;
+  }
+
+  // ── Зум: колесо к указателю + контрол справа снизу ────────────────────
+  const SCALE_BY = 1.06;
+  const MIN_SCALE = 0.15, MAX_SCALE = 5;
+  const zoomInput = document.getElementById('zoom-percent');
+
+  function updateZoomLabel() {
+    if (zoomInput && document.activeElement !== zoomInput) {
+      zoomInput.value = Math.round(stage.scaleX() * 100) + '%';
+    }
+  }
+
+  // Масштабирует к newScale вокруг точки center (экранные коорды). Без center —
+  // вокруг центра видимой области.
+  function zoomTo(newScale, center) {
+    const oldScale = stage.scaleX();
+    const clamped = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
+    const c = center || { x: stage.width() / 2, y: stage.height() / 2 };
+    const wp = { x: (c.x - stage.x()) / oldScale, y: (c.y - stage.y()) / oldScale };
+    stage.scale({ x: clamped, y: clamped });
+    stage.position({ x: c.x - wp.x * clamped, y: c.y - wp.y * clamped });
+    scheduleViewRedraw();
+    updateZoomLabel();
+    repositionConnPanel();
+  }
+
+  // Панорама колесом/тачпадом с гашением «залипания оси»: ОС во время инерции
+  // продолжает слать дельту по оси броска, и новый перпендикулярный жест тонет
+  // в ней. Следим за сглаженным направлением недавнего потока; если он был явно
+  // по одной оси, а пришёл импульс по другой — гасим остаточную (инерционную)
+  // ось, чтобы новое направление сработало сразу.
+  let wheelLastT = 0, wheelDxAvg = 0, wheelDyAvg = 0;
+  function wheelPan(dx, dy) {
+    const now = (window.performance && performance.now) ? performance.now() : Date.now();
+    if (now - wheelLastT > 150) { wheelDxAvg = 0; wheelDyAvg = 0; } // пауза → новый жест
+    wheelLastT = now;
+    const odx = dx, ody = dy; // исходные дельты — для «памяти» направления оси
+    const wasH = Math.abs(wheelDxAvg) > Math.abs(wheelDyAvg) * 1.5;
+    const wasV = Math.abs(wheelDyAvg) > Math.abs(wheelDxAvg) * 1.5;
+    // Гасим инерционную ось, только когда новый импульс ЯВНО перпендикулярен
+    // (×1.2) — чтобы не мешать намеренной диагонали.
+    if (wasH && Math.abs(dy) > Math.abs(dx) * 1.2) dx *= 0.2;
+    else if (wasV && Math.abs(dx) > Math.abs(dy) * 1.2) dy *= 0.2;
+    // Среднее считаем по ИСХОДНЫМ дельтам и сглаживаем медленнее (0.7/0.3),
+    // чтобы «память оси» держалась во время устойчивой инерции.
+    wheelDxAvg = wheelDxAvg * 0.7 + odx * 0.3;
+    wheelDyAvg = wheelDyAvg * 0.7 + ody * 0.3;
+    stage.position({ x: stage.x() - dx, y: stage.y() - dy });
+    scheduleViewRedraw();
+  }
+
+  // Жесты тачпада/колеса:
+  //  • щипок (пальцы разъезжаются) → браузер шлёт wheel с ctrlKey=true → зум;
+  //  • два пальца параллельно (или колесо мыши) → обычный wheel → панорама.
+  // Панорама/зум доски колесом. center — экранная точка (отн. контейнера сцены).
+  function boardWheel(ev, center) {
+    if (ev.ctrlKey) {
+      const factor = Math.min(1.15, Math.max(0.85, Math.exp(-ev.deltaY * 0.01)));
+      zoomTo(stage.scaleX() * factor, center);
+    } else {
+      let dx = ev.deltaX, dy = ev.deltaY;
+      if (ev.deltaMode === 1) { dx *= 16; dy *= 16; }          // строки → ~px
+      else if (ev.deltaMode === 2) { dx *= stage.width(); dy *= stage.height(); } // страницы
+      wheelPan(dx, dy);
+    }
+  }
+  function pointerInStage(ev) {
+    const r = stageEl.getBoundingClientRect();
+    return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+  }
+
+  stage.on('wheel', (e) => {
+    const ev = e.evt;
+    ev.preventDefault();
+    // Колесо над АКТИВНЫМ (выделенным) окном — зум его плоскости. Над неактивным
+    // окно «прозрачно» — колесо двигает/зумит доску (чтобы быстро летать по холсту).
+    const wpz = stage.getRelativePointerPosition();
+    const fz = wpz && frameAtWorld(wpz.x, wpz.y, true);
+    if (fz && activeFrameId === fz.id) { frameZoomAt(fz, wpz, ev.deltaY); return; }
+    boardWheel(ev, stage.getPointerPosition());
+  });
+
+  // Виджеты и аплеты ГеоГебры — DOM поверх холста; над ними колесо перехватывал
+  // браузер, и доска «застывала». Перенаправляем колесо на панораму/зум доски
+  // (клики по виджету при этом работают). Координату курсора берём из события.
+  function forwardWheel(ev) { ev.preventDefault(); boardWheel(ev, pointerInStage(ev)); }
+  if (widgetLayerEl) widgetLayerEl.addEventListener('wheel', forwardWheel, { passive: false });
+  // ggb-layer берём напрямую: его const объявлен ниже по файлу (избегаем TDZ).
+  const _ggbLayer = document.getElementById('ggb-layer');
+  if (_ggbLayer) _ggbLayer.addEventListener('wheel', forwardWheel, { passive: false });
+
+  if (zoomInput) {
+    document.getElementById('zoom-in').addEventListener('click', () => zoomTo(stage.scaleX() * 1.2));
+    document.getElementById('zoom-out').addEventListener('click', () => zoomTo(stage.scaleX() / 1.2));
+    zoomInput.addEventListener('focus', () => zoomInput.select());
+    zoomInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); zoomInput.blur(); }
+    });
+    zoomInput.addEventListener('blur', () => {
+      const v = parseFloat(String(zoomInput.value).replace(/[^\d.]/g, ''));
+      if (isFinite(v) && v > 0) zoomTo(v / 100);
+      zoomInput.value = Math.round(stage.scaleX() * 100) + '%';
+    });
+  }
+
+  stage.on('dragmove', () => { redrawGrid(); repositionCursors(); repositionConnPanel(); });
+
+  // ── Панель инструментов ───────────────────────────────────────────────
+  const toolButtons = document.querySelectorAll('#board-toolbar .tool[data-tool]');
+  function setTool(name) {
+    if (viewOnly) name = 'select'; // «только просмотр» — без инструментов
+    tool = name;
+    pendingPicks = []; pickFrame = null; pickRefLine = null; pickCurve1 = null; // сбрасываем незавершённое построение
+    if (typeof clearPolyPicks === 'function' && name !== 'polygon') clearPolyPicks(); // отменяем недорисованный многоугольник
+    if (name !== 'midpoint') midPicks = [];
+    if (!MEASURE_PICKS[name]) measurePicks = [];
+    if (name !== 'angle_deg') angleDegPicks = [];
+    if (name !== 'vector') vectorPicks = [];
+    if (name !== 'farea') areaPicks = [];
+    if (name !== 'fintersect') fintPicks = [];
+    if (name !== 'regionsys') { regionParts = []; regionFrame = null; }
+    if (name !== 'macro') macroPickPts = [];
+    if (name !== 'macro_record') macroMode = null;
+    if (!MARK_PICKS[name]) markPicks = [];
+    if (name !== 'laser') laserDrawing = false;
+    if (!isEraser(name)) eraserActive = false;
+    if (name !== 'lasso') { lassoActive = false; if (lassoLine) lassoLine.visible(false); }
+    toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === name));
+    // В режиме выделения перетаскивание по пустому месту рисует рамку выделения,
+    // а не панорамирует, поэтому stage.draggable выключен везде. Панорама — на
+    // стрелках и колесе (зум).
+    stage.draggable(false);
+    stageEl.style.cursor =
+      (name === 'select') ? 'default' : (name === 'latex' || name === 'text' || name === 'text_plain') ? 'text' : 'crosshair';
+    nodes.forEach((node) => {
+      const e = elements.get(node.id());
+      node.draggable(name === 'select' && !viewOnly && (!e || (e.type !== 'frame' && !isPointBound(e) && !e.data.locked)));
+    });
+    // При уходе из select снимаем выделение, но АКТИВНОЕ окно сохраняем —
+    // чтобы можно было рисовать геометрию «внутри» него.
+    // Инструменты преобразований работают по выделению как по ИСТОЧНИКАМ и позволяют
+    // добирать объекты кликами — поэтому выделение НЕ сбрасываем.
+    const keepFrame = activeFrameId;
+    if (name !== 'select' && !XFORM_SPEC[name]) { clearSelection(); activeFrameId = keepFrame; }
+    if (XFORM_SPEC[name]) startXformTool();
+    updateFuncEditor();
+    if (typeof updateEraserPanel === 'function') updateEraserPanel();
+  }
+
+  // ── Выделение и удаление ───────────────────────────────────────────────
+  // Выделение в режиме select: клик по объекту — выбрать, Shift+клик — добавить,
+  // клик по пустому месту — снять. Рамку рисует Konva.Transformer (без ручек
+  // ресайза — только подсветка). Удаление выбранного — Delete / Backspace.
+  const selected = new Set();
+  // Рамку выделения рисует Konva.Transformer (без ручек — только подсветка).
+  const tr = new Konva.Transformer({
+    resizeEnabled: false, rotateEnabled: false,
+    borderStroke: '#4d7cfe', borderStrokeWidth: 1.5, borderDash: [4, 4], padding: 4,
+  });
+  layer.add(tr);
+
+  // ── Ресайз/гомотетия собственными угловыми ручками ────────────────────
+  // Konva.Transformer в нашей связке не запускал трансформ, поэтому делаем свои
+  // ручки на том же надёжном механизме, что перемещение (mousedown→stage mousemove).
+  const RESIZABLE = ['rect', 'ellipse', 'circle', 'latex', 'text', 'freehand', 'frame', 'shape', 'image', 'pdf'];
+  // Габариты объекта для ручек: у окна берём его прямоугольник из данных.
+  function elBox(el, node) {
+    if (el.type === 'frame') return { x: el.data.x, y: el.data.y, width: el.data.width, height: el.data.height };
+    return node.getClientRect({ relativeTo: layer });
+  }
+  const handlesGroup = new Konva.Group({ visible: false });
+  layer.add(handlesGroup);
+  const HCORNERS = ['tl', 'tr', 'bl', 'br'];
+  HCORNERS.forEach((c) => {
+    const h = new Konva.Rect({ name: c, width: 10, height: 10, fill: '#fff', stroke: '#4d7cfe', strokeWidth: 1.5, cornerRadius: 1 });
+    h.on('mousedown touchstart', (e) => { e.cancelBubble = true; startResize(c); });
+    h.on('mouseenter', () => { stageEl.style.cursor = (c === 'tl' || c === 'br') ? 'nwse-resize' : 'nesw-resize'; });
+    h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
+    handlesGroup.add(h);
+  });
+  // Боковые ручки для ТЕКСТА: тянешь влево/вправо — меняется ширина строки (перенос),
+  // высота подстраивается под содержимое. Показываются только у текста (вместо углов).
+  const HEDGES = ['ml', 'mr'];
+  HEDGES.forEach((c) => {
+    const h = new Konva.Rect({ name: c, width: 8, height: 18, fill: '#fff', stroke: '#4d7cfe', strokeWidth: 1.5, cornerRadius: 2, visible: false });
+    h.on('mousedown touchstart', (e) => { e.cancelBubble = true; startResize(c); });
+    h.on('mouseenter', () => { stageEl.style.cursor = 'ew-resize'; });
+    h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
+    handlesGroup.add(h);
+  });
+
+  // Ручки линии/стрелки: концы (a,b) + путевые точки кривизны. 'm' — центр, 'l'/'r'
+  // — центры левой/правой половин. Все три — точки НА кривой (равноправны, влияют
+  // локально и независимо). 'l'/'r' появляются после первого сгиба центральной.
+  const connHandles = new Konva.Group({ visible: false });
+  layer.add(connHandles);
+  const connHandleEls = {};
+  const CONN_HANDLES = ['a', 'b', 'm', 'l', 'r'];
+  const CONN_SLOT = { m: 'wm', l: 'wl', r: 'wr' };
+  const CONN_FRAC = { m: 0.5, l: 0.25, r: 0.75 };
+  function connSelectedEl() { if (selected.size !== 1) return null; const el = elements.get(Array.from(selected)[0]); return (el && (el.type === 'line' || el.type === 'arrow')) ? el : null; }
+  // Где сидит ручка (относит.): a=A, b=B; m/l/r — либо своя путевая точка, либо
+  // (пока не задана) точка на текущей кривой по доле длины.
+  function connHandleRel(d, k) {
+    const e = connEnds(d);
+    if (k === 'a') return e.A;
+    if (k === 'b') return e.B;
+    if (k === 'm' && d.elbow) return elbowMidHandle(d); // у уступа 'm' — ручка излома
+    const slot = d[CONN_SLOT[k]];
+    if (slot) return { x: slot[0], y: slot[1] };
+    return connPointAtFraction(d, CONN_FRAC[k]);
+  }
+  function positionConnHandlesAt(el, ox, oy, skip) {
+    const d = el.data;
+    CONN_HANDLES.forEach((k) => { if (k === skip) return; const P = connHandleRel(d, k); connHandleEls[k].position({ x: ox + P.x, y: oy + P.y }); });
+  }
+  function positionConnHandles(el, skip) { positionConnHandlesAt(el, el.data.x || 0, el.data.y || 0, skip); }
+  CONN_HANDLES.forEach((k) => {
+    const isEnd = k === 'a' || k === 'b';
+    const h = new Konva.Circle({ name: k, radius: 6, fill: isEnd ? '#4d7cfe' : '#fff', stroke: isEnd ? '#fff' : '#4d7cfe', strokeWidth: 2, draggable: true });
+    h.on('mouseenter', () => { stageEl.style.cursor = 'pointer'; });
+    h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
+    let cBefore = null;
+    h.on('dragstart', (e) => { e.cancelBubble = true; const el = connSelectedEl(); cBefore = el ? clone(el) : null; });
+    h.on('dragmove', (e) => {
+      e.cancelBubble = true;
+      const el = connSelectedEl(); if (!el) return;
+      const d = el.data, P = { x: h.x() - (d.x || 0), y: h.y() - (d.y || 0) };
+      if (k === 'a') { const p = (d.points || [0, 0, 0, 0]).slice(); p[0] = P.x; p[1] = P.y; if (d.divider === 'h') p[1] = p[3]; else if (d.divider === 'v') p[0] = p[2]; d.points = p; }
+      else if (k === 'b') { const p = (d.points || [0, 0, 0, 0]).slice(); p[2] = P.x; p[3] = P.y; if (d.divider === 'h') p[3] = p[1]; else if (d.divider === 'v') p[2] = p[0]; d.points = p; }
+      else if (k === 'm' && d.elbow) { // сдвиг излома уступа вдоль главной оси
+        const en = connEnds(d), dx = en.B.x - en.A.x, dy = en.B.y - en.A.y, cl = (v) => Math.max(0.02, Math.min(0.98, v));
+        d.elbowT = (Math.abs(dx) >= Math.abs(dy)) ? cl((P.x - en.A.x) / (dx || 1)) : cl((P.y - en.A.y) / (dy || 1));
+      } else { connMigrateCurve(d); d[CONN_SLOT[k]] = [P.x, P.y]; } // путевая точка идёт РОВНО за курсором
+      const node = nodes.get(el.id); if (node) node.draw();
+      positionConnHandles(el, k); layer.batchDraw(); repositionConnPanel();
+    });
+    h.on('dragend', (e) => { e.cancelBubble = true; const el = connSelectedEl(); if (el && cBefore) { histUpd(cBefore, el); send({ action: 'element_update', element: el }); } cBefore = null; positionHandles(); });
+    connHandles.add(h); connHandleEls[k] = h;
+  });
+
+  let resizeState = null;
+  const OPP = { tl: 'br', tr: 'bl', bl: 'tr', br: 'tl' };
+  function boxCorners(b) {
+    return { tl: { x: b.x, y: b.y }, tr: { x: b.x + b.width, y: b.y }, bl: { x: b.x, y: b.y + b.height }, br: { x: b.x + b.width, y: b.y + b.height } };
+  }
+  function snapshotGeom(el) {
+    const d = el.data;
+    return { width: d.width, height: d.height, radiusX: d.radiusX, radiusY: d.radiusY, r: d.r, points: (d.points || []).slice() };
+  }
+  function applyScaledSize(el, node, s, start) {
+    const d = el.data;
+    if (el.type === 'rect') { d.width = Math.max(1, start.width * s); d.height = Math.max(1, start.height * s); node.width(d.width); node.height(d.height); }
+    else if (el.type === 'ellipse') { d.radiusX = Math.max(1, start.radiusX * s); d.radiusY = Math.max(1, start.radiusY * s); node.radiusX(d.radiusX); node.radiusY(d.radiusY); }
+    else if (el.type === 'circle') { d.r = Math.max(1, start.r * s); node.radius(d.r); }
+    else if (el.type === 'latex' || el.type === 'text') { d.width = Math.max(2, start.width * s); d.height = Math.max(2, start.height * s); node.width(d.width); node.height(d.height); }
+    else if (el.type === 'line' || el.type === 'freehand') { d.points = start.points.map((v) => v * s); node.points(d.points); }
+    else if (el.type === 'shape') { d.width = Math.max(1, start.width * s); d.height = Math.max(1, start.height * s); }
+    else if (el.type === 'image' || el.type === 'pdf') { d.width = Math.max(8, start.width * s); d.height = Math.max(8, start.height * s); node.width(d.width); node.height(d.height); if (el.type === 'pdf') { node._pdfKey = null; renderPdfInto(node, el); } }
+  }
+  let _txtRenderAt = 0;
+  function scheduleTextRender(el, node) { const now = Date.now(); if (now - _txtRenderAt >= 80) { _txtRenderAt = now; renderTextInto(node, el); } }
+  function startResize(corner) {
+    const id = Array.from(selected)[0];
+    const el = elements.get(id), node = nodes.get(id);
+    if (!el || !node) { updateDebug('resize: нет объекта'); return; }
+    const b = elBox(el, node);
+    // Боковые ручки текста: фиксирован противоположный край (по X).
+    let F;
+    if (corner === 'ml') F = { x: b.x + b.width, y: b.y };
+    else if (corner === 'mr') F = { x: b.x, y: b.y };
+    else F = boxCorners(b)[OPP[corner]];
+    resizeState = { id, corner, F, w0: Math.max(1, b.width), h0: Math.max(1, b.height), start: snapshotGeom(el), histBefore: clone(el) };
+    updateDebug('resize СТАРТ ' + corner);
+  }
+  function doResize() {
+    const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
+    if (!el || !node) return;
+    const P = worldPoint();
+    if (el.type === 'frame') {
+      // Окно: меняем размер прямоугольника (произвольно по осям), масштаб
+      // плоскости (unit) и центр не трогаем — видно больше/меньше плоскости.
+      const F = resizeState.F;
+      // Умные направляющие при ресайзе окна: липнем тянущимся углом к соседям.
+      if (!guideRefs) guideRefs = collectGuideRefs([resizeState.id]);
+      const R = frameCornerSnap(P, F);
+      const w = Math.max(80, Math.abs(R.x - F.x));
+      const h = Math.max(60, Math.abs(R.y - F.y));
+      el.data.x = Math.min(R.x, F.x); el.data.y = Math.min(R.y, F.y);
+      el.data.width = w; el.data.height = h;
+      drawGuides(R.marks);
+      node.position({ x: el.data.x, y: el.data.y });
+      node.clipWidth(w); node.clipHeight(h);
+      const bg = node.findOne('.fbg'); if (bg) bg.size({ width: w, height: h });
+      const hd = node.findOne('.fheader'); if (hd) hd.width(w);
+      const del = node.findOne('.fdel'); if (del) del.x(w - 16);
+      recomputeGeometry(); // привязанная геометрия — под новый размер окна
+      positionHandles();
+      tr.forceUpdate(); // пунктирная рамка следует за новым размером окна
+      if (activeFrameId === el.id) updateFuncEditor();
+      layer.draw();
+      updateDebug('окно ' + Math.round(w) + '×' + Math.round(h));
+      return;
+    }
+    if (el.type === 'text') {
+      // Текст: тянем ширину строки (перенос), высота — под содержимое. Правим wrapWidth.
+      const F = resizeState.F, newW = Math.max(40, Math.abs(P.x - F.x));
+      el.data.wrapWidth = newW;
+      el.data.x = Math.min(P.x, F.x); node.x(el.data.x);
+      node.width(newW); // мгновенный предпросмотр до асинхронной перерисовки
+      scheduleTextRender(el, node); // перерисовать с переносом (троттлинг)
+      positionHandles(); tr.forceUpdate(); layer.batchDraw();
+      updateDebug('текст ширина ' + Math.round(newW));
+      return;
+    }
+    const sx = Math.abs(P.x - resizeState.F.x) / resizeState.w0;
+    const sy = Math.abs(P.y - resizeState.F.y) / resizeState.h0;
+    let s = Math.max(0.05, Math.min(40, Math.max(sx, sy))); // равномерно (гомотетия)
+    // Умные направляющие: липнем ближним краём угла к соседям (масштаб один на обе оси).
+    if (!guideRefs) guideRefs = collectGuideRefs([resizeState.id]);
+    const dirX = Math.sign(P.x - resizeState.F.x) || 1, dirY = Math.sign(P.y - resizeState.F.y) || 1;
+    const uni = snapUniformScale(resizeState.F, dirX, dirY, resizeState.w0, resizeState.h0, s);
+    s = uni.s; drawGuides(uni.lines);
+    applyScaledSize(el, node, s, resizeState.start);
+    // двигаем узел так, чтобы противоположный (зафиксированный) угол остался на F
+    const b = node.getClientRect({ relativeTo: layer });
+    const cur = boxCorners(b)[OPP[resizeState.corner]];
+    node.x(node.x() + (resizeState.F.x - cur.x));
+    node.y(node.y() + (resizeState.F.y - cur.y));
+    el.data.x = node.x(); el.data.y = node.y();
+    recomputeGeometry();
+    positionHandles();
+    if (shapeTextItems.has(el.id)) repositionShapeText(el.id); // текст внутри — под новый размер
+    tr.forceUpdate();
+    layer.batchDraw();
+    updateDebug('resize s=' + s.toFixed(2));
+  }
+  function endResize() {
+    if (!resizeState) return;
+    const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
+    const hist = resizeState.histBefore, wasText = el && el.type === 'text';
+    resizeState = null; // сбрасываем ДО финальной перерисовки, чтобы она отправила update
+    clearGuides();
+    if (el) {
+      if (wasText && node) renderTextInto(node, el); // финальная перерисовка с переносом (сама шлёт update)
+      else send({ action: 'element_update', element: el });
+      if (hist) histUpd(hist, el);
+    }
+    updateDebug('resize КОНЕЦ');
+  }
+
+  const BOARD_VER = '20260614z55';
+  (function () { const v = document.getElementById('board-version'); if (v) v.textContent = 'v' + BOARD_VER; })();
+  function updateDebug(extra) {
+    const el = document.getElementById('board-debug');
+    if (!el) return;
+    el.textContent = 'v' + BOARD_VER + '  выбрано: ' + selected.size
+      + '  ручки: ' + (handlesGroup.visible() ? 'да' : 'нет')
+      + (extra ? '  ' + extra : '');
+  }
+
+  function positionHandles() {
+    const ids = Array.from(selected);
+    const el = ids.length === 1 ? elements.get(ids[0]) : null;
+    // Линия/стрелка — ручки концов + контроль (вместо рамки-ресайза).
+    if (el && (el.type === 'line' || el.type === 'arrow') && tool === 'select' && !(el.data && el.data.locked) && !(el.data && el.data.hidden)) {
+      if (handlesGroup.visible()) handlesGroup.hide();
+      const r = 6 / stage.scaleX();
+      CONN_HANDLES.forEach((k) => { const h = connHandleEls[k]; h.radius(r); h.strokeWidth(2 / stage.scaleX()); });
+      // 'm' есть всегда: у прямой — приглашение согнуть, у кривой — центр, у уступа
+      // — ручка излома. 'l'/'r' — только у согнутой кривой. У разделителя гибки нет —
+      // только концы a/b (двигаются строго по своей оси).
+      const dd = el.data, isDiv = !!dd.divider, curved = connIsCurved(dd) && !dd.elbow;
+      connHandleEls.m.visible(!isDiv);
+      connHandleEls.l.visible(curved && !isDiv);
+      connHandleEls.r.visible(curved && !isDiv);
+      positionConnHandles(el);
+      connHandles.show(); connHandles.moveToTop();
+      showConnPanel(el); hideShapePanel();
+      layer.draw(); updateDebug(); return;
+    }
+    hideConnPanel();
+    if (connHandles.visible()) connHandles.hide();
+    // Панель фигуры — у одиночной фигуры (прямоугольник/эллипс/фигура).
+    const shapeEl = (el && SHAPE_TYPES_PANEL.indexOf(el.type) >= 0 && tool === 'select' && !(el.data && el.data.locked) && !(el.data && el.data.hidden)) ? el : null;
+    if (shapeEl) showShapePanel(shapeEl); else hideShapePanel();
+    const node = el && RESIZABLE.includes(el.type) ? nodes.get(ids[0]) : null;
+    if (!node) {
+      if (handlesGroup.visible()) { handlesGroup.hide(); }
+      layer.draw();
+      updateDebug();
+      return;
+    }
+    const b = elBox(el, node);
+    const sz = 10 / stage.scaleX();
+    const isText = el.type === 'text';
+    const pts = boxCorners(b);
+    const edgePts = { ml: { x: b.x, y: b.y + b.height / 2 }, mr: { x: b.x + b.width, y: b.y + b.height / 2 } };
+    handlesGroup.getChildren().forEach((h) => {
+      const name = h.name(), isEdge = (name === 'ml' || name === 'mr');
+      h.visible(isText ? isEdge : !isEdge); // текст — боковые ручки, остальное — угловые
+      if (isText !== isEdge) return;
+      if (isEdge) {
+        const p = edgePts[name], ew = 8 / stage.scaleX(), eh = 20 / stage.scaleX();
+        h.size({ width: ew, height: eh }); h.strokeWidth(1.5 / stage.scaleX());
+        h.position({ x: p.x - ew / 2, y: p.y - eh / 2 });
+      } else {
+        const p = pts[name];
+        h.size({ width: sz, height: sz }); h.strokeWidth(1.5 / stage.scaleX());
+        h.position({ x: p.x - sz / 2, y: p.y - sz / 2 });
+      }
+    });
+    handlesGroup.show();
+    handlesGroup.moveToTop();
+    layer.draw(); // синхронно (rAF может быть не готов) — ручки появляются сразу
+    updateDebug();
+  }
+
+  // Подсветка выделенных построений/окружностей (у них нет рамки трансформера).
+  function refreshConstructionHighlight() {
+    elements.forEach((el) => {
+      if (!(CONSTRUCT_LINES.indexOf(el.type) >= 0 || el.type === 'circ' || isFilledPoly(el.type))) return;
+      const n = nodes.get(el.id); if (!n) return;
+      const on = selected.has(el.id);
+      n.stroke(on ? '#4d7cfe' : (el.data.color || el.data.stroke || '#1f2937'));
+      n.strokeWidth((el.data.strokeWidth || 2) + (on ? 1.5 : 0));
+    });
+  }
+  function refreshTransformer() {
+    // Построения (линии ±∞) и окружности в трансформер не берём (рамка/ресайз не нужны).
+    const sel = Array.from(selected).map((id) => nodes.get(id))
+      .filter((n) => { const e = n && elements.get(n.id()); return e && !(e.type === 'point' || e.type === 'angle' || CONSTRUCT_LINES.indexOf(e.type) >= 0 || e.type === 'circ' || isFilledPoly(e.type)); });
+    tr.nodes(sel);
+    tr.moveToTop();
+    // DOM-объекты (текст/виджеты) трансформер не оборачивает — показываем рамку через класс.
+    if (widgetItems.size) widgetItems.forEach((it, id) => it.wrapper.classList.toggle('wsel', selected.has(id)));
+    refreshConstructionHighlight();
+    positionHandles();
+    updateFuncEditor();
+    syncPointSettings();
+    syncFigureSettings();
+    updatePdfControls();
+  }
+  function clearSelection() {
+    activeFrameId = null; // клик по пустому — деактивировать окно
+    if (selected.size === 0) { tr.nodes([]); updateFuncEditor(); return; }
+    selected.clear();
+    refreshTransformer();
+  }
+
+  // ── Контекстный редактор функций у выделенного окна ────────────────────
+  const funcEditor = document.getElementById('func-editor');
+  const feInput = document.getElementById('fe-input');
+  const feList = document.getElementById('fe-list');
+  let activeFrameId = null;
+
+  function singleSelectedFrame() {
+    if (selected.size !== 1) return null;
+    const el = elements.get(Array.from(selected)[0]);
+    return (el && el.type === 'frame') ? el : null;
+  }
+  let _feFrame = null;
+  function updateFuncEditor() {
+    updateStoryboard(); // раскадровка обновляется в тех же точках, что и редактор функций
+    updateFrameExitBtn(); // и кнопка «выйти из окна» — тоже
+    if (!funcEditor) return;
+    // Редактор функций показываем у АКТИВНОГО окна и только в режиме выделения.
+    const fr = (tool === 'select' && activeFrameId) ? elements.get(activeFrameId) : null;
+    if (!fr || fr.type !== 'frame') { funcEditor.hidden = true; _feFrame = null; return; }
+    funcEditor.hidden = false;
+    if (_feFrame !== fr.id) { _feFrame = fr.id; renderFuncList(fr.id); }
+    positionFuncEditor(fr);
+  }
+  function positionFuncEditor(fr) {
+    const s = stage.scaleX();
+    const winLeft = fr.data.x * s + stage.x();
+    const winTop = fr.data.y * s + stage.y() + 56; // 56 — высота навбара над холстом
+    const winH = fr.data.height * s, W = 240;
+    // Панель слева от окна, в полную его высоту; если слева не влезает — справа.
+    let left = winLeft - W - 10;
+    if (left < 8) left = winLeft + fr.data.width * s + 10;
+    funcEditor.style.left = left + 'px';
+    funcEditor.style.top = Math.max(62, winTop) + 'px';
+    funcEditor.style.height = Math.max(120, winH) + 'px';
+  }
+  // ── Выход из окна на весь экран ────────────────────────────────────────
+  // Когда активное матокно занимает почти весь экран, два пальца тачпада зумят
+  // его плоскость, и «улететь» на доску нельзя (колесо перехватывается окном).
+  // Кнопка деактивирует окно (колесо снова двигает доску) и отдаляет вид,
+  // показывая окно целиком.
+  function frameScreenRect(fr) {
+    const s = stage.scaleX();
+    return { left: fr.data.x * s + stage.x(), top: fr.data.y * s + stage.y() + 56, w: fr.data.width * s, h: fr.data.height * s };
+  }
+  function updateFrameExitBtn() {
+    if (!frameExitBtn) return;
+    const fr = activeFrameId && elements.get(activeFrameId);
+    let show = false;
+    if (fr && fr.type === 'frame') {
+      const r = frameScreenRect(fr), vw = window.innerWidth, vh = window.innerHeight;
+      const visW = Math.min(r.left + r.w, vw) - Math.max(r.left, 0);
+      const visH = Math.min(r.top + r.h, vh) - Math.max(r.top, 56);
+      const cov = (Math.max(0, visW) * Math.max(0, visH)) / (vw * Math.max(1, vh - 56));
+      show = cov > 0.65; // окно закрывает ≳2/3 холста — легко «застрять» внутри
+    }
+    frameExitBtn.hidden = !show;
+  }
+  function fitFrameToView(fr, frac) {
+    const vw = window.innerWidth, vh = window.innerHeight - 56;
+    const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
+      Math.min(frac * vw / Math.max(1, fr.data.width), frac * vh / Math.max(1, fr.data.height))));
+    stage.scale({ x: target, y: target });
+    const cxW = fr.data.x + fr.data.width / 2, cyW = fr.data.y + fr.data.height / 2;
+    stage.position({ x: vw / 2 - cxW * target, y: vh / 2 - cyW * target }); // центр окна → центр экрана
+    scheduleViewRedraw(); updateZoomLabel(); repositionConnPanel();
+  }
+  function exitActiveFrame() {
+    const fr = activeFrameId && elements.get(activeFrameId);
+    clearSelection();                          // окно деактивировано — колесо снова двигает доску
+    if (fr && fr.type === 'frame') fitFrameToView(fr, 0.6);
+    updateFrameExitBtn();                       // спрятать кнопку
+  }
+  if (frameExitBtn) frameExitBtn.addEventListener('click', exitActiveFrame);
+  // ── Настройщик алгебры окна: список всех объектов с редактированием ──────
+  function algPName(id) { const p = elements.get(id); return (p && p.type === 'point') ? pointName(p) : '?'; }
+  function algDescLine(e) {
+    const nm = { segment: 'отрезок', ray: 'луч', gline: 'прямая', perpbis: 'сер. перпендикуляр', perp: 'перпендикуляр', parallel: 'параллель', bisector: 'биссектриса' }[e.type] || 'прямая';
+    return (e.data.a && e.data.b) ? nm + ' ' + algPName(e.data.a) + algPName(e.data.b) : nm;
+  }
+  function algDescPoly(e) {
+    if (e.type === 'regpoly') return 'правильный ' + (e.data.n || '') + '-угольник';
+    return 'многоугольник ' + (e.data.pts || []).map(algPName).join('');
+  }
+  function algDescAngle(e) { return '∠' + algPName(e.data.a) + algPName(e.data.b) + algPName(e.data.c); }
+  function algDescAnalysis(e) {
+    const ex = (id) => { const f = elements.get(id); return f ? f.data.expr : '?'; };
+    if (e.type === 'ftangent') return 'касательная к y=' + ex(e.data.func) + ' при x=' + (Math.round(e.data.x0 * 100) / 100);
+    if (e.type === 'farea') return 'площадь под y=' + ex(e.data.func) + ' на [' + (Math.round(Math.min(e.data.a, e.data.b) * 100) / 100) + '; ' + (Math.round(Math.max(e.data.a, e.data.b) * 100) / 100) + ']';
+    return 'пересечение y=' + ex(e.data.f) + ' и y=' + ex(e.data.g);
+  }
+  function regionFuncExpr(id) { const f = elements.get(id); return f ? f.data.expr : '?'; }
+  function regionShortDesc(e) { const n = (e.data.parts || []).length; return n <= 1 ? 'область неравенства' : 'система из ' + n + ' неравенств'; }
+  const EYE_ON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4l16 16"/><path d="M9.9 5.2A9.6 9.6 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.6M6.5 7.5A17 17 0 0 0 2 12s3.5 7 10 7a9.6 9.6 0 0 0 3.4-.6"/></svg>';
+  function algEyeBtn(e) { const hid = !!e.data.hidden; return '<button class="fe-eye' + (hid ? ' off' : '') + '" data-eye="' + e.id + '" title="' + (hid ? 'Показать' : 'Скрыть') + '">' + (hid ? EYE_OFF : EYE_ON) + '</button>'; }
+  function algObjRow(e, desc) {
+    return '<div class="fe-obj">' + odescHtml(e, desc)
+      + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+  }
+  function algParamRows(expr, params, exclude) {
+    let html = '';
+    funcVarsOf(expr, exclude).forEach((v) => {
+      const p = params[v]; if (!p) return;
+      html += '<div class="fe-param"><span class="fe-pname">' + escapeHtml(v) + ' =</span>'
+        + '<input type="range" class="fe-prange" data-p="' + escapeAttr(v) + '" min="' + p.min + '" max="' + p.max + '" step="0.1" value="' + p.v + '">'
+        + '<span class="fe-pval" data-pv="' + escapeAttr(v) + '">' + fmtMeasure(p.v) + '</span></div>'
+        + '<div class="fe-pbounds"><input class="fe-pmin" data-p="' + escapeAttr(v) + '" type="number" step="1" value="' + p.min + '"><span>…</span><input class="fe-pmax" data-p="' + escapeAttr(v) + '" type="number" step="1" value="' + p.max + '"></div>';
+    });
+    return html;
+  }
+  // Редактируемая ячейка формулы (функция/неявная кривая): имя + правка выражения на месте.
+  function algFuncExprCell(e, kind) {
+    return (objName(e) ? '<b class="fe-nm">' + escapeHtml(objName(e)) + '</b>:&nbsp;' : '')
+      + '<input class="fe-editexpr" data-id="' + e.id + '" data-kind="' + kind + '" value="' + escapeAttr(e.data.expr) + '" spellcheck="false">';
+  }
+  function renderFuncList(frameId) {
+    if (!feList) return;
+    const fr = elements.get(frameId); if (!fr) { feList.innerHTML = ''; return; }
+    const params = fr.data.params || {};
+    const g = { point: [], line: [], circ: [], conic: [], poly: [], vector: [], angle: [], measure: [], func: [], implicit: [], analysis: [], region: [] };
+    elements.forEach((e) => {
+      if (!e.data || e.id === frameId || e.data.frame !== frameId) return;
+      if (e.type === 'point') g.point.push(e);
+      else if (CONSTRUCT_LINES.indexOf(e.type) >= 0) g.line.push(e);
+      else if (e.type === 'circ') g.circ.push(e);
+      else if (e.type === 'conic') g.conic.push(e);
+      else if (isFilledPoly(e.type)) g.poly.push(e);
+      else if (e.type === 'vector') g.vector.push(e);
+      else if (e.type === 'angle') g.angle.push(e);
+      else if (e.type === 'measure') g.measure.push(e);
+      else if (e.type === 'func') g.func.push(e);
+      else if (e.type === 'implicit') g.implicit.push(e);
+      else if (e.type === 'ftangent' || e.type === 'farea' || e.type === 'fintersect') g.analysis.push(e);
+      else if (e.type === 'region') g.region.push(e);
+    });
+    let html = '';
+    if (g.point.length) {
+      html += '<div class="fe-group-label">Точки</div>';
+      g.point.forEach((e) => {
+        const free = !e.data.on; // производные/привязанные — только просмотр координат
+        html += '<div class="fe-obj"><span class="fe-oname">' + escapeHtml(pointName(e)) + '</span>'
+          + '<input class="fe-coord" data-id="' + e.id + '" data-axis="x" type="number" step="0.5" value="' + fmtCoord(e.data.mx || 0) + '"' + (free ? '' : ' disabled') + '>'
+          + '<input class="fe-coord" data-id="' + e.id + '" data-axis="y" type="number" step="0.5" value="' + fmtCoord(e.data.my || 0) + '"' + (free ? '' : ' disabled') + '>'
+          + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>'
+          + algCondRow(e);
+      });
+    }
+    if (g.func.length) {
+      html += '<div class="fe-group-label">Функции</div>';
+      g.func.forEach((e) => {
+        html += '<div class="fe-item"><span class="fe-sw" style="background:' + (e.data.color || '#1f6feb') + '"></span>'
+          + algFuncExprCell(e, 'func')
+          + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>'
+          + algParamRows(e.data.expr, params) + algCondRow(e);
+      });
+    }
+    if (g.implicit.length) {
+      html += '<div class="fe-group-label">Неявные кривые</div>';
+      g.implicit.forEach((e) => {
+        html += '<div class="fe-item"><span class="fe-sw" style="background:' + (e.data.color || '#c0392b') + '"></span>'
+          + algFuncExprCell(e, 'implicit')
+          + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>'
+          + algParamRows(e.data.expr, params, ['y']) + algCondRow(e);
+      });
+    }
+    if (g.line.length) {
+      html += '<div class="fe-group-label">Прямые и отрезки</div>';
+      g.line.forEach((e) => { html += algLineRow(e) + algCondRow(e); });
+    }
+    if (g.circ.length) {
+      html += '<div class="fe-group-label">Окружности</div>';
+      g.circ.forEach((e) => { html += algCircleRow(e) + algCondRow(e); });
+    }
+    if (g.conic.length) {
+      html += '<div class="fe-group-label">Коники</div>';
+      g.conic.forEach((e) => { html += algConicRow(e) + algCondRow(e); });
+    }
+    if (g.poly.length) {
+      html += '<div class="fe-group-label">Многоугольники</div>';
+      g.poly.forEach((e) => { html += algObjRow(e, algDescPoly(e)) + algCondRow(e); });
+    }
+    if (g.vector.length) {
+      html += '<div class="fe-group-label">Векторы</div>';
+      g.vector.forEach((e) => { html += algVectorRow(e) + algCondRow(e); });
+    }
+    if (g.angle.length) {
+      html += '<div class="fe-group-label">Углы</div>';
+      g.angle.forEach((e) => { html += algObjRow(e, algDescAngle(e)) + algCondRow(e); });
+    }
+    if (g.measure.length) {
+      html += '<div class="fe-group-label">Измерения</div>';
+      g.measure.forEach((e) => { html += algMeasureRow(e) + algCondRow(e); });
+    }
+    if (g.analysis.length) {
+      html += '<div class="fe-group-label">Анализ</div>';
+      g.analysis.forEach((e) => { html += algObjRow(e, algDescAnalysis(e)); });
+    }
+    if (g.region.length) {
+      html += '<div class="fe-group-label">Области (неравенства)</div>';
+      g.region.forEach((e) => {
+        html += '<div class="fe-item"><span class="fe-sw" style="background:' + (e.data.color || '#2e86de') + '"></span>'
+          + '<span class="fe-expr">' + escapeHtml(regionShortDesc(e)) + '</span>'
+          + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+        (e.data.parts || []).forEach((p, idx) => {
+          html += '<div class="fe-param"><span class="fe-pname">y ' + (p.sense === 'gt' ? '≥' : '≤') + ' ' + escapeHtml(regionFuncExpr(p.func)) + '</span>'
+            + '<button class="fe-rsense" data-region="' + e.id + '" data-part="' + idx + '">' + (p.sense === 'gt' ? 'выше' : 'ниже') + '</button></div>';
+        });
+      });
+    }
+    feList.innerHTML = html || '<div class="fe-empty">окно пустое — добавьте объекты или формулу</div>';
+    syncFrameBg(fr);
+  }
+  function syncFrameBg(fr) {
+    const box = document.getElementById('fe-bg'); if (!box || !fr) return;
+    // Сетка и Точки — взаимоисключающие СТИЛИ рисунка (не горят вместе); Оси — отдельно.
+    const gridOn = fr.data.gridOn !== false, dots = fr.data.gridStyle === 'dots';
+    const st = { grid: gridOn && !dots, dots: gridOn && dots, axes: fr.data.axesOn !== false };
+    box.querySelectorAll('button').forEach((b) => b.classList.toggle('on', !!st[b.dataset.bg]));
+    const cbox = document.getElementById('fe-bgcolor');
+    if (cbox) {
+      const cur = (fr.data.bgColor || '#ffffff').toLowerCase();
+      const presets = Array.from(cbox.querySelectorAll('.bgdot')).map((b) => b.dataset.color.toLowerCase());
+      cbox.querySelectorAll('.bgdot').forEach((b) => b.classList.toggle('on', b.dataset.color.toLowerCase() === cur));
+      const pick = document.getElementById('fe-bgcolor-custom');
+      if (pick) { if (/^#[0-9a-f]{6}$/.test(cur)) pick.value = cur; pick.classList.toggle('on', presets.indexOf(cur) < 0); }
+    }
+    const gbox = document.getElementById('fe-gridcolor');
+    if (gbox) {
+      const gcur = (fr.data.gridColor || '').toLowerCase();
+      const gdots = Array.from(gbox.querySelectorAll('.bgdot'));
+      gdots.forEach((b) => b.classList.toggle('on', b.dataset.color.toLowerCase() === gcur));
+      const gpick = document.getElementById('fe-gridcolor-custom');
+      if (gpick) { if (/^#[0-9a-f]{6}$/.test(gcur)) gpick.value = gcur; gpick.classList.toggle('on', !!gcur && gdots.every((b) => b.dataset.color.toLowerCase() !== gcur)); }
+    }
+  }
+  function setFrameBgColor(color) {
+    const fr = activeFrameId && elements.get(activeFrameId); if (!fr || fr.type !== 'frame') return;
+    const before = clone(fr); fr.data.bgColor = color;
+    const node = nodes.get(fr.id); if (node) { const bg = node.findOne('.fbg'); if (bg) bg.fill(color || '#ffffff'); }
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    layer.batchDraw(); syncFrameBg(fr);
+  }
+  function setFrameGridColor(color) {
+    const fr = activeFrameId && elements.get(activeFrameId); if (!fr || fr.type !== 'frame') return;
+    const before = clone(fr); fr.data.gridColor = color;
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    layer.batchDraw(); syncFrameBg(fr);
+  }
+  function toggleFrameBg(which) {
+    const fr = activeFrameId && elements.get(activeFrameId); if (!fr || fr.type !== 'frame') return;
+    const before = clone(fr);
+    const gridOn = fr.data.gridOn !== false, dots = fr.data.gridStyle === 'dots';
+    if (which === 'grid') {
+      // «Сетка» — линии. Если уже линии — выключаем рисунок; иначе включаем линии.
+      if (gridOn && !dots) fr.data.gridOn = false;
+      else { fr.data.gridOn = true; fr.data.gridStyle = 'lines'; }
+    } else if (which === 'dots') {
+      // «Точки». Если уже точки — выключаем; иначе включаем точки (взамен линий).
+      if (gridOn && dots) fr.data.gridOn = false;
+      else { fr.data.gridOn = true; fr.data.gridStyle = 'dots'; }
+    } else if (which === 'axes') {
+      fr.data.axesOn = !(fr.data.axesOn !== false);
+    }
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    layer.batchDraw(); syncFrameBg(fr);
+  }
+  // Единый роутер числовых полей панели.
+  function algEditNum(id, axis, val) {
+    if (axis === 'link' || axis === 'linb' || axis === 'linx') return algEditLine(id, axis, val);
+    return algEditCoord(id, axis, val);
+  }
+  // Правка координаты точки / радиуса (r) / квадрата радиуса (r²) окружности.
+  function algEditCoord(id, axis, val) {
+    const el = elements.get(id); if (!el || !isFinite(val)) return;
+    const before = clone(el);
+    if (el.type === 'point') { if (axis === 'x') el.data.mx = val; else el.data.my = val; }
+    else if (el.type === 'circ') { el.data.r = (axis === 'r2') ? Math.sqrt(Math.max(0, val)) : Math.max(0, val); }
+    histUpd(before, el); recomputeGeometry(); send({ action: 'element_update', element: el }); layer.batchDraw();
+  }
+  // Прямая по двум свободным точкам A,B: правка наклона k / свободного члена b / x
+  // (для вертикальной). «Переопределяем» прямую, двигая её опорные точки.
+  function algEditLine(id, axis, val) {
+    const e = elements.get(id); if (!e || !isFinite(val)) return;
+    const A = elements.get(e.data.a), B = elements.get(e.data.b);
+    if (!A || !B || A.type !== 'point' || B.type !== 'point') return;
+    const bA = clone(A), bB = clone(B);
+    const ax = A.data.mx || 0, ay = A.data.my || 0, bx = B.data.mx || 0, by = B.data.my || 0;
+    if (axis === 'linx') { A.data.mx = val; B.data.mx = val; }
+    else if (axis === 'link') { if (Math.abs(bx - ax) < 1e-9) return; B.data.my = ay + val * (bx - ax); } // держим A, наклоняем к B
+    else if (axis === 'linb') { const k = (Math.abs(bx - ax) < 1e-9) ? 0 : (by - ay) / (bx - ax); A.data.my = k * ax + val; B.data.my = k * bx + val; } // вертикальный сдвиг под свободный член
+    histUpd(bA, A); histUpd(bB, B); recomputeGeometry();
+    send({ action: 'element_update', element: A }); send({ action: 'element_update', element: B }); layer.batchDraw();
+  }
+  // Правка формулы функции/неявной кривой «на месте»: тот же объект (id, цвет, имя),
+  // просто новое выражение. Невалидный ввод — подсветить и не менять объект.
+  function editFuncExpr(id, kind, raw, inputEl) {
+    const el = elements.get(id); if (!el) return;
+    const newExpr = String(raw || '').trim();
+    if (!newExpr) { if (inputEl) inputEl.value = el.data.expr; return; }
+    if (newExpr === el.data.expr) { if (inputEl) inputEl.classList.remove('invalid'); return; }
+    const ok = (kind === 'implicit') ? compileImplicit(newExpr) : compileFunc(newExpr);
+    if (!ok) {
+      boardHint(kind === 'implicit' ? 'Не понял уравнение — проверьте запись' : 'Не понял формулу — проверьте запись');
+      if (inputEl) inputEl.classList.add('invalid');
+      return;
+    }
+    if (inputEl) inputEl.classList.remove('invalid');
+    const before = clone(el); el.data.expr = newExpr;
+    const fr = elements.get(el.data.frame);
+    if (fr) { const bf = clone(fr); if (ensureFrameParams(fr, newExpr, kind === 'implicit' ? ['y'] : undefined)) { histUpd(bf, fr); send({ action: 'element_update', element: fr }); } }
+    histUpd(before, el); send({ action: 'element_update', element: el });
+    redrawFuncs(); renderFuncList(el.data.frame);
+  }
+  // Уравнение прямой по её опорным точкам (в координатах плоскости окна).
+  function algLineEq(e) {
+    const A = elements.get(e.data.a), B = elements.get(e.data.b);
+    if (!A || !B || A.type !== 'point' || B.type !== 'point') return null;
+    const ax = A.data.mx || 0, ay = A.data.my || 0, bx = B.data.mx || 0, by = B.data.my || 0;
+    const editable = !A.data.on && !B.data.on;
+    if (Math.abs(bx - ax) < 1e-9) return { vertical: true, c: ax, editable };
+    const k = (by - ay) / (bx - ax);
+    return { vertical: false, k, b: ay - k * ax, editable };
+  }
+  // Строка прямой: описание + (для отрезка/луча/прямой по 2 свободным точкам)
+  // редактируемое уравнение y = k·x + b (или x = c для вертикальной).
+  function algLineRow(e) {
+    let html = '<div class="fe-obj">' + odescHtml(e, algDescLine(e)) + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+    const hasAB = (e.type === 'segment' || e.type === 'ray' || e.type === 'gline') && e.data.a && e.data.b;
+    if (!hasAB) return html;
+    const eq = algLineEq(e); if (!eq) return html;
+    if (eq.editable) {
+      if (eq.vertical) html += '<div class="fe-subrow">x =<input class="fe-coord" data-id="' + e.id + '" data-axis="linx" type="number" step="0.5" value="' + fmtCoord(eq.c) + '"></div>';
+      else html += '<div class="fe-subrow">y =<input class="fe-coord" data-id="' + e.id + '" data-axis="link" type="number" step="0.1" value="' + fmtCoord(eq.k) + '"> · x +<input class="fe-coord" data-id="' + e.id + '" data-axis="linb" type="number" step="0.5" value="' + fmtCoord(eq.b) + '"></div>';
+    } else {
+      html += '<div class="fe-subrow">' + escapeHtml(eq.vertical ? ('x = ' + fmtCoord(eq.c)) : ('y = ' + fmtCoord(eq.k) + 'x + ' + fmtCoord(eq.b))) + '</div>';
+    }
+    return html;
+  }
+  // Строка окружности: центр (координаты, редакт. если центр — свободная точка) + r².
+  function algCircleRow(e) {
+    const d = e.data;
+    const centerId = (d.kind === 'cp' || d.kind === 'cr' || d.kind === 'compass') ? d.center : null;
+    const cpt = centerId ? elements.get(centerId) : null;
+    const fr = d.frame ? elements.get(d.frame) : null, unit = fr ? (fr.data.unit || 40) : 1;
+    const rMath = (d.kind === 'cr') ? (d.r || 0) : (function () { const C = circleGeom(e); return C ? C.r / unit : 0; })();
+    let html = '<div class="fe-obj">' + odescHtml(e, 'окружность') + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+    let center;
+    if (cpt && cpt.type === 'point') {
+      const free = !cpt.data.on;
+      center = 'центр ' + escapeHtml(pointName(cpt)) + ':'
+        + '<input class="fe-coord" data-id="' + centerId + '" data-axis="x" type="number" step="0.5" value="' + fmtCoord(cpt.data.mx || 0) + '"' + (free ? '' : ' disabled') + '>'
+        + '<input class="fe-coord" data-id="' + centerId + '" data-axis="y" type="number" step="0.5" value="' + fmtCoord(cpt.data.my || 0) + '"' + (free ? '' : ' disabled') + '>';
+    } else {
+      const C = circleGeom(e), m = (C && fr) ? frameLocalToMath(fr, C.cx, C.cy) : { mx: 0, my: 0 };
+      center = 'центр: (' + fmtCoord(m.mx) + '; ' + fmtCoord(m.my) + ')';
+    }
+    const r2edit = (d.kind === 'cr');
+    html += '<div class="fe-subrow">' + center + '</div>'
+      + '<div class="fe-subrow">r² =<input class="fe-coord" data-id="' + e.id + '" data-axis="r2" type="number" step="0.5" value="' + fmtCoord(rMath * rMath) + '"' + (r2edit ? '' : ' disabled') + '></div>';
+    return html;
+  }
+  // Вектор в алгебре: компоненты (в матем. коорд. окна) и длина.
+  function vectorMath(e) {
+    const A = elements.get(e.data.a), B = elements.get(e.data.b);
+    if (!A || !B || A.type !== 'point' || B.type !== 'point') return null;
+    const dx = (B.data.mx || 0) - (A.data.mx || 0), dy = (B.data.my || 0) - (A.data.my || 0);
+    return { dx, dy, len: Math.hypot(dx, dy), A, B };
+  }
+  function algVectorRow(e) {
+    const v = vectorMath(e);
+    const name = v ? ('вектор ' + pointName(v.A) + pointName(v.B)) : 'вектор';
+    let html = '<div class="fe-obj">' + odescHtml(e, name) + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+    if (v) html += '<div class="fe-subrow">(' + fmtCoord(v.dx) + '; ' + fmtCoord(v.dy) + '), |v| = ' + fmtCoord(v.len) + '</div>';
+    return html;
+  }
+  // Коника в алгебре: уравнение Ax²+Bxy+Cy²+Dx+Ey+F=0 по 5 точкам (матем. коорд.).
+  function conicMathCoeffs(e) {
+    const P = (e.data.pts || []).map((id) => elements.get(id)).filter((p) => p && p.type === 'point').slice(0, 5).map((p) => ({ x: p.data.mx || 0, y: p.data.my || 0 }));
+    return P.length >= 5 ? conicCoeffs(P) : null;
+  }
+  function fmtConicEq(co) {
+    const labels = ['x²', 'xy', 'y²', 'x', 'y', ''];
+    const terms = [];
+    for (let i = 0; i < 6; i++) {
+      const cc = Math.round(co[i] * 100) / 100; if (Math.abs(cc) < 0.005) continue;
+      const mag = Math.abs(cc), lab = labels[i];
+      const body = lab ? ((mag === 1 ? '' : mag) + lab) : ('' + mag);
+      terms.push({ neg: cc < 0, body });
+    }
+    if (!terms.length) return '';
+    let s = (terms[0].neg ? '−' : '') + terms[0].body;
+    for (let i = 1; i < terms.length; i++) s += ' ' + (terms[i].neg ? '−' : '+') + ' ' + terms[i].body;
+    return s + ' = 0';
+  }
+  function algConicRow(e) {
+    const co = conicMathCoeffs(e);
+    let html = '<div class="fe-obj">' + odescHtml(e, 'коника по 5 точкам') + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+    if (co) html += '<div class="fe-subrow">' + escapeHtml(fmtConicEq(co)) + '</div>';
+    return html;
+  }
+  // Измерение в алгебре: живое значение (длина/угол/площадь) + имя.
+  function algMeasureRow(e) {
+    const info = measureInfo(e);
+    const kindName = { length: 'длина', angle: 'угол', area: 'площадь' }[e.data.kind] || 'измерение';
+    const desc = kindName + (info ? ' · ' + info.text : ' · —');
+    return '<div class="fe-obj">' + odescHtml(e, desc) + algEyeBtn(e) + '<button class="fe-del" data-id="' + e.id + '" title="Удалить">×</button></div>';
+  }
+  // Строка условной видимости объекта: «показ. если <условие>» (по значениям окна).
+  function algCondRow(e) {
+    const c = (e.data && e.data.showIf) || '';
+    return '<div class="fe-cond"><span class="fe-condlbl">пок. если</span>'
+      + '<input class="fe-condinput' + (c ? ' set' : '') + '" data-id="' + e.id + '" value="' + escapeAttr(c) + '" placeholder="напр. k>2" spellcheck="false" title="Объект виден, только когда условие истинно. Имена: ползунки/параметры/измерения; функции x(A), y(A), dist(A,B), angle(A,B,C); сравнения < > = и & |"></div>';
+  }
+  function setShowIf(id, raw) {
+    const el = elements.get(id); if (!el) return;
+    const v = String(raw || '').trim(), before = clone(el);
+    if (!v) { if (el.data.showIf) { delete el.data.showIf; } el._condSrc = null; el._condFn = null; el._condHide = false; }
+    else { if (!compileNum(v)) { boardHint('Не понял условие — проверьте запись'); return; } el.data.showIf = v; }
+    applyElVisibility(el); histUpd(before, el); send({ action: 'element_update', element: el });
+    applyConditions(); layer.batchDraw();
+  }
+  // Перерисовать список алгебры, если панель открыта у активного окна.
+  function syncAlgebra() { const fe = document.getElementById('func-editor'); if (fe && !fe.hidden && activeFrameId && feList) renderFuncList(activeFrameId); }
+  // Правка границ параметра (на вкус пользователя).
+  function algEditBound(frameId, name) {
+    const fr = elements.get(frameId); if (!fr || !fr.data.params || !fr.data.params[name]) return;
+    const mnEl = feList.querySelector('.fe-pmin[data-p="' + name + '"]'), mxEl = feList.querySelector('.fe-pmax[data-p="' + name + '"]');
+    if (!mnEl || !mxEl) return;
+    const p = fr.data.params[name], before = clone(fr);
+    let mn = parseFloat(mnEl.value), mx = parseFloat(mxEl.value);
+    if (!isFinite(mn)) mn = p.min; if (!isFinite(mx)) mx = p.max;
+    if (mx <= mn) mx = mn + 1;
+    p.min = mn; p.max = mx; p.v = Math.max(mn, Math.min(mx, p.v));
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    feList.querySelectorAll('.fe-prange[data-p="' + name + '"]').forEach((r) => { r.min = mn; r.max = mx; r.value = p.v; });
+    feList.querySelectorAll('.fe-pval[data-pv="' + name + '"]').forEach((s) => { s.textContent = fmtMeasure(p.v); });
+    mnEl.value = mn; mxEl.value = mx; redrawFuncs();
+  }
+  // ── Командная строка окна ──────────────────────────────────────────────
+  // Один ввод понимает: A=(2;3) — точка; Line(A,B)/Прямая(A,B); Segment/Ray;
+  // Vector(A,B); Circle(центр,точка) или Circle(центр,радиус); Midpoint(A,…);
+  // Polygon(A,B,C,…); Point(x;y); c: x^2+y^2=9 — именованная кривая. Иначе —
+  // обычная функция/неявная кривая (прежнее поведение).
+  const CMD_ALIASES = {
+    line: 'gline', 'прямая': 'gline', segment: 'segment', 'отрезок': 'segment',
+    ray: 'ray', 'луч': 'ray', vector: 'vector', 'вектор': 'vector',
+    circle: 'circle', 'окружность': 'circle', circ: 'circle',
+    midpoint: 'midpoint', 'середина': 'midpoint', center: 'midpoint', 'центр': 'midpoint',
+    polygon: 'polygon', 'многоугольник': 'polygon', poly: 'polygon',
+    point: 'point', 'точка': 'point',
+    sequence: 'sequence', 'послед': 'sequence', 'последовательность': 'sequence', 'семейство': 'sequence'
+  };
+  // Разбить аргументы по запятым/точкам с запятой верхнего уровня (скобки координат целы).
+  function cmdSplitArgs(s) {
+    const out = []; let d = 0, cur = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === '(') { d++; cur += c; } else if (c === ')') { d--; cur += c; }
+      else if ((c === ',' || (c === ';' && d === 0)) && d === 0) { out.push(cur.trim()); cur = ''; }
+      else cur += c;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+  // Литерал координат «(x; y)» → {mx,my} или null (разделитель — «,» или «;»).
+  function cmdParseCoords(s) {
+    const m = String(s).trim().match(/^\(\s*(-?\d+(?:\.\d+)?)\s*[,;]\s*(-?\d+(?:\.\d+)?)\s*\)$/);
+    return m ? { mx: parseFloat(m[1]), my: parseFloat(m[2]) } : null;
+  }
+  // Найти точку окна по имени (буква ± индекс, регистр не важен).
+  function cmdFindPoint(frameId, name) {
+    const key = String(name).trim().toUpperCase(); let hit = null;
+    elements.forEach((e) => {
+      if (hit || !e.data || e.data.frame !== frameId || e.type !== 'point') return;
+      const nm = (e.data.label || '') + (e.data.idx ? e.data.idx : '');
+      if (nm.toUpperCase() === key) hit = e;
+    });
+    return hit;
+  }
+  // Создать свободную точку окна в матем. координатах (label — задать или авто).
+  function cmdCreatePoint(frameId, mx, my, label) {
+    const el = { id: uuid(), type: 'point', z: 0, data: { frame: frameId, mx: mx, my: my, label: label || nextPointLabel(), color: strokeColor } };
+    applyTypeDefaults(el.data, 'point');
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry(); layer.batchDraw();
+    return el;
+  }
+  function cmdCanResolve(frameId, arg) { return !!(cmdParseCoords(arg) || cmdFindPoint(frameId, arg)); }
+  function cmdResolvePoint(frameId, arg) {
+    const co = cmdParseCoords(arg);
+    if (co) { const p = cmdCreatePoint(frameId, co.mx, co.my); return p ? p.id : null; }
+    const p = cmdFindPoint(frameId, arg); return p ? p.id : null;
+  }
+  // Разрешить список аргументов-точек: null, если хоть один не распознан (точки не плодим).
+  function cmdResolvePoints(frameId, args) {
+    if (!args.length || !args.every((a) => cmdCanResolve(frameId, a))) return null;
+    return args.map((a) => cmdResolvePoint(frameId, a));
+  }
+  // Параметрическое семейство точек: Sequence((x(k), y(k)), k, от, до[, шаг]).
+  // Разворачивается в обычные (свободные) точки — их можно двигать/удалять.
+  function runSequence(frameId, args) {
+    if (args.length < 4) { boardHint('Семейство: Sequence((x(k); y(k)), k, от, до, шаг)'); return true; }
+    let pair = String(args[0]).trim();
+    if (pair.charAt(0) === '(' && pair.charAt(pair.length - 1) === ')') pair = pair.slice(1, -1);
+    const parts = cmdSplitArgs(pair);
+    if (parts.length !== 2) { boardHint('Первый аргумент — пара (x(k); y(k))'); return true; }
+    const fx = compileNum(parts[0]), fy = compileNum(parts[1]);
+    if (!fx || !fy) { boardHint('Не понял формулы координат семейства'); return true; }
+    const varName = String(args[1]).trim();
+    if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(varName)) { boardHint('Переменная семейства — имя (напр. k)'); return true; }
+    let from = parseFloat(String(args[2]).replace(',', '.')), to = parseFloat(String(args[3]).replace(',', '.'));
+    let step = args.length >= 5 ? parseFloat(String(args[4]).replace(',', '.')) : 1;
+    if (!isFinite(from) || !isFinite(to) || !isFinite(step) || step === 0) { boardHint('Проверьте «от», «до», «шаг»'); return true; }
+    if ((to - from) * step < 0) step = -step; // шаг всегда в сторону «до»
+    const n = Math.floor(Math.abs((to - from) / step) + 1e-9) + 1;
+    if (n > 200) { boardHint('Слишком много точек (>200) — увеличьте шаг'); return true; }
+    let made = 0;
+    for (let i = 0; i < n; i++) {
+      const kv = from + i * step, env = {}; env[varName] = kv;
+      let x, y; try { x = fx(env); y = fy(env); } catch (_) { continue; }
+      if (!isFinite(x) || !isFinite(y)) continue;
+      const el = { id: uuid(), type: 'point', z: 0, data: { frame: frameId, mx: x, my: y, label: nextPointLabel(), color: strokeColor } };
+      applyTypeDefaults(el.data, 'point'); el.data.labelHidden = true; // семейство — без подписей
+      upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+      made++;
+    }
+    recomputeGeometry(); layer.batchDraw();
+    boardHint('Семейство: создано точек — ' + made);
+    return true;
+  }
+  function runNamedCommand(frameId, cmd, args) {
+    if (cmd === 'sequence') return runSequence(frameId, args);
+    if (cmd === 'point') {
+      const co = cmdParseCoords('(' + args.join(';') + ')') || (args.length === 2 ? { mx: parseFloat(args[0]), my: parseFloat(args[1]) } : null);
+      if (!co || !isFinite(co.mx) || !isFinite(co.my)) { boardHint('Точка(x; y) — две координаты'); return true; }
+      const p = cmdCreatePoint(frameId, co.mx, co.my); boardHint('Точка ' + (p ? pointName(p) : '') + ' создана'); return true;
+    }
+    if (cmd === 'circle') {
+      if (args.length !== 2) { boardHint('Окружность(центр, точка) или Окружность(центр, радиус)'); return true; }
+      const c = cmdResolvePoint(frameId, args[0]); if (!c) { boardHint('Не нашёл точку ' + args[0]); return true; }
+      if (cmdCanResolve(frameId, args[1])) { const t = cmdResolvePoint(frameId, args[1]); createCircle('cp', [c, t]); }
+      else { const r = parseFloat(String(args[1]).replace(',', '.')); if (!isFinite(r) || r <= 0) { boardHint('Второй аргумент — точка или радиус'); return true; } createCircle('cr', [c], { r: r }); }
+      boardHint('Окружность построена'); return true;
+    }
+    if (cmd === 'midpoint') {
+      const ids = cmdResolvePoints(frameId, args);
+      if (!ids || ids.length < 2) { boardHint('Середина(A, B) — по двум точкам'); return true; }
+      createDerivedPoint({ centroid: ids }, ids); boardHint('Середина построена'); return true;
+    }
+    if (cmd === 'polygon') {
+      const ids = cmdResolvePoints(frameId, args);
+      if (!ids || ids.length < 3) { boardHint('Многоугольник(A, B, C, …) — не менее 3 точек'); return true; }
+      createPolygon(ids); boardHint('Многоугольник построен'); return true;
+    }
+    if (cmd === 'vector') {
+      const ids = cmdResolvePoints(frameId, args);
+      if (!ids || ids.length !== 2) { boardHint('Вектор(A, B) — по двум точкам'); return true; }
+      createVector(ids); boardHint('Вектор построен'); return true;
+    }
+    // прямая / отрезок / луч — построение по двум точкам
+    const ids = cmdResolvePoints(frameId, args);
+    if (!ids || ids.length !== 2) { boardHint('Нужны две точки'); return true; }
+    createConstruction(cmd, ids); boardHint('Построено'); return true;
+  }
+  // Разобрать ввод как команду. true — обработано (в т.ч. с ошибкой-подсказкой);
+  // false — это не команда, обрабатываем как функцию/неявную кривую.
+  function runCommand(frameId, raw) {
+    const fr = elements.get(frameId); if (!fr || fr.type !== 'frame') return false;
+    const src = String(raw || '').trim();
+    // 1) Присваивание точки: Name=(x; y)
+    let m = src.match(/^([A-Za-z][A-Za-z0-9]*)\s*=\s*(\(.*\))$/);
+    if (m) {
+      const co = cmdParseCoords(m[2]); if (!co) { boardHint('Координаты вида (x; y)'); return true; }
+      const label = m[1].toUpperCase(), ex = cmdFindPoint(frameId, label);
+      if (ex && ex.data.on) { boardHint('Точка ' + label + ' зависит от построения — её нельзя переопределить'); return true; }
+      if (ex) { const before = clone(ex); ex.data.mx = co.mx; ex.data.my = co.my; histUpd(before, ex); recomputeGeometry(); send({ action: 'element_update', element: ex }); layer.batchDraw(); }
+      else cmdCreatePoint(frameId, co.mx, co.my, label);
+      boardHint('Точка ' + label + ' = (' + co.mx + '; ' + co.my + ')'); return true;
+    }
+    // 2) Голый литерал координат: (x; y) → точка с авто-именем
+    const bare = cmdParseCoords(src);
+    if (bare) { const p = cmdCreatePoint(frameId, bare.mx, bare.my); boardHint('Точка ' + (p ? pointName(p) : '') + ' создана'); return true; }
+    // 3) Именованная кривая/функция: name: expr
+    m = src.match(/^([A-Za-z][A-Za-z0-9]*)\s*:\s*(.+)$/);
+    if (m && !/^\s*\(/.test(m[2])) {
+      const nm = m[1], expr = m[2].trim();
+      if (!isImplicitExpr(expr) && !compileFunc(expr)) { boardHint('Не понял формулу — проверьте запись'); return true; }
+      const el = isImplicitExpr(expr) ? addImplicit(frameId, expr) : addFunc(frameId, expr);
+      if (el) { el.data.name = nm; send({ action: 'element_update', element: el }); }
+      return true;
+    }
+    // 4) Вызов команды: Cmd(a, b, …)
+    m = src.match(/^([A-Za-zА-Яа-я][A-Za-zА-Яа-я0-9]*)\s*\((.*)\)$/);
+    if (m) {
+      const cmd = CMD_ALIASES[m[1].toLowerCase()];
+      if (cmd) return runNamedCommand(frameId, cmd, cmdSplitArgs(m[2]));
+      // Заглавное неизвестное имя со скобками — похоже на опечатку в команде;
+      // строчное (sin, cos, f, g…) — это функция y=f(x), отдаём формуле.
+      if (/^[A-ZА-Я]/.test(m[1])) { boardHint('Неизвестная команда: ' + m[1]); return true; }
+    }
+    return false;
+  }
+  function feSubmit() {
+    if (!activeFrameId || !feInput.value.trim()) return;
+    const raw = feInput.value;
+    // Сначала пробуем как команду (точка/прямая/окружность/…); если это не команда —
+    // трактуем как формулу: уравнение (есть «=» или y) → неявная кривая, иначе y=f(x).
+    if (runCommand(activeFrameId, raw)) { feInput.value = ''; renderFuncList(activeFrameId); return; }
+    if (isImplicitExpr(raw)) addImplicit(activeFrameId, raw);
+    else addFunc(activeFrameId, raw);
+    feInput.value = '';
+    renderFuncList(activeFrameId);
+  }
+  // Инструмент «Функции»: клик по окну → выделяем его и фокусируем ввод формулы.
+  function handleGraphPick(w) {
+    const fr = frameAtWorld(w.x, w.y, true);
+    if (!fr) { boardHint('Кликните по окну, где рисовать график'); return; }
+    setTool('select');
+    selectOnly(fr.id); // выделение окна → показывается панель функций/алгебры
+    const inp = document.getElementById('fe-input'); if (inp) { try { inp.focus(); } catch (e) {} }
+    boardHint('Введите формулу, например y = k*x^2');
+  }
+  if (feInput) {
+    feInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); feSubmit(); } });
+    document.getElementById('fe-add').addEventListener('click', feSubmit);
+    const feBg = document.getElementById('fe-bg');
+    if (feBg) feBg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) toggleFrameBg(b.dataset.bg); });
+    const feBgColor = document.getElementById('fe-bgcolor');
+    if (feBgColor) feBgColor.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setFrameBgColor(b.dataset.color); });
+    const feBgCustom = document.getElementById('fe-bgcolor-custom');
+    if (feBgCustom) feBgCustom.addEventListener('input', () => setFrameBgColor(feBgCustom.value));
+    const feGridColor = document.getElementById('fe-gridcolor');
+    if (feGridColor) feGridColor.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setFrameGridColor(b.dataset.color); });
+    const feGridCustom = document.getElementById('fe-gridcolor-custom');
+    if (feGridCustom) feGridCustom.addEventListener('input', () => setFrameGridColor(feGridCustom.value));
+    feList.addEventListener('click', (e) => {
+      const eye = e.target.closest && e.target.closest('.fe-eye');
+      if (eye) { const el = elements.get(eye.getAttribute('data-eye')); if (el) { setHidden([el.id], !el.data.hidden); if (activeFrameId) renderFuncList(activeFrameId); } return; }
+      const rs = e.target.closest && e.target.closest('.fe-rsense');
+      if (rs) { toggleRegionSense(rs.getAttribute('data-region'), +rs.getAttribute('data-part')); return; }
+      const btn = e.target.closest && e.target.closest('.fe-del');
+      if (!btn) return;
+      deleteWithDependents([btn.getAttribute('data-id')]); // каскадно (точка → зависимые построения)
+      if (activeFrameId) renderFuncList(activeFrameId);
+    });
+    // Правка формулы на месте: Enter — зафиксировать (change ловит потерю фокуса).
+    feList.addEventListener('keydown', (e) => {
+      const ex = e.target.closest && e.target.closest('.fe-editexpr');
+      if (ex && e.key === 'Enter') { e.preventDefault(); editFuncExpr(ex.dataset.id, ex.dataset.kind, ex.value, ex); }
+    });
+    // Живое изменение: ползунок параметра.
+    feList.addEventListener('input', (e) => {
+      const ex = e.target.closest && e.target.closest('.fe-editexpr');
+      if (ex) { ex.classList.remove('invalid'); return; } // снимаем подсветку по ходу набора
+      const rng = e.target.closest && e.target.closest('.fe-prange'); if (!rng || !activeFrameId) return;
+      const fr = elements.get(activeFrameId), p = fr && fr.data.params && fr.data.params[rng.dataset.p]; if (!p) return;
+      p.v = parseFloat(rng.value);
+      feList.querySelectorAll('.fe-pval[data-pv="' + rng.dataset.p + '"]').forEach((s) => { s.textContent = fmtMeasure(p.v); });
+      feList.querySelectorAll('.fe-prange[data-p="' + rng.dataset.p + '"]').forEach((r) => { if (r !== rng) r.value = p.v; });
+      redrawFuncs(); applyConditions();
+    });
+    // Фиксация: параметр (окно), координата точки/радиус, границы параметра.
+    feList.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.classList.contains('fe-editexpr')) { editFuncExpr(t.dataset.id, t.dataset.kind, t.value, t); return; }
+      if (t.classList.contains('fe-condinput')) { setShowIf(t.dataset.id, t.value); return; }
+      if (t.classList.contains('fe-prange')) { const fr = elements.get(activeFrameId); if (fr) send({ action: 'element_update', element: fr }); return; }
+      if (t.classList.contains('fe-coord')) { algEditNum(t.dataset.id, t.dataset.axis, parseFloat(t.value)); return; }
+      if (t.classList.contains('fe-pmin') || t.classList.contains('fe-pmax')) { algEditBound(activeFrameId, t.dataset.p); return; }
+    });
+  }
+
+  // ── Раскадровка окна: кадры-снимки состояния матокна ───────────────────
+  // Кнопка-камера фиксирует текущее содержимое окна как кадр (миниатюра-картинка
+  // + снимок объектов). Клик по кадру — предпросмотр (окно не трогаем), «Вернуть»
+  // загружает кадр обратно в окно. Кадры хранятся на элементе-окне (data.sb).
+  const storyboardEl = document.getElementById('storyboard');
+  const sbStrip = document.getElementById('sb-strip');
+  const sbPreview = document.getElementById('sb-preview');
+  const sbPvImg = document.getElementById('sb-pv-img');
+  const sbPvIdx = document.getElementById('sb-pv-idx');
+  const sbPvCap = document.getElementById('sb-pv-cap');
+  let _sbFrame = null;   // id окна, чью ленту показываем
+  let sbPvState = null;  // {frameId, index} — открытый предпросмотр
+
+  function sbList(fr) { return (fr.data.sb = fr.data.sb || []); }
+  // Элементы, принадлежащие окну (кроме самого окна) — их и снимаем/восстанавливаем.
+  function frameContentEls(frameId) {
+    const out = [];
+    elements.forEach((e) => { if (e.id !== frameId && e.data && e.data.frame === frameId) out.push(e); });
+    return out;
+  }
+  function windowImage(fr) { const node = nodes.get(fr.id); if (!node) return ''; try { return node.toDataURL({ pixelRatio: 1 }); } catch (e) { return ''; } }
+  function frameSnap(fr) { return frameContentEls(fr.id).map((e) => clone({ id: e.id, type: e.type, z: e.z || 0, data: e.data })); }
+  function captureFrame(fr) {
+    const before = clone(fr);
+    sbList(fr).push({ cap: '', img: windowImage(fr), snap: frameSnap(fr) });
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    renderStrip(fr); if (sbStrip) sbStrip.scrollLeft = sbStrip.scrollWidth;
+    boardHint('Кадр ' + sbList(fr).length + ' снят');
+  }
+  function renderStrip(fr) {
+    if (!sbStrip) return;
+    const list = sbList(fr);
+    sbStrip.innerHTML = list.map((f, i) =>
+      '<div class="sb-frame" draggable="true" data-i="' + i + '"><span class="sb-num">' + (i + 1) + '</span>'
+      + '<button class="sb-del" data-i="' + i + '" title="Удалить кадр">×</button>'
+      + '<img src="' + (f.img || '') + '"><div class="sb-cap">' + escapeHtml(f.cap || '') + '</div></div>'
+    ).join('');
+  }
+  function updateStoryboard() {
+    if (!storyboardEl) return;
+    const fr = (tool === 'select' && activeFrameId) ? elements.get(activeFrameId) : null;
+    if (!fr || fr.type !== 'frame') { storyboardEl.hidden = true; _sbFrame = null; sbClosePreview(); return; }
+    storyboardEl.hidden = false;
+    if (_sbFrame !== fr.id) { _sbFrame = fr.id; sbClosePreview(); renderStrip(fr); }
+    positionStoryboard(fr);
+    if (sbPvState && sbPvState.frameId === fr.id) positionPreview(fr);
+  }
+  function positionStoryboard(fr) {
+    const s = stage.scaleX();
+    const sx = fr.data.x * s + stage.x();
+    const sy = (fr.data.y + fr.data.height) * s + stage.y() + 56 + 8; // сразу под окном
+    storyboardEl.style.left = Math.max(8, Math.min(window.innerWidth - 360, sx)) + 'px';
+    storyboardEl.style.top = sy + 'px';
+  }
+  function positionPreview(fr) {
+    const s = stage.scaleX();
+    sbPreview.style.left = (fr.data.x * s + stage.x()) + 'px';
+    sbPreview.style.top = (fr.data.y * s + stage.y() + 56) + 'px';
+    sbPreview.style.width = (fr.data.width * s) + 'px';
+    sbPreview.style.height = (fr.data.height * s) + 'px';
+  }
+  function sbOpenPreview(fr, i) {
+    const list = sbList(fr); if (i < 0 || i >= list.length) return;
+    sbPvState = { frameId: fr.id, index: i };
+    sbPvImg.src = list[i].img || '';
+    sbPvIdx.textContent = (i + 1) + ' / ' + list.length;
+    sbPvCap.value = list[i].cap || '';
+    sbPreview.hidden = false; positionPreview(fr);
+  }
+  function sbClosePreview() { sbPvState = null; if (sbPreview) sbPreview.hidden = true; }
+  function sbNav(delta) {
+    if (!sbPvState) return; const fr = elements.get(sbPvState.frameId); if (!fr) return;
+    const list = sbList(fr); let i = Math.max(0, Math.min(list.length - 1, sbPvState.index + delta));
+    sbOpenPreview(fr, i);
+  }
+  function sbDeleteFrame(fr, i) {
+    const list = sbList(fr); if (i < 0 || i >= list.length) return;
+    const before = clone(fr); list.splice(i, 1);
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    renderStrip(fr);
+    if (sbPvState && sbPvState.frameId === fr.id) { if (!list.length) sbClosePreview(); else sbNav(0); }
+  }
+  function restoreFrame(fr, i) {
+    const list = sbList(fr); if (i < 0 || i >= list.length) return;
+    frameContentEls(fr.id).forEach((e) => { histDel(e); send({ action: 'element_delete', id: e.id }); removeNode(e.id); });
+    (list[i].snap || []).forEach((sd) => { const el = clone(sd); upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); });
+    recomputeGeometry(); layer.batchDraw();
+    boardHint('Кадр ' + (i + 1) + ' загружен в окно');
+  }
+  function sbUpdateFrame(fr, i) {
+    const list = sbList(fr); if (i < 0 || i >= list.length) return;
+    const before = clone(fr);
+    list[i] = { cap: list[i].cap || '', img: windowImage(fr), snap: frameSnap(fr) };
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    renderStrip(fr); sbOpenPreview(fr, i);
+    boardHint('Кадр ' + (i + 1) + ' обновлён');
+  }
+  const _sbCap = document.getElementById('sb-cap');
+  if (_sbCap) _sbCap.addEventListener('click', () => { const fr = elements.get(_sbFrame); if (fr) captureFrame(fr); });
+  if (sbStrip) sbStrip.addEventListener('click', (e) => {
+    const fr = elements.get(_sbFrame); if (!fr) return;
+    const del = e.target.closest('.sb-del'); if (del) { e.stopPropagation(); sbDeleteFrame(fr, +del.dataset.i); return; }
+    const cell = e.target.closest('.sb-frame'); if (cell) sbOpenPreview(fr, +cell.dataset.i);
+  });
+  // Перетаскивание миниатюр — смена порядка кадров.
+  function sbMoveFrame(from, to) {
+    const fr = elements.get(_sbFrame); if (!fr) return;
+    const list = sbList(fr);
+    if (from < 0 || to < 0 || from >= list.length || to >= list.length || from === to) return;
+    const before = clone(fr);
+    const item = list.splice(from, 1)[0]; list.splice(to, 0, item);
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    sbClosePreview(); renderStrip(fr);
+  }
+  let sbDragFrom = null;
+  if (sbStrip) {
+    sbStrip.addEventListener('dragstart', (e) => { const c = e.target.closest('.sb-frame'); if (!c) return; sbDragFrom = +c.dataset.i; c.classList.add('sb-dragging'); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; });
+    sbStrip.addEventListener('dragend', (e) => { const c = e.target.closest('.sb-frame'); if (c) c.classList.remove('sb-dragging'); sbDragFrom = null; });
+    sbStrip.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; });
+    sbStrip.addEventListener('drop', (e) => { e.preventDefault(); const c = e.target.closest('.sb-frame'); if (!c || sbDragFrom === null) return; sbMoveFrame(sbDragFrom, +c.dataset.i); sbDragFrom = null; });
+  }
+  (function () {
+    const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
+    on('sb-pv-prev', () => sbNav(-1));
+    on('sb-pv-next', () => sbNav(1));
+    on('sb-pv-close', sbClosePreview);
+    on('sb-pv-restore', () => { if (sbPvState) { const fr = elements.get(sbPvState.frameId); if (fr) { restoreFrame(fr, sbPvState.index); sbClosePreview(); } } });
+    on('sb-pv-update', () => { if (sbPvState) { const fr = elements.get(sbPvState.frameId); if (fr) sbUpdateFrame(fr, sbPvState.index); } });
+    if (sbPvCap) sbPvCap.addEventListener('change', () => {
+      if (!sbPvState) return; const fr = elements.get(sbPvState.frameId); if (!fr) return;
+      const list = sbList(fr); if (!list[sbPvState.index]) return;
+      const before = clone(fr); list[sbPvState.index].cap = sbPvCap.value;
+      histUpd(before, fr); send({ action: 'element_update', element: fr }); renderStrip(fr);
+    });
+  })();
+
+  // ── Рамочное выделение (как выбор файлов в папке) ──────────────────────
+  // Тянем по пустому месту → выделяем все объекты, попавшие в рамку. Shift —
+  // добавить к текущему выделению. Работаем в мировых координатах (как позиции
+  // объектов), рамку рисуем в том же слое.
+  let marquee = null;
+  const marqueeRect = new Konva.Rect({
+    stroke: '#4d7cfe', strokeWidth: 1, dash: [4, 4],
+    fill: 'rgba(77,124,254,0.10)', visible: false, listening: false,
+  });
+  layer.add(marqueeRect);
+
+  function startMarquee(e) {
+    const w = worldPoint();
+    marquee = { x0: w.x, y0: w.y, additive: !!(e.evt && e.evt.shiftKey), moved: false };
+    marqueeRect.moveToTop();
+    // Пока тянем рамку — DOM-текст/виджеты «прозрачны» для мыши, иначе указатель
+    // цепляется за них, события не доходят до холста и рамка «спотыкается».
+    widgetLayerEl.classList.add('marquee-thru');
+  }
+  function updateMarquee() {
+    const w = worldPoint();
+    const x = Math.min(marquee.x0, w.x), y = Math.min(marquee.y0, w.y);
+    const width = Math.abs(w.x - marquee.x0), height = Math.abs(w.y - marquee.y0);
+    const thr = 3 / stage.scaleX(); // порог «движения» ≈ 3px экрана
+    if (width > thr || height > thr) marquee.moved = true;
+    marqueeRect.setAttrs({ x, y, width, height, strokeWidth: 1 / stage.scaleX(), visible: marquee.moved });
+    layer.batchDraw();
+  }
+  function endMarquee() {
+    widgetLayerEl.classList.remove('marquee-thru'); // вернуть интерактивность DOM-объектам
+    if (!marquee) return;
+    const m = marquee;
+    marquee = null;
+    marqueeRect.visible(false);
+    if (m.moved) {
+      applyMarquee({ x: marqueeRect.x(), y: marqueeRect.y(), width: marqueeRect.width(), height: marqueeRect.height() }, m.additive);
+    } else if (!m.additive) {
+      clearSelection(); // клик по пустому без движения — снять выделение
+    }
+    layer.batchDraw();
+  }
+  // Страховка: любое отпускание мыши возвращает DOM-объектам интерактивность.
+  window.addEventListener('mouseup', () => { if (widgetLayerEl.classList.contains('marquee-thru')) widgetLayerEl.classList.remove('marquee-thru'); });
+  function rectsIntersect(a, b) {
+    return !(b.x > a.x + a.width || b.x + b.width < a.x || b.y > a.y + a.height || b.y + b.height < a.y);
+  }
+  function applyMarquee(box, additive) {
+    if (!additive) selected.clear();
+    const picked = new Set();
+    nodes.forEach((node, id) => {
+      const el = elements.get(id); if (el && el.data.hidden && !revealHidden) return; // скрытые не выделяем
+      const b = node.getClientRect({ relativeTo: layer });
+      if (rectsIntersect(box, b)) {
+        groupMembers(id).forEach((m) => { if (nodes.has(m)) picked.add(m); });
+      }
+    });
+    // DOM-объекты (текст/виджеты) — их нет в nodes; берём по мировой рамке обёртки.
+    widgetItems.forEach((it, id) => {
+      const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0;
+      if (!w && !h) return;
+      if (rectsIntersect(box, { x: d.x || 0, y: d.y || 0, width: w, height: h })) picked.add(id);
+    });
+    picked.forEach((id) => selected.add(id));
+    refreshTransformer();
+  }
+  // ── Ластик: стирает только карандаш и маркер (freehand) ────────────────
+  // Тянешь ластиком — точки штриха в радиусе удаляются, штрих распадается на
+  // уцелевшие куски (частичное стирание). Прочие объекты не трогаются. Весь
+  // проход одного «мазка» — один шаг отмены (histBatch).
+  // Два ластика: eraser_full — стирает мазок целиком; eraser_fine — «точный»,
+  // вырезает только точки в радиусе, штрих распадается на уцелевшие куски.
+  let eraserActive = false, eraserOps = null, eraserRadius = 13, lastEraseW = null; // радиус в px экрана
+  function eraserDown() { eraserActive = true; eraserOps = []; lastEraseW = worldPoint(); eraserAt(lastEraseW); }
+  function eraserMove() {
+    if (!eraserActive) return;
+    const w = worldPoint(), r = eraserRadius / stage.scaleX();
+    // Досэмплируем путь ластика между кадрами (быстрое движение иначе оставляет пропуски).
+    if (lastEraseW) {
+      const dx = w.x - lastEraseW.x, dy = w.y - lastEraseW.y, dist = Math.hypot(dx, dy);
+      const steps = Math.floor(dist / Math.max(1, r * 0.7));
+      for (let k = 1; k <= steps; k++) { const t = k / (steps + 1); eraserAt({ x: lastEraseW.x + dx * t, y: lastEraseW.y + dy * t }); }
+    }
+    eraserAt(w); lastEraseW = w;
+  }
+  function eraserUp() { if (!eraserActive) return; eraserActive = false; lastEraseW = null; if (eraserOps && eraserOps.length) histBatch(eraserOps); eraserOps = null; }
+  // Расстояние от точки до отрезка (для попадания ластика по линии, а не только по её вершинам).
+  function distPtSeg(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    if (l2 === 0) return Math.hypot(px - ax, py - ay);
+    let t = ((px - ax) * dx + (py - ay) * dy) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+  // Уплотнить ломаную: добавить промежуточные точки, чтобы шаг не превышал maxStep.
+  function densifyPts(pts, maxStep) {
+    if (pts.length < 4) return pts.slice();
+    const out = [pts[0], pts[1]];
+    for (let i = 0; i + 3 < pts.length; i += 2) {
+      const ax = pts[i], ay = pts[i + 1], bx = pts[i + 2], by = pts[i + 3];
+      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / maxStep));
+      for (let k = 1; k <= n; k++) { const t = k / n; out.push(ax + (bx - ax) * t, ay + (by - ay) * t); }
+    }
+    return out;
+  }
+  function eraserAt(w) {
+    const r = eraserRadius / stage.scaleX(), full = (tool === 'eraser_full');
+    const list = []; elements.forEach((el) => { if (el.type === 'freehand') list.push(el); });
+    let changed = false;
+    list.forEach((el) => {
+      const d = el.data, ox = d.x || 0, oy = d.y || 0, pts = d.points || [];
+      if (full) {
+        // Попадание по ЛИНИИ (любому её отрезку), а не только по вершинам.
+        let hit = pts.length >= 2 && Math.hypot(ox + pts[0] - w.x, oy + pts[1] - w.y) <= r;
+        for (let i = 0; i + 3 < pts.length && !hit; i += 2) {
+          if (distPtSeg(w.x, w.y, ox + pts[i], oy + pts[i + 1], ox + pts[i + 2], oy + pts[i + 3]) <= r) hit = true;
+        }
+        if (!hit) return;
+        changed = true; eraserOps.push({ kind: 'del', el: clone(el) });
+        removeNode(el.id); send({ action: 'element_delete', id: el.id });
+        return;
+      }
+      // Точный ластик: уплотняем ломаную, чтобы резать и посреди длинного отрезка.
+      const dp = densifyPts(pts, Math.max(1.5, r * 0.5));
+      const runs = []; let cur = [];
+      for (let i = 0; i < dp.length; i += 2) {
+        const hit = Math.hypot(ox + dp[i] - w.x, oy + dp[i + 1] - w.y) <= r;
+        if (hit) { if (cur.length >= 4) runs.push(cur); cur = []; }
+        else cur.push(dp[i], dp[i + 1]);
+      }
+      if (cur.length >= 4) runs.push(cur);
+      const survived = runs.reduce((s, run) => s + run.length, 0);
+      if (survived === dp.length) return; // штрих не задет
+      changed = true;
+      eraserOps.push({ kind: 'del', el: clone(el) });
+      removeNode(el.id); send({ action: 'element_delete', id: el.id });
+      runs.forEach((run) => {
+        const nel = { id: uuid(), type: 'freehand', z: el.z, data: Object.assign({}, clone(d), { points: run }) };
+        upsertNode(nel); send({ action: 'element_add', element: nel });
+        eraserOps.push({ kind: 'add', el: clone(nel) });
+      });
+    });
+    if (changed) layer.batchDraw();
+  }
+  // Кольцо-подсказка размера ластика под курсором.
+  const eraserRing = document.createElement('div'); eraserRing.className = 'eraser-ring'; eraserRing.style.display = 'none';
+  cursorLayerEl.appendChild(eraserRing);
+  function isEraser(t) { return t === 'eraser_full' || t === 'eraser_fine'; }
+  function positionEraserRing() {
+    if (!isEraser(tool)) { eraserRing.style.display = 'none'; return; }
+    const w = worldPoint(); const d = eraserRadius * 2;
+    eraserRing.style.display = 'block';
+    eraserRing.style.width = d + 'px'; eraserRing.style.height = d + 'px';
+    eraserRing.style.left = (w.x * stage.scaleX() + stage.x()) + 'px';
+    eraserRing.style.top = (w.y * stage.scaleY() + stage.y()) + 'px';
+  }
+  function updateEraserPanel() {
+    const old = document.getElementById('eraser-panel'); if (old) old.hidden = true; // старая панель заменена на #draw-cfg в тулбаре
+    eraserRing.style.display = 'none';
+    syncDrawFlyout();
+  }
+
+  // ── Контекстная настройка карандаша/маркера/ластика ──────────────────────
+  // 3 пресета-кружка (каждый — толщина+цвет+прозрачность), «своя» толщина/цвет/
+  // прозрачность активного, для ластика — радиус. Демо рисуется прямо в кружке.
+  const DP_STORE = 'board_draw_presets_v1';
+  const DP_DEFAULTS = {
+    pen: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 5, c: '#ef4444' }, { w: 10, c: '#3b82f6' }] },
+    marker: { active: 0, presets: [{ w: 16, c: '#ffe14a', o: 0.4 }, { w: 24, c: '#8ef58e', o: 0.4 }, { w: 30, c: '#7cc4ff', o: 0.4 }] },
+    eraser: { active: 0, presets: [{ r: 10 }, { r: 22 }, { r: 40 }] },
+  };
+  function loadDrawCfg() { try { const s = JSON.parse(localStorage.getItem(DP_STORE)); if (s && s.pen && s.marker && s.eraser) return s; } catch (e) {} return clone(DP_DEFAULTS); }
+  let drawCfg = loadDrawCfg();
+  function saveDrawCfg() { try { localStorage.setItem(DP_STORE, JSON.stringify(drawCfg)); } catch (e) {} }
+  let markerColor = drawCfg.marker.presets[drawCfg.marker.active].c;
+  let markerWidth = drawCfg.marker.presets[drawCfg.marker.active].w;
+  let markerOpacity = drawCfg.marker.presets[drawCfg.marker.active].o;
+  const DP_SW = {
+    pen: ['#1f2937', '#6b7280', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff'],
+    marker: ['#ffe14a', '#ffb14a', '#8ef58e', '#7cc4ff', '#ff9ecb', '#c9a7ff'],
+  };
+  function drawKey(t) { return t === 'pen' ? 'pen' : t === 'marker' ? 'marker' : isEraser(t) ? 'eraser' : null; }
+  function dpActive(key) { const c = drawCfg[key]; return c.presets[c.active]; }
+  function applyDrawPreset(key) {
+    const p = dpActive(key);
+    if (key === 'pen') {
+      strokeColor = p.c; strokeWidth = p.w;
+      if (colorBtn) colorBtn.style.background = p.c;
+      const sw = document.getElementById('stroke-width'); if (sw) sw.value = p.w;
+    } else if (key === 'marker') { markerColor = p.c; markerWidth = p.w; markerOpacity = p.o; }
+    else if (key === 'eraser') { eraserRadius = p.r; }
+  }
+  function dpDemoHtml(key, p) {
+    if (key === 'eraser') { const d = Math.max(8, Math.min(30, Math.round(p.r * 0.7))); return '<span class="dp-ring" style="width:' + d + 'px;height:' + d + 'px"></span>'; }
+    const d = Math.max(4, Math.min(28, p.w)), op = key === 'marker' ? p.o : 1;
+    return '<span class="dp-dot" style="width:' + d + 'px;height:' + d + 'px;background:' + p.c + ';opacity:' + op + '"></span>';
+  }
+  // Кружки-пресеты (вертикально). Клик — выбрать пресет и открыть панель настроек справа.
+  function renderDrawPanel(key) {
+    const cfg = drawCfg[key];
+    const presetsEl = document.getElementById('dp-presets'); presetsEl.innerHTML = '';
+    cfg.presets.forEach((p, i) => {
+      const b = document.createElement('button'); b.className = 'dp-preset' + (i === cfg.active ? ' on' : ''); b.title = 'Пресет ' + (i + 1);
+      b.innerHTML = dpDemoHtml(key, p);
+      b.addEventListener('click', (ev) => { ev.stopPropagation(); cfg.active = i; applyDrawPreset(key); saveDrawCfg(); renderDrawPanel(key); const nb = document.querySelectorAll('#dp-presets .dp-preset')[i] || b; openDpPop(nb, key); });
+      presetsEl.appendChild(b);
+    });
+  }
+  function dpUpdateActiveDemo(key) { const p = dpActive(key); const btn = document.querySelectorAll('#dp-presets .dp-preset')[drawCfg[key].active]; if (btn) btn.innerHTML = dpDemoHtml(key, p); }
+  // Панель выбора толщины/цвета/прозрачности (или радиуса) — всплывает справа от кружка.
+  function renderDpPop(key) {
+    const p = dpActive(key);
+    const thick = document.getElementById('dp-thick'), tval = document.getElementById('dp-thick-val'), tlbl = document.getElementById('dp-thick-lbl');
+    if (key === 'eraser') { tlbl.textContent = 'Радиус'; thick.min = 5; thick.max = 80; thick.value = p.r; tval.textContent = p.r; }
+    else { tlbl.textContent = 'Толщина'; thick.min = 1; thick.max = (key === 'marker' ? 40 : 24); thick.value = p.w; tval.textContent = p.w; }
+    const orow = document.getElementById('dp-opacity-row'); orow.style.display = key === 'marker' ? 'flex' : 'none';
+    if (key === 'marker') { const o = document.getElementById('dp-opacity'), ov = document.getElementById('dp-opacity-val'); o.value = Math.round(p.o * 100); ov.textContent = Math.round(p.o * 100) + '%'; }
+    const colorsEl = document.getElementById('dp-colors'); colorsEl.style.display = key === 'eraser' ? 'none' : 'flex';
+    if (key !== 'eraser') {
+      colorsEl.innerHTML = '';
+      DP_SW[key].forEach((c) => { const s = document.createElement('div'); s.className = 'dp-sw' + (c.toLowerCase() === String(p.c).toLowerCase() ? ' on' : ''); s.style.background = c; s.title = c; s.addEventListener('click', () => { p.c = c; applyDrawPreset(key); saveDrawCfg(); renderDpPop(key); dpUpdateActiveDemo(key); }); colorsEl.appendChild(s); });
+      const add = document.createElement('button'); add.className = 'dp-add'; add.textContent = '+'; add.title = 'Свой цвет';
+      add.addEventListener('click', () => { const n = document.getElementById('dp-native'); n.value = (/^#[0-9a-f]{6}$/i.test(p.c) ? p.c : '#3b82f6'); dpNativeKey = key; n.click(); });
+      colorsEl.appendChild(add);
+    }
+  }
+  function positionDpPop(circleEl) {
+    const pop = document.getElementById('dp-pop'), e = drawGroupEls(); if (!e) return;
+    const fr = e.fly.getBoundingClientRect(), r = circleEl.getBoundingClientRect();
+    pop.style.left = (fr.right + 8) + 'px';
+    const ph = pop.offsetHeight || 150, vh = window.innerHeight;
+    let top = r.top - 8; if (top + ph > vh - 8) top = vh - ph - 8;
+    pop.style.top = Math.max(8, top) + 'px';
+  }
+  function openDpPop(circleEl, key) { const pop = document.getElementById('dp-pop'); renderDpPop(key); pop.hidden = false; positionDpPop(circleEl); }
+  function closeDpPop() { const pop = document.getElementById('dp-pop'); if (pop) pop.hidden = true; }
+  function drawGroupEls() { const g = document.querySelector('.tool-group[data-group="draw"]'); return g ? { g, fly: g.querySelector('.tool-flyout') } : null; }
+  function isDrawToolActive() { return !!drawKey(tool) || tool === 'laser' || tool === 'lasso'; }
+  function positionDrawFlyout(g, fly) {
+    const r = g.getBoundingClientRect();
+    fly.style.left = (r.right + 10) + 'px';
+    fly.classList.add('open');
+    const fh = fly.offsetHeight, vh = window.innerHeight;
+    let top = r.top; if (top + fh > vh - 8) top = Math.max(8, vh - fh - 8);
+    fly.style.top = top + 'px';
+  }
+  // Меню рисования держим открытым, пока активен инструмент рисования; блок настроек
+  // #draw-cfg показываем под лассо для карандаша/маркера/ластика.
+  function syncDrawFlyout() {
+    closeDpPop(); // при смене инструмента панель настроек закрываем
+    const e = drawGroupEls(); if (!e) return; const cfg = document.getElementById('draw-cfg'); const key = drawKey(tool);
+    if (isDrawToolActive()) {
+      if (cfg) { cfg.hidden = !key; if (key) { applyDrawPreset(key); renderDrawPanel(key); } }
+      positionDrawFlyout(e.g, e.fly);
+    } else {
+      if (cfg) cfg.hidden = true;
+      e.fly.classList.remove('open');
+    }
+  }
+  let dpNativeKey = null;
+  (function wireDrawPanel() {
+    const thick = document.getElementById('dp-thick'); if (!thick) return;
+    thick.addEventListener('input', (e) => {
+      const key = drawKey(tool); if (!key) return; const p = dpActive(key); const v = parseInt(e.target.value, 10);
+      if (key === 'eraser') p.r = v; else p.w = v;
+      document.getElementById('dp-thick-val').textContent = v; applyDrawPreset(key); saveDrawCfg();
+      const btn = document.querySelectorAll('#dp-presets .dp-preset')[drawCfg[key].active]; if (btn) btn.innerHTML = dpDemoHtml(key, p);
+    });
+    document.getElementById('dp-opacity').addEventListener('input', (e) => {
+      if (tool !== 'marker') return; const p = dpActive('marker'); const v = parseInt(e.target.value, 10) / 100; p.o = v;
+      document.getElementById('dp-opacity-val').textContent = Math.round(v * 100) + '%'; applyDrawPreset('marker'); saveDrawCfg();
+      const btn = document.querySelectorAll('#dp-presets .dp-preset')[drawCfg.marker.active]; if (btn) btn.innerHTML = dpDemoHtml('marker', p);
+    });
+    const nat = document.getElementById('dp-native');
+    nat.addEventListener('input', (e) => { if (!dpNativeKey) return; const p = dpActive(dpNativeKey); p.c = e.target.value; applyDrawPreset(dpNativeKey); saveDrawCfg(); renderDpPop(dpNativeKey); dpUpdateActiveDemo(dpNativeKey); });
+    // Клик мимо панели настроек (и не по кружку) — закрыть её.
+    document.addEventListener('mousedown', (ev) => {
+      const pop = document.getElementById('dp-pop'); if (!pop || pop.hidden) return;
+      if (ev.target && ev.target.closest && (ev.target.closest('#dp-pop') || ev.target.closest('.dp-preset'))) return;
+      closeDpPop();
+    });
+  })();
+
+  // ── Лассо: выделение произвольным контуром ─────────────────────────────
+  let lassoActive = false, lassoPts = null;
+  const lassoLine = new Konva.Line({ stroke: '#4d7cfe', strokeWidth: 1, dash: [4, 4], closed: true, fill: 'rgba(77,124,254,0.10)', listening: false, visible: false });
+  layer.add(lassoLine);
+  function lassoDown() { lassoActive = true; const w = worldPoint(); lassoPts = [w.x, w.y]; lassoLine.points(lassoPts); lassoLine.visible(true); lassoLine.moveToTop(); layer.batchDraw(); }
+  function lassoMove() { if (!lassoActive) return; const w = worldPoint(); lassoPts.push(w.x, w.y); lassoLine.points(lassoPts); lassoLine.strokeWidth(1 / stage.scaleX()); layer.batchDraw(); }
+  function lassoUp() {
+    if (!lassoActive) return; lassoActive = false; lassoLine.visible(false);
+    const poly = lassoPts; lassoPts = null; layer.batchDraw();
+    if (poly && poly.length >= 6) applyLasso(poly);
+  }
+  function pointInPoly(x, y, poly) {
+    let inside = false; const n = poly.length / 2;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = poly[2 * i], yi = poly[2 * i + 1], xj = poly[2 * j], yj = poly[2 * j + 1];
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  function applyLasso(poly) {
+    const picked = new Set();
+    nodes.forEach((node, id) => {
+      const el = elements.get(id); if (!el || (el.data.hidden && !revealHidden)) return;
+      const b = node.getClientRect({ relativeTo: layer });
+      if (pointInPoly(b.x + b.width / 2, b.y + b.height / 2, poly)) groupMembers(id).forEach((m) => { if (nodes.has(m)) picked.add(m); });
+    });
+    setTool('select'); // после обводки — режим выделения, чтобы двигать/удалять
+    clearSelection();
+    picked.forEach((id) => selected.add(id));
+    refreshTransformer();
+    boardHint(picked.size ? ('Выделено объектов: ' + picked.size) : 'Внутри контура ничего нет');
+  }
+
+  // Все объекты той же группы (или сам объект, если он не в группе).
+  function groupMembers(id) {
+    const el = elements.get(id);
+    const gid = el && el.data && el.data.groupId;
+    if (!gid) return [id];
+    return Array.from(elements.values())
+      .filter((e) => e.data && e.data.groupId === gid)
+      .map((e) => e.id);
+  }
+  function selectOnly(id) {
+    selected.clear();
+    groupMembers(id).forEach((mid) => { if (nodes.has(mid)) selected.add(mid); });
+    const el = elements.get(id);
+    activeFrameId = (el && el.type === 'frame') ? id : null; // активное окно
+    refreshTransformer();
+  }
+  function toggleSelect(id) {
+    const members = groupMembers(id).filter((mid) => nodes.has(mid));
+    if (!members.length) return;
+    const allSelected = members.every((mid) => selected.has(mid));
+    members.forEach((mid) => { if (allSelected) selected.delete(mid); else selected.add(mid); });
+    refreshTransformer();
+  }
+  function groupSelected() {
+    if (selected.size < 2) return;
+    const gid = 'g' + uuid();
+    Array.from(selected).forEach((id) => {
+      const el = elements.get(id);
+      if (!el) return;
+      el.data.groupId = gid;
+      send({ action: 'element_update', element: el });
+    });
+    refreshTransformer();
+  }
+  function ungroupSelected() {
+    let changed = false;
+    Array.from(selected).forEach((id) => {
+      const el = elements.get(id);
+      if (el && el.data && el.data.groupId != null) {
+        delete el.data.groupId;
+        send({ action: 'element_update', element: el });
+        changed = true;
+      }
+    });
+    if (changed) refreshTransformer();
+  }
+  function deleteSelected() {
+    if (selected.size === 0) return;
+    deleteWithDependents(Array.from(selected)); // каскад: точка → всё, что на ней завязано
+    selected.clear();
+    refreshTransformer();
+  }
+  // ── Дублирование ───────────────────────────────────────────────────────
+  const DUP_TYPES = ['shape', 'image', 'rect', 'ellipse', 'line', 'arrow', 'freehand', 'text', 'latex', 'sticky'];
+  function canDuplicate(el) { return DUP_TYPES.indexOf(el.type) >= 0 || (el.type === 'point' && !el.data.on); }
+  function duplicateSelected() {
+    const news = [];
+    Array.from(selected).forEach((id) => {
+      const el = elements.get(id); if (!el || !canDuplicate(el)) return;
+      const data = clone(el.data); delete data.hidden;
+      if (el.type === 'point') {
+        if (data.frame) { data.mx = (data.mx || 0) + 0.5; data.my = (data.my || 0) - 0.5; } else { data.x = (data.x || 0) + 20; data.y = (data.y || 0) + 20; }
+        data.label = nextPointLabel(); data.idx = undefined;
+      } else { if (data.x != null) data.x += 20; if (data.y != null) data.y += 20; }
+      const nel = { id: uuid(), type: el.type, z: el.z || 0, data: data };
+      upsertNode(nel); send({ action: 'element_add', element: nel }); histAdd(nel); news.push(nel.id);
+    });
+    if (news.length) { selected.clear(); news.forEach((i) => selected.add(i)); refreshTransformer(); layer.batchDraw(); boardHint('Дублировано: ' + news.length); }
+    else boardHint('Эти объекты нельзя дублировать');
+  }
+  // ── Порядок слоёв ──────────────────────────────────────────────────────
+  function moveElZ(ids, dir) {
+    let mz = 0, minz = 0; elements.forEach((e) => { const z = e.z || 0; if (z > mz) mz = z; if (z < minz) minz = z; });
+    ids.forEach((id) => {
+      const el = elements.get(id), n = nodes.get(id); if (!el || !n) return; const before = clone(el);
+      if (dir === 'front') { el.z = ++mz; if (typeof n.moveToTop === 'function') n.moveToTop(); }
+      else { el.z = --minz; if (typeof n.moveToBottom === 'function') n.moveToBottom(); }
+      histUpd(before, el); send({ action: 'element_update', element: el });
+    });
+    refreshTransformer(); layer.batchDraw();
+  }
+  // ── Выравнивание выделенных объектов (по рамкам) ───────────────────────
+  function moveItemTo(o, b, nx, ny, ops) {
+    const before = clone(o.el);
+    o.el.data.x += (nx - b.x); o.el.data.y += (ny - b.y);
+    o.n.x(o.el.data.x); o.n.y(o.el.data.y);
+    send({ action: 'element_update', element: o.el });
+    if (ops) ops.push({ kind: 'upd', before: before, after: clone(o.el) }); else histUpd(before, o.el);
+  }
+  function boxesForIds(ids) {
+    return ids.map((id) => { const o = { el: elements.get(id), n: nodes.get(id) }; return (o.el && o.n && o.el.data && o.el.data.x != null && typeof o.n.getClientRect === 'function') ? { o: o, b: o.n.getClientRect({ relativeTo: layer }) } : null; }).filter(Boolean);
+  }
+  // Разложить боксы (в заданном порядке) в сетку из cols колонок: строки —
+  // слева-направо с зазором gap и выравниванием по верху; следующая строка ниже
+  // предыдущей на (наибольшую высоту в строке + gap).
+  function arrangeGridBoxes(boxes, cols, gap, ox, oy) {
+    if (!boxes.length) return;
+    const ops = []; let x = ox, y = oy, col = 0, rowMaxH = 0;
+    boxes.forEach(({ o, b }) => {
+      if (col === cols) { x = ox; y += rowMaxH + gap; col = 0; rowMaxH = 0; }
+      moveItemTo(o, b, x, y, ops);
+      x += b.width + gap; if (b.height > rowMaxH) rowMaxH = b.height; col++;
+    });
+    histBatch(ops); refreshTransformer(); layer.batchDraw();
+  }
+  function viewportTopLeftWorld() { const s = stage.scaleX(); return { x: -stage.x() / s, y: -stage.y() / s }; }
+  const GRID_COLS = 12;
+  // Авто-раскладка партии импортированных/извлечённых объектов в сетку у левого
+  // верха видимой области (с отступом, чтобы не залезать под тулбар/шапку).
+  function autoGridArrange(ids) {
+    const boxes = boxesForIds(ids); if (boxes.length < 2) return;
+    const tl = viewportTopLeftWorld(), s = stage.scaleX();
+    arrangeGridBoxes(boxes, GRID_COLS, arrangeGap, tl.x + 90 / s, tl.y + 70 / s);
+    setTool('select'); boardHint('Разложено в сетку: ' + boxes.length + ' объект(ов)');
+  }
+  const arrangeGap = 20; // зазор между объектами при авто-раскладке в сетку (импорт), мир. ед.
+  // ── Контекстное меню (правый клик) ─────────────────────────────────────
+  const ctxMenu = document.createElement('div'); ctxMenu.id = 'ctx-menu'; ctxMenu.style.display = 'none'; document.body.appendChild(ctxMenu);
+  const CTX_ITEMS = [
+    { label: 'Дублировать', key: 'Ctrl+D', act: duplicateSelected },
+    { label: 'Скрыть', key: 'H', act: () => { if (selected.size) setHidden(Array.from(selected), true); } },
+    { label: 'На передний план', act: () => moveElZ(Array.from(selected), 'front') },
+    { label: 'На задний план', act: () => moveElZ(Array.from(selected), 'back') },
+    { sep: true },
+    { label: 'Удалить', key: 'Del', danger: true, act: deleteSelected },
+  ];
+  function hideCtxMenu() { ctxMenu.style.display = 'none'; }
+  function showCtxMenu(x, y) {
+    ctxMenu.innerHTML = '';
+    if (selected.size === 1) {
+      const el = elements.get(Array.from(selected)[0]);
+      if (el && el.type === 'point') {
+        const b = document.createElement('button'); b.className = 'ctx-item';
+        b.innerHTML = '<span>' + (el.data.trace ? 'Убрать след точки' : 'След точки (locus)') + '</span>';
+        b.addEventListener('click', () => { hideCtxMenu(); toggleTrace(el.id); }); ctxMenu.appendChild(b);
+        const s = document.createElement('div'); s.className = 'ctx-sep'; ctxMenu.appendChild(s);
+      }
+    }
+    CTX_ITEMS.forEach((it) => {
+      if (it.sep) { const s = document.createElement('div'); s.className = 'ctx-sep'; ctxMenu.appendChild(s); return; }
+      const b = document.createElement('button'); b.className = 'ctx-item' + (it.danger ? ' danger' : '');
+      b.innerHTML = '<span>' + it.label + '</span>' + (it.key ? '<span class="ctx-key">' + it.key + '</span>' : '');
+      b.addEventListener('click', () => { hideCtxMenu(); it.act(); });
+      ctxMenu.appendChild(b);
+    });
+    ctxMenu.style.left = Math.min(x, window.innerWidth - 190) + 'px';
+    ctxMenu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+    ctxMenu.style.display = 'block';
+  }
+  document.addEventListener('click', hideCtxMenu);
+  document.addEventListener('contextmenu', (e) => { if (!e.target.closest || !e.target.closest('#board-stage')) hideCtxMenu(); });
+  stage.on('contextmenu', (e) => {
+    if (e.evt) e.evt.preventDefault();
+    const w = worldPoint(); let id = null;
+    const g = w ? pickObjectAtWorld(w) : null;
+    if (g) id = g.id; else { const t = e.target; if (t && t !== stage && elements.get(t.id())) id = t.id(); }
+    if (id && !selected.has(id)) selectOnly(id);
+    if (!selected.size) { hideCtxMenu(); return; }
+    showCtxMenu(e.evt.clientX, e.evt.clientY);
+  });
+
+
+  // ── Редактор формул LaTeX ──────────────────────────────────────────────
+  const latexEditor = document.getElementById('latex-editor');
+  const leInput = document.getElementById('le-input');
+  const lePreview = document.getElementById('le-preview');
+  let latexInsertPos = null;
+
+  function openLatexEditor() {
+    latexInsertPos = worldPoint();
+    const p = stage.getPointerPosition();
+    // Координаты экрана: контейнер сцены начинается на 56px ниже навбара.
+    let left = p.x + 14, top = p.y + 56 + 14;
+    left = Math.min(left, window.innerWidth - 340);
+    latexEditor.style.left = left + 'px';
+    latexEditor.style.top = top + 'px';
+    latexEditor.hidden = false;
+    leInput.value = '';
+    lePreview.innerHTML = '<span style="color:#9a9aa4">превью формулы</span>';
+    leInput.focus();
+  }
+  function closeLatexEditor() { latexEditor.hidden = true; }
+
+  function updateLatexPreview() {
+    const tex = leInput.value;
+    if (!tex.trim()) { lePreview.innerHTML = '<span style="color:#9a9aa4">превью формулы</span>'; return; }
+    lePreview.textContent = '\\[' + tex + '\\]';
+    if (window.MathJax && MathJax.typesetPromise) {
+      MathJax.typesetPromise([lePreview]).catch(() => {});
+    }
+  }
+  function insertLatex() {
+    const tex = leInput.value.trim();
+    if (!tex) { closeLatexEditor(); return; }
+    const el = { id: uuid(), type: 'latex', z: 0,
+      data: { x: latexInsertPos.x, y: latexInsertPos.y, latex: tex, color: strokeColor } };
+    upsertNode(el);
+    send({ action: 'element_add', element: el });
+    histAdd(el);
+    closeLatexEditor();
+    setTool('select'); // сразу можно двигать вставленную формулу
+  }
+
+  if (leInput) {
+    leInput.addEventListener('input', updateLatexPreview);
+    leInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); insertLatex(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeLatexEditor(); }
+    });
+    document.getElementById('le-insert').addEventListener('click', insertLatex);
+    document.getElementById('le-cancel').addEventListener('click', closeLatexEditor);
+  }
+  // ── Редактор текста (с инлайн-формулами $...$) ─────────────────────────
+  // ── Rich-text редактор: тулбар (шрифт/кегль/Ж-К-Ч-З/цвет/фон/выравнивание/
+  //    списки/фон окна) + contenteditable. Формулы — внутри $…$, ссылки — авто. ──
+  const textEditor = document.getElementById('text-editor');
+  const tePanel = document.getElementById('te-panel');
+  const teEdit = document.getElementById('te-edit');
+  const teBar = document.getElementById('te-bar');
+  const teFont = document.getElementById('te-font');
+  const teSize = document.getElementById('te-size');
+  const TE_DEFAULT_SIZE = 22;
+  let teHiddenNode = null; // узел текста, скрытый на время правки «на месте»
+  // Диагностика правки текста (для отладки бага у пользователя): window.__teLog
+  window.__teLog = window.__teLog || [];
+  function teLog(o) { try { window.__teLog.push(o); if (window.__teLog.length > 300) window.__teLog.shift(); } catch (e) {} }
+  let teEl = null;            // редактируемый элемент (null — создаём новый)
+  let textInsertPos = null;   // мир-координаты для нового текста
+  let teBox = {};             // box-настройки текущего сеанса {font,fontSize,color,align,boxBg}
+
+  if (teFont) {
+    TEXT_FONTS.forEach((f) => { const o = document.createElement('option'); o.value = f.css; o.textContent = f.label; o.style.fontFamily = f.css; teFont.appendChild(o); });
+  }
+  // Попапы выбора цвета: строим лениво (BASE_COLORS объявлен ниже по файлу).
+  const TE_POPS = { color: 'te-color-pop', hilite: 'te-hilite-pop', boxbg: 'te-boxbg-pop' };
+  const TE_PBTN = { color: 'te-color-btn', hilite: 'te-hilite-btn', boxbg: 'te-boxbg-btn' };
+  function teCloseP() { Object.values(TE_POPS).forEach((id) => document.getElementById(id).classList.add('ps-hidden')); Object.values(TE_PBTN).forEach((id) => document.getElementById(id).classList.remove('te-on')); }
+  function teToggleP(which) {
+    const pop = document.getElementById(TE_POPS[which]), hid = pop.classList.contains('ps-hidden'); teCloseP();
+    if (hid) { const btn = document.getElementById(TE_PBTN[which]), r = btn.getBoundingClientRect(), er = tePanel.getBoundingClientRect(); pop.style.left = (r.left - er.left) + 'px'; pop.style.top = (r.bottom - er.top + 2) + 'px'; pop.classList.remove('ps-hidden'); btn.classList.add('te-on'); }
+  }
+  function teExec(cmd, val) { teEdit.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} document.execCommand(cmd, false, val == null ? null : val); syncTeBar(); updateTextPreview(); }
+  let teSwatchesBuilt = false;
+  function buildTeSwatches() {
+    if (teSwatchesBuilt) return; teSwatchesBuilt = true;
+    const mk = (gridId, onPick, noneLabel) => {
+      const grid = document.getElementById(gridId);
+      if (noneLabel) { const n = document.createElement('div'); n.className = 'cp-none'; n.textContent = noneLabel; n.addEventListener('click', () => onPick('')); grid.appendChild(n); }
+      BASE_COLORS.forEach((c) => { const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c; sw.addEventListener('click', () => onPick(c)); grid.appendChild(sw); });
+    };
+    mk('te-color-grid', (c) => { teExec('foreColor', c || '#1f2937'); teCloseP(); });
+    mk('te-hilite-grid', (c) => { const col = c || 'transparent'; teEdit.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} if (!document.execCommand('hiliteColor', false, col)) document.execCommand('backColor', false, col); updateTextPreview(); teCloseP(); }, 'Убрать фон');
+    mk('te-boxbg-grid', (c) => { teBox.boxBg = c; layoutTextEditor(); teCloseP(); }, 'Прозрачный');
+  }
+  function syncTeBar() {
+    teBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => { let on = false; try { on = document.queryCommandState(b.dataset.cmd); } catch (e) {} b.classList.toggle('te-on', on); });
+  }
+  const tePreview = document.getElementById('te-preview');
+  let teAnchor = null; // (не используется в оконном режиме, оставлено для совместимости)
+  // Живой предпросмотр: как отрисуется текст (шрифт/кегль/цвет/выравнивание/фон + формулы).
+  let tePrevTimer = null;
+  function updateTextPreview() {
+    if (!tePreview) return;
+    tePreview.style.fontFamily = teBox.font || TEXT_FONT;
+    tePreview.style.fontSize = (teBox.fontSize || TE_DEFAULT_SIZE) + 'px';
+    tePreview.style.color = teBox.color || '#1f2937';
+    tePreview.style.textAlign = teBox.align || 'left';
+    tePreview.style.background = teBox.boxBg || '';
+    if (!(teEdit.textContent || '').trim()) { tePreview.innerHTML = '<span style="color:#b0b0ba;font-size:13px">пусто — здесь появится предпросмотр</span>'; return; }
+    tePreview.innerHTML = linkifyHtml(teEdit.innerHTML);
+    if (!teBox.plain && window.MathJax && MathJax.typesetPromise) {
+      tePreview.querySelectorAll('mjx-assistive-mml').forEach((e) => e.remove());
+      MathJax.typesetPromise([tePreview]).then(() => { tePreview.querySelectorAll('mjx-assistive-mml').forEach((e) => e.remove()); }).catch(() => {});
+    }
+  }
+  function schedulePreview() { if (tePrevTimer) clearTimeout(tePrevTimer); tePrevTimer = setTimeout(updateTextPreview, 200); }
+  // Окно редактора — по центру сверху; поля тулбара синхронизируем с teBox; превью обновляем.
+  function layoutTextEditor() {
+    const pw = tePanel.offsetWidth || 540;
+    let left = Math.max(12, Math.round((window.innerWidth - pw) / 2));
+    tePanel.style.left = left + 'px';
+    tePanel.style.top = '72px';
+    teFont.value = teBox.font || TEXT_FONT; teSize.value = teBox.fontSize || TE_DEFAULT_SIZE;
+    updateTextPreview();
+  }
+  function setTeHint() {
+    const h = textEditor.querySelector('.te-hint'); if (!h) return;
+    h.textContent = teBox.plain
+      ? 'Обычный текст (без формул). Ссылки распознаются. Ctrl+Enter — готово, Esc — отмена'
+      : 'Формулы — внутри $…$. Ссылки распознаются. Ctrl+Enter — готово, Esc — отмена';
+  }
+  function openTextEditor(plain) {
+    teLog({ ev: 'openNew', plain: !!plain });
+    buildTeSwatches(); teEl = null; teHiddenNode = null; teAnchor = null; textInsertPos = worldPoint();
+    teBox = { font: TEXT_FONT, fontSize: TE_DEFAULT_SIZE, color: strokeColor, align: 'left', boxBg: '', wrapWidth: 0, plain: !!plain };
+    teEdit.innerHTML = ''; setTeHint();
+    clearSelection(); // без рамки выделения — правим «начисто»
+    textEditor.hidden = false; teCloseP(); layoutTextEditor(); teEdit.focus();
+  }
+  function openTextEditorFor(el) {
+    teLog({ ev: 'openFor', id: el.id, editorWasOpen: !textEditor.hidden, prevHiddenNode: teHiddenNode ? teHiddenNode.id() : null });
+    buildTeSwatches(); teEl = el; const d = el.data;
+    teBox = { font: d.font || TEXT_FONT, fontSize: d.fontSize || TE_DEFAULT_SIZE, color: d.color || strokeColor, align: d.align || 'left', boxBg: d.boxBg || '', wrapWidth: d.wrapWidth || 0, plain: !!d.plain };
+    teEdit.innerHTML = textContentHtml(d); setTeHint();
+    teHiddenNode = null; teAnchor = null; // окно отдельное — узел на доске не прячем
+    clearSelection();
+    textEditor.hidden = false; teCloseP(); layoutTextEditor(); teEdit.focus();
+    const r = document.createRange(); r.selectNodeContents(teEdit); r.collapse(false); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    syncTeBar(); updateTextPreview();
+  }
+  function restoreHiddenTextNode() { if (teHiddenNode) { teHiddenNode.visible(true); layer.batchDraw(); teHiddenNode = null; } }
+  function closeTextEditor() { teLog({ ev: 'close', hadHiddenNode: teHiddenNode ? teHiddenNode.id() : null }); textEditor.hidden = true; teCloseP(); restoreHiddenTextNode(); teEl = null; }
+  let teCommitting = false;
+  function commitText() {
+    if (teCommitting) { teLog({ ev: 'commit-reentry-blocked' }); return; } // защита от повторного входа
+    teCommitting = true;
+    const html = teEdit.innerHTML, plain = (teEdit.textContent || '').trim();
+    teLog({ ev: 'commit-enter', teEl: teEl ? teEl.id : null, plainLen: plain.length, htmlLen: html.length, html: html.slice(0, 80) });
+    try {
+      if (!plain) { // пусто — новый не создаём; существующий (очистили) удаляем
+        teLog({ ev: 'commit-DELETE', teEl: teEl ? teEl.id : null });
+        if (teEl) { const gid = teEl.id; teHiddenNode = null; histDel(teEl); send({ action: 'element_delete', id: gid }); removeNode(gid); }
+        return;
+      }
+      if (teEl) {
+        teLog({ ev: 'commit-UPDATE', id: teEl.id });
+        const el = teEl, before = clone(el), d = el.data;
+        d.html = html; d.text = plain; d.font = teBox.font; d.fontSize = teBox.fontSize; d.color = teBox.color; d.align = teBox.align; d.boxBg = teBox.boxBg; d.plain = teBox.plain;
+        delete d.width; delete d.height; // пересчитать размер под новый контент
+        if (teHiddenNode) { teHiddenNode.visible(true); teHiddenNode = null; } // вернуть узел ДО перерисовки
+        upsertNode(el); histUpd(before, el); send({ action: 'element_update', element: el });
+      } else {
+        teLog({ ev: 'commit-NEW' });
+        const el = { id: uuid(), type: 'text', z: 0, data: { x: textInsertPos.x, y: textInsertPos.y, html, text: plain, color: teBox.color, fontSize: teBox.fontSize, font: teBox.font, align: teBox.align, boxBg: teBox.boxBg, plain: teBox.plain } };
+        upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+      }
+    } catch (err) {
+      teLog({ ev: 'commit-ERROR', err: String(err && err.stack || err) });
+      try { console.error('commitText error', err); } catch (e) {}
+    } finally {
+      teLog({ ev: 'commit-finally' });
+      closeTextEditor(); setTool('select'); clearSelection(); // без рамки выделения после правки
+      if (handlesGroup.visible()) handlesGroup.hide();
+      if (connHandles.visible()) connHandles.hide();
+      tr.nodes([]); layer.batchDraw(); teCommitting = false;
+    }
+  }
+
+  if (teEdit) {
+    // Сохраняем выделение при кликах по тулбару/попапам (иначе execCommand теряет его).
+    textEditor.addEventListener('mousedown', (e) => { if (e.target.closest('#te-edit, #te-font, #te-size')) return; e.preventDefault(); });
+    teBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => b.addEventListener('click', () => teExec(b.dataset.cmd)));
+    document.getElementById('te-color-btn').addEventListener('click', () => teToggleP('color'));
+    document.getElementById('te-hilite-btn').addEventListener('click', () => teToggleP('hilite'));
+    document.getElementById('te-boxbg-btn').addEventListener('click', () => teToggleP('boxbg'));
+    teFont.addEventListener('change', () => { teBox.font = teFont.value; layoutTextEditor(); });
+    teSize.addEventListener('change', () => { const v = Math.max(8, Math.min(200, parseInt(teSize.value, 10) || TE_DEFAULT_SIZE)); teSize.value = v; teBox.fontSize = v; layoutTextEditor(); });
+    teEdit.addEventListener('keyup', syncTeBar);
+    teEdit.addEventListener('mouseup', syncTeBar);
+    teEdit.addEventListener('input', () => { syncTeBar(); schedulePreview(); });
+    teEdit.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commitText(); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeTextEditor(); }
+    });
+    document.getElementById('te-insert').addEventListener('click', commitText);
+    document.getElementById('te-cancel').addEventListener('click', closeTextEditor);
+    // Окно с предпросмотром: клик мимо НЕ коммитит (завершение — Готово/Отмена/Esc).
+    // Блокируем клик, чтобы он не дошёл до холста (иначе откроется второй редактор/рисование).
+    document.addEventListener('mousedown', (e) => {
+      if (textEditor.hidden) return;
+      if (e.target.closest('#text-editor')) return; // клик по окну/попапу
+      e.stopPropagation(); e.preventDefault();
+    }, true);
+  }
+
+  toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+  // ── Группы инструментов с выпадающим подменю (математика, материалы) ───
+  (function initToolGroups() {
+    const groups = Array.from(document.querySelectorAll('#board-toolbar .tool-group'));
+    if (!groups.length) return;
+    const defIcon = new Map();
+    groups.forEach((g) => defIcon.set(g, g.querySelector('.grp-icon').innerHTML));
+    function closeAll(except) {
+      groups.forEach((g) => { if (g !== except) g.querySelector('.tool-flyout').classList.remove('open'); });
+    }
+    groups.forEach((g) => {
+      const fly = g.querySelector('.tool-flyout');
+      g.addEventListener('click', (e) => {
+        if (e.target.closest('.tool-flyout')) return; // клик по под-инструменту — не трогаем
+        e.stopPropagation();
+        const open = !fly.classList.contains('open');
+        closeAll(g);
+        if (open) {
+          const r = g.getBoundingClientRect();
+          fly.style.left = (r.right + 10) + 'px';
+          fly.style.top = r.top + 'px';
+          fly.classList.add('open');
+          // Не даём высокому меню уехать за нижний край экрана — сдвигаем вверх.
+          const fh = fly.offsetHeight, vh = window.innerHeight;
+          let top = r.top;
+          if (top + fh > vh - 8) top = Math.max(8, vh - fh - 8);
+          fly.style.top = top + 'px';
+        } else { fly.classList.remove('open'); }
+      });
+      // Меню рисования НЕ закрываем при выборе под-инструмента — под лассо живут настройки.
+      if (g.dataset.group !== 'draw') fly.querySelectorAll('.tool[data-tool]').forEach((b) => b.addEventListener('click', () => fly.classList.remove('open')));
+    });
+    // Клик по пустому месту/холсту закрывает меню — кроме меню рисования, пока активен его инструмент.
+    document.addEventListener('click', (e) => { if (!(e.target && e.target.closest && e.target.closest('.tool-group'))) closeAll(isDrawToolActive() ? document.querySelector('.tool-group[data-group="draw"]') : null); });
+    // Отразить активный под-инструмент на кнопке группы (иконка + подсветка).
+    function syncGroups() {
+      groups.forEach((g) => {
+        const active = g.querySelector('.tool[data-tool].active');
+        const icon = g.querySelector('.grp-icon');
+        if (active) { g.classList.add('active'); icon.innerHTML = active.querySelector('svg').outerHTML; }
+        else { g.classList.remove('active'); icon.innerHTML = defIcon.get(g); }
+      });
+    }
+    const obs = new MutationObserver(syncGroups);
+    document.querySelectorAll('#board-toolbar .tool-flyout .tool[data-tool]')
+      .forEach((b) => obs.observe(b, { attributes: true, attributeFilter: ['class'] }));
+    syncGroups();
+  })();
+
+  // ── Перетаскивание инструментов левой панели (свой порядок, в localStorage) ──
+  // Двигать можно верхнеуровневые кнопки-инструменты и группы (до первого разделителя);
+  // под-инструменты в флайаутах и служебные кнопки (отмена/очистка/цвет) не трогаем.
+  (function initToolbarReorder() {
+    const bar = document.getElementById('board-toolbar');
+    if (!bar) return;
+    const KEY = 'board-toolbar-order-v1', SEL = '.tool[data-tool], .tool-group';
+    const isMovable = (el) => !!(el && el.parentElement === bar && el.matches && el.matches(SEL));
+    const keyOf = (el) => el.dataset.tool ? el.dataset.tool : ('group:' + el.dataset.group);
+    const movables = () => Array.from(bar.children).filter(isMovable);
+    const refNode = () => bar.querySelector('hr'); // блок инструментов — до первого разделителя
+    function save() { try { localStorage.setItem(KEY, JSON.stringify(movables().map(keyOf))); } catch (e) {} }
+    function applySaved() {
+      let order; try { order = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { return; }
+      if (!Array.isArray(order)) return;
+      const map = new Map(); movables().forEach((el) => map.set(keyOf(el), el));
+      const used = new Set(), seq = [];
+      order.forEach((k) => { const el = map.get(k); if (el) { seq.push(el); used.add(el); } });
+      movables().forEach((el) => { if (!used.has(el)) seq.push(el); });
+      const ref = refNode();
+      seq.forEach((el) => bar.insertBefore(el, ref));
+    }
+    movables().forEach((el) => el.setAttribute('draggable', 'true'));
+    let dragEl = null;
+    bar.addEventListener('dragstart', (e) => {
+      const it = e.target.closest(SEL);
+      if (!isMovable(it)) { dragEl = null; return; }
+      // Закрываем открытые флайауты: они спозиционированы фиксированно по месту
+      // кнопки и при перетаскивании «зависли» бы на старом месте.
+      document.querySelectorAll('#board-toolbar .tool-flyout.open').forEach((f) => f.classList.remove('open'));
+      dragEl = it; it.classList.add('tool-dragging');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    });
+    bar.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('tool-dragging'); dragEl = null; });
+    bar.addEventListener('dragover', (e) => {
+      if (!dragEl) return;
+      const it = e.target.closest(SEL);
+      if (!isMovable(it) || it === dragEl) return;
+      e.preventDefault();
+      const r = it.getBoundingClientRect();
+      bar.insertBefore(dragEl, (e.clientY < r.top + r.height / 2) ? it : it.nextSibling);
+    });
+    bar.addEventListener('drop', (e) => { if (dragEl) { e.preventDefault(); save(); } });
+    applySaved();
+  })();
+
+  document.getElementById('stroke-width').addEventListener('input', (e) => { strokeWidth = parseInt(e.target.value, 10); });
+
+  // ── Палитра цветов ─────────────────────────────────────────────────────
+  // 16 базовых цветов + свои (в localStorage). Выделены объекты → перекрашиваем
+  // их (группа однотипных — тоже); иначе задаём цвет по умолчанию для новых.
+  const BASE_COLORS = ['#1f2937', '#6b7280', '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e',
+    '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#ec4899', '#ffffff'];
+  const COLOR_STORE = 'board_custom_colors';
+  function loadCustomColors() { try { return JSON.parse(localStorage.getItem(COLOR_STORE) || '[]'); } catch (e) { return []; } }
+  function saveCustomColors(list) { try { localStorage.setItem(COLOR_STORE, JSON.stringify(list.slice(0, 16))); } catch (e) {} }
+  let customColors = loadCustomColors();
+
+  const colorBtn = document.getElementById('color-btn');
+  const palette = document.getElementById('color-palette');
+  const cpBase = document.getElementById('cp-base');
+  const cpCustom = document.getElementById('cp-custom');
+  const cpScope = document.getElementById('cp-scope');
+  const cpNative = document.getElementById('cp-native');
+
+  // Поля цвета зависят от типа: у части объектов это data.stroke, у геометрии — data.color.
+  function setElColor(el, color) {
+    el.data.color = color;
+    el.data.stroke = color;
+    const n = nodes.get(el.id); if (!n) return;
+    if (el.type === 'point') {
+      const lbl = n.findOne('.plabel'); if (lbl) lbl.fill(color); // глиф читает data.color сам
+    } else if (typeof n.stroke === 'function') {
+      n.stroke(color);
+      if (isFilledPoly(el.type) && typeof n.fill === 'function') n.fill(hexToRgba(color, 0.10)); // полупрозрачная заливка
+      if (el.type === 'vector' && typeof n.fill === 'function') n.fill(color); // наконечник стрелки
+    }
+    // angle рисуется sceneFunc'ом по data.color — перерисуется на batchDraw.
+  }
+  function applyColorTo(ids, color) {
+    ids.forEach((id) => {
+      const el = elements.get(id); if (!el) return;
+      const before = clone(el); setElColor(el, color); histUpd(before, el);
+      send({ action: 'element_update', element: el });
+    });
+    refreshConstructionHighlight(); // вернуть подсветку выделенным линиям/окружностям
+    layer.batchDraw();
+  }
+  function applyColorToAllPoints(color) {
+    const ids = []; elements.forEach((el) => { if (el.type === 'point') ids.push(el.id); });
+    applyColorTo(ids, color);
+  }
+  // Выбор цвета: есть выделение → перекрасить его; иначе — цвет по умолчанию.
+  function chooseColor(color) {
+    if (selected.size) { applyColorTo(Array.from(selected), color); }
+    else { strokeColor = color; }
+    colorBtn.style.background = color;
+    renderPalette();
+  }
+  function swatch(color, container) {
+    const b = document.createElement('div');
+    b.className = 'cp-sw'; b.style.background = color; b.title = color;
+    const cur = selected.size ? null : strokeColor;
+    if (cur && cur.toLowerCase() === color.toLowerCase()) b.classList.add('cp-sel');
+    b.addEventListener('click', () => chooseColor(color));
+    container.appendChild(b);
+  }
+  function renderPalette() {
+    cpScope.textContent = selected.size ? ('Перекрасить выделенные (' + selected.size + ')') : 'Цвет по умолчанию (для новых)';
+    cpBase.innerHTML = ''; BASE_COLORS.forEach((c) => swatch(c, cpBase));
+    cpCustom.innerHTML = '';
+    if (!customColors.length) { const e = document.createElement('div'); e.className = 'cp-custom-empty'; e.textContent = 'пока нет'; cpCustom.appendChild(e); }
+    else customColors.forEach((c) => swatch(c, cpCustom));
+  }
+  function openPalette() {
+    renderPalette();
+    const r = colorBtn.getBoundingClientRect();
+    palette.style.left = (r.right + 10) + 'px';
+    palette.style.top = Math.max(8, r.top - 40) + 'px';
+    palette.classList.remove('cp-hidden');
+  }
+  function closePalette() { palette.classList.add('cp-hidden'); }
+  colorBtn.style.background = strokeColor;
+  colorBtn.addEventListener('click', (e) => { e.stopPropagation(); palette.classList.contains('cp-hidden') ? openPalette() : closePalette(); });
+  palette.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', (e) => { if (!palette.classList.contains('cp-hidden') && e.target !== colorBtn) closePalette(); });
+  document.getElementById('cp-add').addEventListener('click', () => cpNative.click());
+  cpNative.addEventListener('input', (e) => {
+    const c = e.target.value;
+    if (customColors.indexOf(c) < 0) { customColors.unshift(c); saveCustomColors(customColors); customColors = loadCustomColors(); }
+    chooseColor(c); // выбрать сразу
+    renderPalette();
+  });
+  document.getElementById('cp-all').addEventListener('click', () => { applyColorToAllPoints(strokeColor); });
+
+  // ── Настройки точки (панель справа сверху) ─────────────────────────────
+  const settingsBtn = document.getElementById('settings-btn');
+  const pointSettings = document.getElementById('point-settings');
+  const SHAPE_ICONS = {
+    dot: '<circle cx="9" cy="9" r="5" fill="currentColor"/>',
+    open: '<circle cx="9" cy="9" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+    cross: '<path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.8" fill="none"/>',
+    plus: '<path d="M9 4v10M4 9h10" stroke="currentColor" stroke-width="1.8" fill="none"/>',
+    square: '<rect x="4.5" y="4.5" width="9" height="9" fill="currentColor"/>',
+    diamond: '<path d="M9 3l6 6-6 6-6-6z" fill="currentColor"/>',
+    triangle: '<path d="M9 3.5l5.5 11h-11z" fill="currentColor"/>',
+  };
+  function selectedPoints() { return Array.from(selected).map((id) => elements.get(id)).filter((e) => e && e.type === 'point'); }
+  function allPoints() { const a = []; elements.forEach((el) => { if (el.type === 'point') a.push(el); }); return a; }
+  // Режим панели: 'selection' — по выделенным; 'all' — по всем точкам доски.
+  let psMode = 'selection';
+  // «Применять только к новым»: в режиме «все …» изменение задаёт лишь дефолт типа
+  // (для будущих объектов), существующие объекты не трогаются. Общий флаг для обеих панелей.
+  let onlyNew = false;
+  function targetPoints() { return psMode === 'all' ? allPoints() : selectedPoints(); }
+  // Применить изменение к целевым точкам (выделенным или всем — по режиму панели).
+  function applyPointSetting(mutator) {
+    if (onlyNew && psMode === 'all') { renderPointSettings(); return; } // только дефолт, existing не трогаем
+    const pts = targetPoints(); // может быть пусто (режим «все» на доске без точек) — дефолт уже записан
+    pts.forEach((el) => { const before = clone(el); mutator(el); histUpd(before, el); });
+    if (pts.length) recomputeGeometry();
+    pts.forEach((el) => { const n = nodes.get(el.id); if (n) n.draggable(tool === 'select' && !el.data.locked && !isDerivedPoint(el)); updatePointLabel(el); send({ action: 'element_update', element: el }); });
+    if (pts.length) layer.batchDraw();
+    renderPointSettings(); // всегда — чтобы подсветка/значения отражали дефолт типа
+  }
+  // Ближайшая фигура (линия/окружность) окна к точке, не зависящая от неё (без цикла).
+  function nearestCurveToPoint(fr, lp, exclude) {
+    const TOL = 12 / stage.scaleX();
+    const deps = new Set(directDependents(exclude));
+    let best = null, bd = TOL;
+    elements.forEach((el) => {
+      if (el.id === exclude || el.data.frame !== fr.id || !isCurveType(el.type) || deps.has(el.id)) return;
+      const g = curveGeom(el); if (!g) return;
+      const d = distToCurve(g, lp); if (d < bd) { bd = d; best = el; }
+    });
+    return best;
+  }
+  function detachPoint(el) {
+    const fr = el.data.frame ? elements.get(el.data.frame) : null, n = nodes.get(el.id);
+    if (fr && n) { const m = frameLocalToMath(fr, n.x(), n.y()); el.data.mx = m.mx; el.data.my = m.my; }
+    delete el.data.on;
+  }
+  function attachPointToNearest(el) {
+    const fr = el.data.frame ? elements.get(el.data.frame) : null; if (!fr) { boardHint('Привязка — только в окне'); return; }
+    const lp = frameMathToLocal(fr, el.data.mx || 0, el.data.my || 0);
+    const c = nearestCurveToPoint(fr, lp, el.id);
+    if (!c) { boardHint('Рядом нет фигуры для привязки'); return; }
+    const g = curveGeom(c);
+    if (g.type === 'line') { let t = (lp.x - g.base.x) * g.u.x + (lp.y - g.base.y) * g.u.y; t = Math.max(g.tmin, Math.min(g.tmax, t)); el.data.on = { line: c.id, t: t }; }
+    else { const C = circleGeom(c); el.data.on = { circle: c.id, a: Math.atan2(lp.y - C.cy, lp.x - C.cx) }; }
+  }
+  function renderBindSection(el) {
+    const box = document.getElementById('ps-bind'); box.innerHTML = '';
+    if (!el) return;
+    const on = el.data.on, bound = on && (on.line || on.circle || on.isect || on.c);
+    const btn = document.createElement('button');
+    if (bound) { btn.textContent = 'Снять привязку (сделать свободной)'; btn.addEventListener('click', () => applyPointSetting(detachPoint)); }
+    else { btn.textContent = 'Привязать к ближайшей фигуре'; btn.addEventListener('click', () => applyPointSetting(attachPointToNearest)); }
+    box.appendChild(btn);
+  }
+  // Живое изменение (во время движения ползунка) — без сети/истории.
+  function livePointSetting(mutator) {
+    if (onlyNew && psMode === 'all') return; // только дефолт — existing не двигаем
+    targetPoints().forEach(mutator); recomputeGeometry();
+    targetPoints().forEach(updatePointLabel); layer.batchDraw();
+  }
+  function renderPointSettings() {
+    const pts = targetPoints(), el = pts[0], d = el ? el.data : {};
+    // В режиме «все …» панель отражает ДЕФОЛТ типа (typeDefaults), а не первый объект
+    // (иначе на пустой доске/при разных объектах подсветка не совпадала с заданным).
+    const eff = psMode === 'all' ? Object.assign({}, d, typeDefaults.point) : d;
+    document.getElementById('ps-head').textContent = psMode === 'all'
+      ? ('Все точки (' + pts.length + ')')
+      : (!pts.length ? 'Выделите точку' : (pts.length > 1 ? ('Настройки точек (' + pts.length + ')') : 'Настройки точки'));
+    // Переименование и привязка — только по одиночному выделению (не для «всех»).
+    const perPoint = psMode !== 'all' && pts.length === 1;
+    document.getElementById('ps-rename-row').style.display = perPoint ? '' : 'none';
+    document.getElementById('ps-bind').style.display = perPoint ? '' : 'none';
+    const sz = numSize(eff.size), lsz = numSize(eff.labelSize);
+    document.getElementById('ps-size-range').value = sz; document.getElementById('ps-size-num').value = sz;
+    document.getElementById('ps-labelsize-range').value = lsz; document.getElementById('ps-labelsize-num').value = lsz;
+    document.querySelectorAll('#ps-shape button').forEach((b) => b.classList.toggle('ps-on', b.dataset.shape === (eff.shape || 'dot')));
+    document.querySelectorAll('#ps-labelmode button').forEach((b) => b.classList.toggle('ps-on', b.dataset.mode === (eff.labelMode || 'name')));
+    document.getElementById('ps-labelhide').checked = !!eff.labelHidden;
+    document.getElementById('ps-rename').value = d.label || '';
+    document.getElementById('ps-lock').checked = !!eff.locked;
+    document.getElementById('ps-snap').checked = !!eff.snap;
+    const onRow = document.getElementById('ps-onlynew-row');
+    onRow.style.display = psMode === 'all' ? '' : 'none'; // «только к новым» — лишь в режиме «все»
+    document.getElementById('ps-onlynew').checked = onlyNew;
+    renderBindSection(el);
+  }
+  function syncPointSettings() { const ps = document.getElementById('point-settings'); if (ps && !ps.classList.contains('ps-hidden')) renderPointSettings(); }
+  // В режиме «все точки» изменение поля становится ДЕФОЛТОМ для новых точек.
+  function recPointDefault(field, value) { if (psMode === 'all') typeDefaults.point[field] = value; }
+  // Кнопки формы
+  (function () {
+    const box = document.getElementById('ps-shape');
+    Object.keys(SHAPE_ICONS).forEach((sh) => {
+      const b = document.createElement('button'); b.dataset.shape = sh; b.title = sh;
+      b.innerHTML = '<svg viewBox="0 0 18 18">' + SHAPE_ICONS[sh] + '</svg>';
+      b.addEventListener('click', () => { recPointDefault('shape', sh); applyPointSetting((e) => { e.data.shape = sh; }); });
+      box.appendChild(b);
+    });
+  })();
+  // Ползунок + число (парой) на поле data (size / labelSize). Во время движения —
+  // живое обновление, на отпускании — фиксация (сеть + история от снимка).
+  function bindSizeControl(rangeId, numId, field) {
+    const range = document.getElementById(rangeId), num = document.getElementById(numId);
+    let snap = null;
+    const startSnap = () => { snap = targetPoints().map(clone); };
+    const live = (v) => { v = Math.max(1, Math.min(100, parseInt(v, 10) || 1)); range.value = v; num.value = v; recPointDefault(field, v); livePointSetting((e) => { e.data[field] = v; }); };
+    const commit = () => {
+      const before = snap; snap = null;
+      if (onlyNew && psMode === 'all') return; // дефолт уже записан, existing не рассылаем
+      if (before) before.forEach((b) => { const el = elements.get(b.id); if (el) { histUpd(b, el); send({ action: 'element_update', element: el }); } });
+      else targetPoints().forEach((el) => send({ action: 'element_update', element: el }));
+    };
+    range.addEventListener('mousedown', startSnap);
+    range.addEventListener('input', () => live(range.value));
+    range.addEventListener('change', commit);
+    num.addEventListener('focus', startSnap);
+    num.addEventListener('input', () => live(num.value));
+    num.addEventListener('change', commit);
+  }
+  bindSizeControl('ps-size-range', 'ps-size-num', 'size');
+  bindSizeControl('ps-labelsize-range', 'ps-labelsize-num', 'labelSize');
+  document.querySelectorAll('#ps-labelmode button').forEach((b) => b.addEventListener('click', () => { recPointDefault('labelMode', b.dataset.mode); applyPointSetting((e) => { e.data.labelMode = b.dataset.mode; }); }));
+  document.getElementById('ps-labelhide').addEventListener('change', (ev) => { recPointDefault('labelHidden', ev.target.checked); applyPointSetting((e) => { e.data.labelHidden = ev.target.checked; }); });
+  document.getElementById('ps-lock').addEventListener('change', (ev) => { recPointDefault('locked', ev.target.checked); applyPointSetting((e) => { e.data.locked = ev.target.checked; }); });
+  document.getElementById('ps-snap').addEventListener('change', (ev) => { recPointDefault('snap', ev.target.checked); applyPointSetting((e) => { e.data.snap = ev.target.checked; }); });
+  document.getElementById('ps-rename').addEventListener('change', (ev) => applyPointSetting((e) => { e.data.label = ev.target.value; }));
+  document.getElementById('ps-onlynew').addEventListener('change', (ev) => { onlyNew = ev.target.checked; });
+
+  // Выпадающее меню кнопки настроек (категории — точка / прямая / …).
+  const settingsMenu = document.getElementById('settings-menu');
+  function closeSettingsMenu() { settingsMenu.classList.add('sm-hidden'); }
+  function openSettingsMenu() {
+    const r = settingsBtn.getBoundingClientRect();
+    settingsMenu.style.top = r.bottom + 8 + 'px';
+    settingsMenu.style.right = (window.innerWidth - r.right) + 'px';
+    settingsMenu.classList.remove('sm-hidden');
+  }
+  // ── Настройки фигур (прямая / окружность): цвет, толщина, стиль ─────────
+  const figureSettings = document.getElementById('figure-settings');
+  let fsMode = 'selection', fsType = 'line';
+  // 'line' — бесконечные/лучи (без отрезка, у отрезка своя панель); 'segment' — отрезок; 'angle' — угол.
+  function figTypeList() {
+    if (fsType === 'segment') return ['segment'];
+    if (fsType === 'angle') return ['angle'];
+    if (fsType === 'circle') return ['circ'];
+    if (fsType === 'polygon') return ['polygon', 'regpoly'];
+    return CONSTRUCT_LINES.filter((t) => t !== 'segment');
+  }
+  function allOfTypes(types) { const a = []; elements.forEach((el) => { if (types.indexOf(el.type) >= 0) a.push(el); }); return a; }
+  function selectedOfTypes(types) { return Array.from(selected).map((id) => elements.get(id)).filter((el) => el && types.indexOf(el.type) >= 0); }
+  function figureTargets() { return fsMode === 'all' ? allOfTypes(figTypeList()) : selectedOfTypes(figTypeList()); }
+  function applyFigureSetting(mutator) {
+    if (onlyNew && fsMode === 'all') { renderFigureSettings(); return; } // только дефолт, existing не трогаем
+    const fs = figureTargets(); // может быть пусто (режим «все» без фигур этого типа) — дефолт уже записан
+    fs.forEach((el) => { const before = clone(el); mutator(el); histUpd(before, el); applyFigureVisual(el); send({ action: 'element_update', element: el }); });
+    if (fs.length) { refreshConstructionHighlight(); layer.batchDraw(); }
+    renderFigureSettings(); // всегда — чтобы подсветка отражала дефолт типа
+  }
+  function liveFigureSetting(mutator) { if (onlyNew && fsMode === 'all') return; figureTargets().forEach((el) => { mutator(el); applyFigureVisual(el); }); layer.batchDraw(); }
+  function renderFigureSettings() {
+    const fs = figureTargets(), el = fs[0], d = el ? el.data : {};
+    // В режиме «все …» отражаем ДЕФОЛТ типа, а не первый объект.
+    const eff = fsMode === 'all' ? Object.assign({}, d, typeDefaults[fsType]) : d;
+    const many = fs.length > 1 ? ' (' + fs.length + ')' : '';
+    const nameAll = { line: 'Все прямые', segment: 'Все отрезки', angle: 'Все углы', circle: 'Все окружности', polygon: 'Все многоугольники' }[fsType];
+    const nameSel = { line: 'Настройки прямой', segment: 'Настройки отрезка', angle: 'Настройки угла', circle: 'Настройки окружности', polygon: 'Настройки многоугольника' }[fsType];
+    document.getElementById('fs-head').textContent = fsMode === 'all' ? (nameAll + ' (' + fs.length + ')') : (nameSel + many);
+    const w = eff.strokeWidth || 2;
+    document.getElementById('fs-width-range').value = w; document.getElementById('fs-width-num').value = w;
+    document.querySelectorAll('#fs-style button').forEach((b) => b.classList.toggle('ps-on', b.dataset.style === (eff.style || 'solid')));
+    document.querySelectorAll('#fs-colors .cp-sw').forEach((sw) => sw.classList.toggle('cp-sel', eff.color && eff.color.toLowerCase() === sw.dataset.color.toLowerCase()));
+    // Условные строки по типу.
+    const show = (id, on) => { const r = document.getElementById(id); if (r) r.style.display = on ? '' : 'none'; };
+    const isLine = fsType === 'line', isSeg = fsType === 'segment', isAngle = fsType === 'angle';
+    show('fs-chevrons-row', isLine || isSeg);
+    show('fs-ticks-row', isSeg); show('fs-length-row', isSeg);
+    show('fs-opacity-row', isAngle); show('fs-arcs-row', isAngle); show('fs-degree-row', isAngle);
+    const segN = (v, def) => String(v == null ? def : v);
+    document.querySelectorAll('#fs-chevrons button').forEach((b) => b.classList.toggle('ps-on', b.dataset.n === segN(eff.chevrons, 0)));
+    document.querySelectorAll('#fs-ticks button').forEach((b) => b.classList.toggle('ps-on', b.dataset.n === segN(eff.eqTicks, 0)));
+    document.querySelectorAll('#fs-arcs button').forEach((b) => b.classList.toggle('ps-on', b.dataset.n === segN(eff.arcCount, 1)));
+    document.getElementById('fs-length').checked = !!eff.showLength;
+    document.getElementById('fs-degree').checked = eff.showDegree !== false;
+    const op = Math.round((eff.fillOpacity || 0) * 100);
+    document.getElementById('fs-opacity-range').value = op; document.getElementById('fs-opacity-num').value = op;
+    const onRow = document.getElementById('fs-onlynew-row');
+    onRow.style.display = fsMode === 'all' ? '' : 'none';
+    document.getElementById('fs-onlynew').checked = onlyNew;
+  }
+  function syncFigureSettings() { const fs = document.getElementById('figure-settings'); if (fs && !fs.classList.contains('ps-hidden')) renderFigureSettings(); }
+  // В режиме «все …» изменение поля становится ДЕФОЛТОМ для новых фигур этого типа.
+  function recFigDefault(field, value) { if (fsMode === 'all') typeDefaults[fsType][field] = value; }
+  (function () { // свотчи цвета (16 базовых)
+    const box = document.getElementById('fs-colors');
+    BASE_COLORS.forEach((c) => { const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c; sw.addEventListener('click', () => { recFigDefault('color', c); applyFigureSetting((e) => setElColor(e, c)); }); box.appendChild(sw); });
+  })();
+  (function () { // толщина: ползунок + число (живое + фиксация)
+    const range = document.getElementById('fs-width-range'), num = document.getElementById('fs-width-num');
+    let snap = null;
+    const startSnap = () => { snap = figureTargets().map(clone); };
+    const live = (v) => { v = Math.max(1, Math.min(16, parseInt(v, 10) || 1)); range.value = v; num.value = v; recFigDefault('strokeWidth', v); liveFigureSetting((e) => { e.data.strokeWidth = v; }); };
+    const commit = () => { const before = snap; snap = null; if (onlyNew && fsMode === 'all') return; if (before) before.forEach((b) => { const el = elements.get(b.id); if (el) { histUpd(b, el); send({ action: 'element_update', element: el }); } }); else figureTargets().forEach((el) => send({ action: 'element_update', element: el })); };
+    range.addEventListener('mousedown', startSnap); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
+    num.addEventListener('focus', startSnap); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
+  })();
+  document.querySelectorAll('#fs-style button').forEach((b) => b.addEventListener('click', () => { recFigDefault('style', b.dataset.style); applyFigureSetting((e) => { e.data.style = b.dataset.style; }); }));
+  document.getElementById('fs-onlynew').addEventListener('change', (ev) => { onlyNew = ev.target.checked; });
+  // Сегментные кнопки-числа: шевроны / засечки / дуги.
+  function bindFigNums(boxId, field) {
+    document.querySelectorAll('#' + boxId + ' button').forEach((b) => b.addEventListener('click', () => {
+      const v = parseInt(b.dataset.n, 10); recFigDefault(field, v); applyFigureSetting((e) => { e.data[field] = v; });
+    }));
+  }
+  bindFigNums('fs-chevrons', 'chevrons');
+  bindFigNums('fs-ticks', 'eqTicks');
+  bindFigNums('fs-arcs', 'arcCount');
+  document.getElementById('fs-length').addEventListener('change', (ev) => { recFigDefault('showLength', ev.target.checked); applyFigureSetting((e) => { e.data.showLength = ev.target.checked; }); });
+  document.getElementById('fs-degree').addEventListener('change', (ev) => { recFigDefault('showDegree', ev.target.checked); applyFigureSetting((e) => { e.data.showDegree = ev.target.checked; }); });
+  (function () { // прозрачность заливки угла: ползунок + число (0..100 → 0..1)
+    const range = document.getElementById('fs-opacity-range'), num = document.getElementById('fs-opacity-num');
+    let snap = null;
+    const startSnap = () => { snap = figureTargets().map(clone); };
+    const live = (v) => { v = Math.max(0, Math.min(100, parseInt(v, 10) || 0)); range.value = v; num.value = v; recFigDefault('fillOpacity', v / 100); liveFigureSetting((e) => { e.data.fillOpacity = v / 100; }); };
+    const commit = () => { const before = snap; snap = null; if (onlyNew && fsMode === 'all') return; if (before) before.forEach((b) => { const el = elements.get(b.id); if (el) { histUpd(b, el); send({ action: 'element_update', element: el }); } }); else figureTargets().forEach((el) => send({ action: 'element_update', element: el })); };
+    range.addEventListener('mousedown', startSnap); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
+    num.addEventListener('focus', startSnap); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
+  })();
+
+  // ── Всплывающая панель линии/стрелки (у выделенного объекта) ──────────
+  const connPanel = document.getElementById('conn-panel');
+  // Применить правку к выделенному коннектору: перерисовать, записать в историю,
+  // разослать, переставить ручки и обновить панель.
+  function connApply(mutator, before) {
+    const el = connSelectedEl(); if (!el) return;
+    const b = before || clone(el);
+    mutator(el);
+    const node = nodes.get(el.id); if (node) node.draw();
+    histUpd(b, el); send({ action: 'element_update', element: el });
+    // Полный positionHandles: переставит ручки, скроет/покажет контроль (у уступа
+    // его нет) и обновит/переставит панель через showConnPanel.
+    positionHandles(); layer.batchDraw();
+  }
+  (function () { // свотчи цвета (те же 16 базовых)
+    const box = document.getElementById('cn-colors');
+    BASE_COLORS.forEach((c) => {
+      const sw = document.createElement('div'); sw.className = 'cp-sw';
+      sw.style.background = c; sw.dataset.color = c; sw.title = c;
+      sw.addEventListener('click', () => connApply((e) => setElColor(e, c)));
+      box.appendChild(sw);
+    });
+  })();
+  (function () { // толщина: ползунок + число (живое + фиксация в историю)
+    const range = document.getElementById('cn-width-range'), num = document.getElementById('cn-width-num');
+    let snap = null;
+    const start = () => { const el = connSelectedEl(); snap = el ? clone(el) : null; };
+    const live = (v) => {
+      v = Math.max(1, Math.min(24, parseInt(v, 10) || 1)); range.value = v; num.value = v;
+      const el = connSelectedEl(); if (!el) return;
+      el.data.strokeWidth = v; const node = nodes.get(el.id); if (node) node.draw(); layer.batchDraw();
+    };
+    const commit = () => { const before = snap; snap = null; const el = connSelectedEl(); if (el) { if (before) histUpd(before, el); send({ action: 'element_update', element: el }); } };
+    range.addEventListener('mousedown', start); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
+    num.addEventListener('focus', start); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
+  })();
+  // Иконки концов (SVG): линия + наконечник/точка справа; для начала — зеркально.
+  function capIcon(cap, side) {
+    if (!cap || cap === 'none') return '<span class="cn-none">Нет</span>';
+    const L = '<line x1="2" y1="8" x2="17" y2="8"/>';
+    let head;
+    switch (cap) {
+      case 'arrow': head = '<path d="M13 3 L22 8 L13 13 Z" fill="currentColor" stroke="none"/>'; break;
+      case 'arrow_open': head = '<polyline points="14,3 22,8 14,13" fill="none"/>'; break;
+      case 'triangle_open': head = '<path d="M13 3 L22 8 L13 13 Z" fill="none"/>'; break;
+      case 'diamond': head = '<path d="M13 8 L18 3.5 L23 8 L18 12.5 Z" fill="currentColor" stroke="none"/>'; break;
+      case 'diamond_open': head = '<path d="M13 8 L18 3.5 L23 8 L18 12.5 Z" fill="none"/>'; break;
+      case 'bar': head = '<line x1="20" y1="2" x2="20" y2="14"/>'; break;
+      case 'circle_open': head = '<circle cx="20" cy="8" r="3.4" fill="none"/>'; break;
+      default: head = '<circle cx="20" cy="8" r="3.2" fill="currentColor" stroke="none"/>'; // dot
+    }
+    const inner = L + head;
+    const g = side === 'start' ? '<g transform="scale(-1,1) translate(-28,0)">' + inner + '</g>' : inner;
+    return '<svg viewBox="0 0 28 16" class="cn-capsvg">' + g + '</svg>';
+  }
+  const CAP_OPTS = ['none', 'arrow', 'arrow_open', 'diamond', 'bar', 'dot'];
+  // Выпадашки выбора конца/начала — РИСУНКИ концов (не названия).
+  ['start', 'end'].forEach((side) => {
+    const box = document.createElement('div'); box.className = 'cn-caps';
+    CAP_OPTS.forEach((cap) => {
+      const btn = document.createElement('button'); btn.type = 'button'; btn.dataset.cap = cap; btn.innerHTML = capIcon(cap, side);
+      btn.addEventListener('click', () => connApply((e) => { e.data[side === 'start' ? 'startCap' : 'endCap'] = cap; }));
+      box.appendChild(btn);
+    });
+    document.getElementById('cn-' + side + '-pop').appendChild(box);
+  });
+  function connStraighten(d) { delete d.wl; delete d.wm; delete d.wr; delete d.c1; delete d.c2; delete d.ctrl; }
+  // Форма — взаимоисключающие типы: «кривая» (сплайн) и «уступ» (ортогональный).
+  document.querySelectorAll('#cn-shape button').forEach((b) => b.addEventListener('click', () => connApply((e) => {
+    const shape = b.dataset.shape, d = e.data;
+    if (shape === 'curve') {
+      if (connIsCurved(d) && !d.elbow) { connStraighten(d); } // уже кривая → выпрямить
+      else { connStraighten(d); d.elbow = false; d.wm = connDefaultCurve(d); }
+    } else { // уступ
+      if (d.elbow) { d.elbow = false; } else { connStraighten(d); d.elbow = true; }
+    }
+  })));
+  document.getElementById('cn-straighten').addEventListener('click', () => connApply((e) => { connStraighten(e.data); e.data.elbow = false; }));
+
+  // Выпадашки панели (цвет / тип / начало / конец) — открыта максимум одна.
+  const CN_POPS = { color: 'cn-color-pop', type: 'cn-type-pop', start: 'cn-start-pop', end: 'cn-end-pop' };
+  const CN_BTNS = { color: 'cn-color-btn', type: 'cn-type-btn', start: 'cn-start-btn', end: 'cn-end-btn' };
+  function closeConnPops() { Object.values(CN_POPS).forEach((id) => document.getElementById(id).classList.add('ps-hidden')); Object.values(CN_BTNS).forEach((id) => document.getElementById(id).classList.remove('cn-open')); }
+  function toggleConnPop(which) {
+    const pop = document.getElementById(CN_POPS[which]), wasHidden = pop.classList.contains('ps-hidden');
+    closeConnPops();
+    if (wasHidden) { pop.classList.remove('ps-hidden'); document.getElementById(CN_BTNS[which]).classList.add('cn-open'); }
+  }
+  Object.keys(CN_BTNS).forEach((which) => document.getElementById(CN_BTNS[which]).addEventListener('click', (e) => { e.stopPropagation(); if (!connSelectedEl()) return; renderConnPanel(); toggleConnPop(which); }));
+  document.addEventListener('click', (e) => { if (!connPanel.classList.contains('ps-hidden') && !connPanel.contains(e.target)) closeConnPops(); });
+
+  function renderConnPanel() {
+    const el = connSelectedEl(); if (!el) return;
+    const d = el.data, isArrow = el.type === 'arrow';
+    const w = d.strokeWidth || 2;
+    document.getElementById('cn-width-range').value = w; document.getElementById('cn-width-num').value = w;
+    const col = d.stroke || d.color || '#1f2937';
+    document.getElementById('cn-color-dot').style.background = col;
+    document.querySelectorAll('#cn-colors .cp-sw').forEach((sw) => sw.classList.toggle('cp-sel', sw.dataset.color.toLowerCase() === col.toLowerCase()));
+    // Разделитель — только цвет+толщина: концы и «форму» прячем.
+    const isDiv = !!d.divider;
+    // Иконки концов на кнопках-бара + активная опция в выпадашках. У сужения/разделителя концов нет.
+    const sc = d.startCap || 'none', ec = d.endCap || (isArrow ? 'arrow' : 'none');
+    document.getElementById('cn-start-btn').style.display = (d.taper || isDiv) ? 'none' : '';
+    document.getElementById('cn-end-btn').style.display = (d.taper || isDiv) ? 'none' : '';
+    document.getElementById('cn-start-btn').innerHTML = capIcon(sc, 'start');
+    document.getElementById('cn-end-btn').innerHTML = capIcon(ec, 'end');
+    document.querySelectorAll('#cn-start-pop .cn-caps button').forEach((b) => b.classList.toggle('cn-on', b.dataset.cap === sc));
+    document.querySelectorAll('#cn-end-pop .cn-caps button').forEach((b) => b.classList.toggle('cn-on', b.dataset.cap === ec));
+    // Тип: «кривая» у всех; «уступ» только у стрелок; у разделителя формы нет.
+    const isCurve = connIsCurved(d) && !d.elbow;
+    document.querySelectorAll('#cn-shape button').forEach((b) => {
+      const shape = b.dataset.shape;
+      b.style.display = (!isDiv && (shape === 'curve' || isArrow)) ? '' : 'none';
+      const on = shape === 'curve' ? isCurve : shape === 'elbow' ? !!d.elbow : !!d.taper;
+      b.classList.toggle('cn-on', on);
+    });
+    document.getElementById('cn-shape').style.display = isDiv ? 'none' : '';
+    document.getElementById('cn-straighten').style.display = (!isDiv && (isCurve || d.elbow)) ? '' : 'none';
+  }
+  function positionConnPanel(el) {
+    el = el || connSelectedEl(); if (!el) return;
+    const node = nodes.get(el.id); if (!node) return;
+    const cr = node.getClientRect(); // в координатах контейнера stage (учёт масштаба/сдвига)
+    const box = stage.container().getBoundingClientRect();
+    const pw = connPanel.offsetWidth || 232, ph = connPanel.offsetHeight || 220;
+    let left = box.left + cr.x + cr.width / 2 - pw / 2;
+    let top = box.top + cr.y - ph - 14;
+    if (top < 70) top = box.top + cr.y + cr.height + 14; // не влезает сверху — показываем снизу
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    top = Math.max(70, Math.min(top, window.innerHeight - ph - 8));
+    connPanel.style.left = left + 'px'; connPanel.style.top = top + 'px';
+  }
+  function showConnPanel(el) { renderConnPanel(); connPanel.classList.remove('ps-hidden'); positionConnPanel(el); }
+  function hideConnPanel() { if (!connPanel.classList.contains('ps-hidden')) { closeConnPops(); connPanel.classList.add('ps-hidden'); } }
+  function repositionConnPanel() { if (!connPanel.classList.contains('ps-hidden')) { const el = connSelectedEl(); if (el) positionConnPanel(el); } }
+
+  // ── Панель фигуры: граница (цвет/толщина) + заливка (цвет/прозрачность) ──
+  const SHAPE_TYPES_PANEL = ['rect', 'ellipse', 'shape'];
+  const shapePanel = document.getElementById('shape-panel');
+  function shapeSelectedEl() { if (selected.size !== 1) return null; const el = elements.get(Array.from(selected)[0]); return (el && SHAPE_TYPES_PANEL.indexOf(el.type) >= 0) ? el : null; }
+  function shapeApply(mutator) {
+    const el = shapeSelectedEl(); if (!el) return;
+    const before = clone(el); mutator(el);
+    upsertNode(el); histUpd(before, el); send({ action: 'element_update', element: el });
+    layer.batchDraw(); renderShapePanel();
+  }
+  (function buildShapeSwatches() {
+    const bc = document.getElementById('sp-border-colors');
+    BASE_COLORS.forEach((c) => { const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c; sw.addEventListener('click', () => shapeApply((e) => { e.data.stroke = c; e.data.color = c; })); bc.appendChild(sw); });
+    const fc = document.getElementById('sp-fill-colors');
+    const none = document.createElement('div'); none.className = 'cp-sw cp-nofill'; none.title = 'Без заливки'; none.addEventListener('click', () => shapeApply((e) => { e.data.fill = ''; })); fc.appendChild(none);
+    BASE_COLORS.forEach((c) => { const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c; sw.addEventListener('click', () => shapeApply((e) => { e.data.fill = c; if (e.data.fillOpacity == null) e.data.fillOpacity = 0.2; })); fc.appendChild(sw); });
+  })();
+  (function () { // толщина границы: ползунок + число, живое + фиксация
+    const range = document.getElementById('sp-border-range'), num = document.getElementById('sp-border-num'); let snap = null;
+    const start = () => { const el = shapeSelectedEl(); snap = el ? clone(el) : null; };
+    const live = (v) => { v = Math.max(0, Math.min(24, parseInt(v, 10) || 0)); range.value = v; num.value = v; const el = shapeSelectedEl(); if (!el) return; el.data.strokeWidth = v; upsertNode(el); layer.batchDraw(); };
+    const commit = () => { const before = snap; snap = null; const el = shapeSelectedEl(); if (el) { if (before) histUpd(before, el); send({ action: 'element_update', element: el }); } };
+    range.addEventListener('mousedown', start); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
+    num.addEventListener('focus', start); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
+  })();
+  (function () { // прозрачность заливки
+    const range = document.getElementById('sp-fill-opacity'), val = document.getElementById('sp-fill-opacity-val'); let snap = null;
+    const start = () => { const el = shapeSelectedEl(); snap = el ? clone(el) : null; };
+    const live = (v) => {
+      v = Math.max(0, Math.min(100, parseInt(v, 10) || 0)); range.value = v; val.textContent = v + '%';
+      const el = shapeSelectedEl(); if (!el) return; el.data.fillOpacity = v / 100;
+      if (el.data.fill === undefined || el.data.fill === '') el.data.fill = el.data.stroke || el.data.color || '#1f2937'; // прозрачности нужна заливка
+      upsertNode(el); layer.batchDraw(); renderShapePanel();
+    };
+    const commit = () => { const before = snap; snap = null; const el = shapeSelectedEl(); if (el) { if (before) histUpd(before, el); send({ action: 'element_update', element: el }); } };
+    range.addEventListener('mousedown', start); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
+  })();
+  const SP_POPS = { border: 'sp-border-pop', fill: 'sp-fill-pop' }, SP_BTNS = { border: 'sp-border-btn', fill: 'sp-fill-btn' };
+  function closeShapePops() { Object.values(SP_POPS).forEach((id) => document.getElementById(id).classList.add('ps-hidden')); Object.values(SP_BTNS).forEach((id) => document.getElementById(id).classList.remove('cn-open')); }
+  function toggleShapePop(which) { const pop = document.getElementById(SP_POPS[which]), wasHidden = pop.classList.contains('ps-hidden'); closeShapePops(); if (wasHidden) { pop.classList.remove('ps-hidden'); document.getElementById(SP_BTNS[which]).classList.add('cn-open'); } }
+  Object.keys(SP_BTNS).forEach((which) => document.getElementById(SP_BTNS[which]).addEventListener('click', (e) => { e.stopPropagation(); if (!shapeSelectedEl()) return; renderShapePanel(); toggleShapePop(which); }));
+  document.addEventListener('click', (e) => { if (!shapePanel.classList.contains('ps-hidden') && !shapePanel.contains(e.target)) closeShapePops(); });
+  function renderShapePanel() {
+    const el = shapeSelectedEl(); if (!el) return; const d = el.data;
+    const bw = d.strokeWidth == null ? 2 : d.strokeWidth;
+    document.getElementById('sp-border-range').value = bw; document.getElementById('sp-border-num').value = bw;
+    const bcol = d.stroke || d.color || '#1f2937';
+    document.querySelectorAll('#sp-border-colors .cp-sw').forEach((sw) => sw.classList.toggle('cp-sel', (sw.dataset.color || '').toLowerCase() === bcol.toLowerCase()));
+    const legacyFill = (el.type === 'shape');
+    const fillCol = (d.fill === undefined) ? (legacyFill ? bcol : '') : d.fill;
+    document.getElementById('sp-fill-dot').style.background = fillCol ? fillCol : 'transparent';
+    const op = d.fillOpacity == null ? 0.2 : d.fillOpacity;
+    document.getElementById('sp-fill-opacity').value = Math.round(op * 100); document.getElementById('sp-fill-opacity-val').textContent = Math.round(op * 100) + '%';
+    document.querySelectorAll('#sp-fill-colors .cp-sw').forEach((sw) => {
+      if (sw.classList.contains('cp-nofill')) sw.classList.toggle('cp-sel', d.fill === '');
+      else sw.classList.toggle('cp-sel', !!fillCol && (sw.dataset.color || '').toLowerCase() === String(fillCol).toLowerCase());
+    });
+  }
+  function positionShapePanel(el) {
+    el = el || shapeSelectedEl(); if (!el) return; const node = nodes.get(el.id); if (!node) return;
+    const cr = node.getClientRect(), box = stage.container().getBoundingClientRect();
+    const pw = shapePanel.offsetWidth || 110, ph = shapePanel.offsetHeight || 48;
+    let left = box.left + cr.x + cr.width / 2 - pw / 2, top = box.top + cr.y - ph - 14;
+    if (top < 70) top = box.top + cr.y + cr.height + 14;
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    top = Math.max(70, Math.min(top, window.innerHeight - ph - 8));
+    shapePanel.style.left = left + 'px'; shapePanel.style.top = top + 'px';
+  }
+  function showShapePanel(el) { renderShapePanel(); shapePanel.classList.remove('ps-hidden'); positionShapePanel(el); }
+  function hideShapePanel() { if (!shapePanel.classList.contains('ps-hidden')) { closeShapePops(); shapePanel.classList.add('ps-hidden'); } }
+  document.getElementById('sp-text-btn').addEventListener('click', (e) => { e.stopPropagation(); const el = shapeSelectedEl(); if (el) startShapeTextEdit(el); });
+
+  // ── ТЕКСТ ВНУТРИ ФИГУРЫ (rect/ellipse/shape) — богатый DOM-текст поверх фигуры ──
+  // Оверлей .shape-text на #widget-layer, масштаб через transform (как tbox). Правка
+  // переиспользует панель #tbox-bar (activeTbox-совместимый item). Ссылки — кликабельны.
+  const shapeTextItems = new Map();
+  function shapeTextDefaults() { return { html: '', font: TEXT_FONT, fontSize: 18, color: '#1f2937', align: 'center', boxBg: '' }; }
+  function linkifyClickable(html) {
+    const root = document.createElement('div'); root.innerHTML = sanitizeHtml(html || '');
+    (function walk(node) { let child = node.firstChild; while (child) { const next = child.nextSibling;
+      if (child.nodeType === 3) { const t = child.nodeValue; URL_RE.lastIndex = 0;
+        if (URL_RE.test(t)) { URL_RE.lastIndex = 0; const frag = document.createDocumentFragment(); let last = 0, m;
+          while ((m = URL_RE.exec(t))) { if (m.index > last) frag.appendChild(document.createTextNode(t.slice(last, m.index)));
+            const a = document.createElement('a'); a.href = /^https?:/i.test(m[0]) ? m[0] : 'https://' + m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = m[0]; frag.appendChild(a); last = m.index + m[0].length; }
+          if (last < t.length) frag.appendChild(document.createTextNode(t.slice(last))); child.replaceWith(frag); } }
+      else if (child.nodeType === 1) { const isLink = child.tagName === 'A' || (child.classList && child.classList.contains('lnk')); if (!isLink) walk(child); }
+      child = next; } })(root);
+    return root.innerHTML;
+  }
+  function ensureShapeTextItem(el) {
+    let it = shapeTextItems.get(el.id); if (it) return it;
+    const wrapper = document.createElement('div'); wrapper.className = 'shape-text';
+    const ed = document.createElement('div'); ed.className = 'shape-text-in'; ed.setAttribute('spellcheck', 'false');
+    wrapper.appendChild(ed); widgetLayerEl.appendChild(wrapper);
+    it = { wrapper, ed, shapeId: el.id, editing: false, _wired: false };
+    shapeTextItems.set(el.id, it);
+    return it;
+  }
+  function removeShapeText(id) { const it = shapeTextItems.get(id); if (it) { it.wrapper.remove(); shapeTextItems.delete(id); } }
+  function repositionShapeText(id) {
+    const it = shapeTextItems.get(id); if (!it) return;
+    const node = nodes.get(id); if (!node) { it.wrapper.style.display = 'none'; return; }
+    it.wrapper.style.display = '';
+    const s = stage.scaleX(), b = node.getClientRect({ relativeTo: layer });
+    it.wrapper.style.transform = 'translate(' + (b.x * s + stage.x()) + 'px,' + (b.y * s + stage.y()) + 'px) scale(' + s + ')';
+    it.wrapper.style.width = Math.max(8, b.width) + 'px'; it.wrapper.style.height = Math.max(8, b.height) + 'px';
+  }
+  function syncShapeText(el) {
+    const it0 = shapeTextItems.get(el.id);
+    const editing = it0 && it0.editing;
+    const has = el.data.tb && (el.data.tb.html || '').trim();
+    if (!has && !editing) { removeShapeText(el.id); return; }
+    const it = ensureShapeTextItem(el);
+    if (!it.editing) { applyTboxStyle(it.ed, el.data.tb || shapeTextDefaults()); if (document.activeElement !== it.ed) it.ed.innerHTML = linkifyClickable((el.data.tb || {}).html || ''); }
+    repositionShapeText(el.id);
+  }
+  function startShapeTextEdit(el) {
+    if (viewOnly || (el.data && el.data.locked)) return;
+    clearSelection(); // прячем ручки/панель фигуры — при правке текста виден только тулбар
+    const it = ensureShapeTextItem(el);
+    if (!el.data.tb) el.data.tb = shapeTextDefaults();
+    it.editing = true; it.editBefore = clone(el); it._realEl = el;
+    it.wrapper.classList.add('editing');
+    it.ed.setAttribute('contenteditable', 'true');
+    applyTboxStyle(it.ed, el.data.tb);
+    it.ed.innerHTML = sanitizeHtml(el.data.tb.html || ''); // сырой html (без кликабельных <a>) — для правки
+    repositionShapeText(el.id);
+    it.ed.focus();
+    const r = document.createRange(); r.selectNodeContents(it.ed); r.collapse(false); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    activeTbox = { ed: it.ed, el: { id: el.id, data: el.data.tb }, _realEl: el, wrapper: it.wrapper, isShapeText: true, editing: true };
+    it._active = activeTbox;
+    if (!it._wired) { wireShapeTextEditing(it); it._wired = true; }
+    showTboxBar(activeTbox);
+  }
+  function wireShapeTextEditing(it) {
+    it.ed.addEventListener('input', () => { const el = it._realEl; if (el && el.data.tb) { el.data.tb.html = it.ed.innerHTML; if (it._active) tboxSyncSoon(it._active); } });
+    it.ed.addEventListener('blur', () => setTimeout(() => {
+      if (!it.editing || document.activeElement === it.ed || (tboxBar && tboxBar.contains(document.activeElement))) return;
+      endShapeTextEdit(it);
+    }, 0));
+    it.ed.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); it.ed.blur(); } });
+  }
+  function endShapeTextEdit(it) {
+    if (!it.editing) return; const el = it._realEl; it.editing = false;
+    it.wrapper.classList.remove('editing'); it.ed.setAttribute('contenteditable', 'false');
+    if (el && el.data.tb) el.data.tb.html = it.ed.innerHTML;
+    if (activeTbox === it._active) activeTbox = null;
+    hideTboxBar();
+    if (el) {
+      if (!(it.ed.textContent || '').trim()) delete el.data.tb; // пусто — убираем текст
+      send({ action: 'element_update', element: el });
+      if (it.editBefore) histUpd(it.editBefore, el);
+      syncShapeText(el);
+    }
+  }
+
+  function hideAllSettings() { pointSettings.classList.add('ps-hidden'); figureSettings.classList.add('ps-hidden'); closeSettingsMenu(); }
+  function openPointPanel(mode) { psMode = mode; closeSettingsMenu(); figureSettings.classList.add('ps-hidden'); renderPointSettings(); pointSettings.classList.remove('ps-hidden'); }
+  function openFigurePanel(type, mode) { fsType = type; fsMode = mode; closeSettingsMenu(); pointSettings.classList.add('ps-hidden'); renderFigureSettings(); figureSettings.classList.remove('ps-hidden'); }
+  function anySettingsOpen() { return !settingsMenu.classList.contains('sm-hidden') || !pointSettings.classList.contains('ps-hidden') || !figureSettings.classList.contains('ps-hidden'); }
+  // Клик по шестерёнке: есть выделение → сразу панель его типа; иначе → меню
+  // (где пункт меняет ВСЕ объекты этого типа на доске).
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (anySettingsOpen()) { hideAllSettings(); return; }
+    if (selectedPoints().length) { openPointPanel('selection'); return; }
+    if (selectedOfTypes(['segment']).length) { openFigurePanel('segment', 'selection'); return; }
+    if (selectedOfTypes(['angle']).length) { openFigurePanel('angle', 'selection'); return; }
+    if (selectedOfTypes(CONSTRUCT_LINES.filter((t) => t !== 'segment')).length) { openFigurePanel('line', 'selection'); return; }
+    if (selectedOfTypes(['circ']).length) { openFigurePanel('circle', 'selection'); return; }
+    if (selectedOfTypes(['polygon', 'regpoly']).length) { openFigurePanel('polygon', 'selection'); return; }
+    openSettingsMenu();
+  });
+  settingsMenu.querySelectorAll('button[data-target]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (b.disabled) return;
+    closeSettingsMenu();
+    // Панель «все …» открываем даже при пустой доске — чтобы задать дефолты для
+    // новых объектов (изменения запишутся в typeDefaults и применятся к будущим).
+    const t = b.dataset.target;
+    if (t === 'point') openPointPanel('all');
+    else if (t === 'line') openFigurePanel('line', 'all');
+    else if (t === 'segment') openFigurePanel('segment', 'all');
+    else if (t === 'angle') openFigurePanel('angle', 'all');
+    else if (t === 'circle') openFigurePanel('circle', 'all');
+    else if (t === 'polygon') openFigurePanel('polygon', 'all');
+  }));
+  pointSettings.addEventListener('click', (e) => e.stopPropagation());
+  figureSettings.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', (e) => {
+    const onBtn = e.target === settingsBtn || settingsBtn.contains(e.target);
+    if (onBtn || settingsMenu.contains(e.target)) return;
+    closeSettingsMenu(); pointSettings.classList.add('ps-hidden'); figureSettings.classList.add('ps-hidden');
+  });
+
+  document.querySelector('[data-action="clear"]').addEventListener('click', () => {
+    if (!confirm('Очистить всю доску? Это удалит все элементы у всех участников.')) return;
+    const ids = Array.from(elements.keys());
+    ids.forEach((id) => { const el = elements.get(id); if (el) histDel(el); send({ action: 'element_delete', id }); removeNode(id); });
+  });
+  const undoBtn = document.querySelector('[data-action="undo"]');
+  const redoBtn = document.querySelector('[data-action="redo"]');
+  if (undoBtn) undoBtn.addEventListener('click', doUndo);
+  if (redoBtn) redoBtn.addEventListener('click', doRedo);
+
+  // Плавная панорама холста стрелками (камера: стрелка вниз → едем вниз).
+  // Зажатые клавиши копят скорость; движение идёт в rAF-цикле и плавно
+  // разгоняется/тормозит. Shift — быстрее. Работает в любом инструменте.
+  const PAN_KEYS = { ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 };
+  const PAN_SPEED = 750;   // макс. скорость, px/сек
+  const PAN_EASE = 0.2;    // плавность разгона/торможения (0..1 за кадр)
+  const heldKeys = new Set();
+  let shiftHeld = false;
+  let panVX = 0, panVY = 0, panRAF = null, lastPanT = 0;
+
+  function panDirection() {
+    let x = 0, y = 0;
+    if (heldKeys.has('ArrowLeft'))  x += 1;
+    if (heldKeys.has('ArrowRight')) x -= 1;
+    if (heldKeys.has('ArrowUp'))    y += 1;
+    if (heldKeys.has('ArrowDown'))  y -= 1;
+    if (x && y) { x *= Math.SQRT1_2; y *= Math.SQRT1_2; } // ровная диагональ
+    return { x, y };
+  }
+
+  function panLoop(t) {
+    const dt = lastPanT ? Math.min(0.05, (t - lastPanT) / 1000) : 0;
+    lastPanT = t;
+    const dir = panDirection();
+    const speed = PAN_SPEED * (shiftHeld ? 2 : 1);
+    // Скорость плавно стремится к целевой (разгон при зажатии, торможение при отпускании).
+    panVX += (dir.x * speed - panVX) * PAN_EASE;
+    panVY += (dir.y * speed - panVY) * PAN_EASE;
+    if (!dir.x && !dir.y && Math.abs(panVX) < 1 && Math.abs(panVY) < 1) {
+      panVX = panVY = 0; panRAF = null; lastPanT = 0; return; // остановились
+    }
+    stage.position({ x: stage.x() + panVX * dt, y: stage.y() + panVY * dt });
+    redrawGrid();
+    repositionCursors();
+    panRAF = requestAnimationFrame(panLoop);
+  }
+  function ensurePanLoop() {
+    if (panRAF == null) { lastPanT = 0; panRAF = requestAnimationFrame(panLoop); }
+  }
+
+  // Горячие клавиши.
+  window.addEventListener('keydown', (e) => {
+    if (e.target && e.target.matches && e.target.matches('input, textarea, [contenteditable], [contenteditable] *')) return;
+    shiftHeld = e.shiftKey;
+
+    // «Только просмотр»: блокируем правки (удаление/дубль/группа/скрыть/undo/redo),
+    // оставляем навигацию (стрелки-панораму, Esc).
+    if (viewOnly && (e.key === 'Delete' || e.key === 'Backspace' || ((e.ctrlKey || e.metaKey) && 'dgzy'.indexOf(e.key.toLowerCase()) >= 0) || e.key === 'h' || e.key === 'H')) { e.preventDefault(); return; }
+
+    // Многоугольник: Enter — замкнуть, Esc — отменить незавершённый.
+    if (tool === 'polygon' && polyPicks.length) {
+      if (e.key === 'Enter') { e.preventDefault(); finishPolygon(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); clearPolyPicks(); return; }
+    }
+    // Середина/центр масс: Enter — построить, Esc — отменить.
+    if (tool === 'midpoint' && midPicks.length) {
+      if (e.key === 'Enter') { e.preventDefault(); finishMidpoint(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); midPicks = []; boardHint('Отменено'); return; }
+    }
+    // Система неравенств: Enter — закрасить набранные условия, Esc — отменить.
+    if (tool === 'regionsys' && regionParts.length) {
+      if (e.key === 'Enter') { e.preventDefault(); finishRegionSys(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); regionParts = []; regionFrame = null; boardHint('Отменено'); return; }
+    }
+    // Преобразование: Esc — отменить выбор источников/параметров.
+    if (XFORM_SPEC[tool] && e.key === 'Escape') { e.preventDefault(); cancelXform(); boardHint('Отменено'); return; }
+
+    // Запись макроса: Enter — дальше/сохранить, Esc — отменить.
+    if (tool === 'macro_record') {
+      if (e.key === 'Enter') { e.preventDefault(); macroRecordEnter(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); cancelMacro(); setTool('select'); boardHint('Отменено'); return; }
+    }
+    if (tool === 'macro' && e.key === 'Escape') { e.preventDefault(); cancelMacro(); setTool('select'); return; }
+
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size) {
+      e.preventDefault();
+      deleteSelected();
+      return;
+    }
+
+    // H — скрыть выделенное; Shift+H — показать/спрятать все скрытые (режим просмотра).
+    if (e.key === 'h' || e.key === 'H') {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      e.preventDefault();
+      if (e.shiftKey) toggleRevealHidden();
+      else if (selected.size) { const ids = Array.from(selected); const allHidden = ids.every((id) => { const el = elements.get(id); return el && el.data.hidden; }); setHidden(ids, !allHidden); }
+      return;
+    }
+
+    // Ctrl/Cmd+G — сгруппировать выделенное, +Shift — разгруппировать.
+    if ((e.key === 'g' || e.key === 'G') && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (e.shiftKey) ungroupSelected(); else groupSelected();
+      return;
+    }
+
+    // Ctrl/Cmd+D — дублировать выделенное.
+    if ((e.key === 'd' || e.key === 'D') && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault(); if (selected.size) duplicateSelected(); return;
+    }
+
+    // Ctrl/Cmd+Z — шаг назад, +Shift или Ctrl+Y — шаг вперёд.
+    if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (e.shiftKey) doRedo(); else doUndo();
+      return;
+    }
+    if ((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault(); doRedo(); return;
+    }
+
+    if (PAN_KEYS[e.key]) {
+      e.preventDefault();
+      heldKeys.add(e.key);
+      ensurePanLoop();
+      return;
+    }
+
+    const map = { p: 'pen', l: 'line', r: 'rect', o: 'ellipse', f: 'latex', t: 'text_plain', v: 'select' };
+    if (map[e.key.toLowerCase()]) setTool(map[e.key.toLowerCase()]);
+  });
+  window.addEventListener('keyup', (e) => {
+    shiftHeld = e.shiftKey;
+    if (PAN_KEYS[e.key]) { heldKeys.delete(e.key); ensurePanLoop(); }
+  });
+  // Если окно потеряло фокус с зажатой клавишей — плавно останавливаемся.
+  window.addEventListener('blur', () => { heldKeys.clear(); ensurePanLoop(); });
+
+  // Копировать ссылку на доску.
+  document.getElementById('copy-code').addEventListener('click', () => {
+    navigator.clipboard.writeText(location.href).then(() => {
+      const btn = document.getElementById('copy-code');
+      const old = btn.textContent; btn.textContent = 'готово';
+      setTimeout(() => { btn.textContent = old; }, 1500);
+    });
+  });
+
+  // ── Импорт (кнопка + скрытый file input) и панель управления PDF ────────
+  (function () {
+    const inp = document.getElementById('import-input'), btn = document.getElementById('import-btn');
+    if (btn && inp) {
+      btn.addEventListener('click', () => inp.click());
+      inp.addEventListener('change', () => { if (inp.files && inp.files.length) importFiles(inp.files); inp.value = ''; });
+    }
+    const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
+    on('reveal-hidden', toggleRevealHidden);
+    on('hide-selected', () => { if (selected.size) setHidden(Array.from(selected), true); else boardHint('Сначала выделите объекты, которые нужно скрыть'); });
+    on('present-btn', () => setPresenter(!presenterOn));
+    on('follow-btn', () => setFollow(!followOn));
+    on('viewonly-btn', () => setViewOnly(!viewOnly));
+    on('board-menu-btn', () => toggleBoardMenu());
+    const bgSeg = document.getElementById('bg-seg');
+    if (bgSeg) bgSeg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setBoardBg(b.dataset.bg); });
+    const bgColor = document.getElementById('bg-color');
+    if (bgColor) bgColor.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setBoardBgColor(b.dataset.color); });
+    const bgCustom = document.getElementById('bg-color-custom');
+    if (bgCustom) bgCustom.addEventListener('input', () => setBoardBgColor(bgCustom.value));
+    const bgGrid = document.getElementById('bg-grid-color');
+    if (bgGrid) bgGrid.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setBoardGridColor(b.dataset.color); });
+    const bgGridCustom = document.getElementById('bg-grid-color-custom');
+    if (bgGridCustom) bgGridCustom.addEventListener('input', () => setBoardGridColor(bgGridCustom.value));
+    const curTgl = document.getElementById('cursors-toggle');
+    if (curTgl) curTgl.addEventListener('change', () => setPeerCursors(curTgl.checked));
+    const gdTgl = document.getElementById('guides-toggle');
+    if (gdTgl) gdTgl.addEventListener('change', () => { guidesEnabled = gdTgl.checked; boardHint(guidesEnabled ? 'Направляющие включены' : 'Направляющие выключены'); });
+    on('history-btn', () => { hideBoardMenu(); toggleHistoryPanel(true); });
+    on('history-close', () => toggleHistoryPanel(false));
+    on('clear-board-btn', () => { hideBoardMenu(); clearBoard(); });
+    on('export-pdf-btn', () => { hideBoardMenu(); const d = document.getElementById('pdf-export-dialog'); if (d) d.hidden = false; });
+    const pdfDlg = document.getElementById('pdf-export-dialog');
+    if (pdfDlg) pdfDlg.addEventListener('click', (e) => {
+      if (e.target === pdfDlg || e.target.closest('#pdf-x-cancel')) { pdfDlg.hidden = true; return; }
+      const b = e.target.closest('.pdf-mode'); if (b) { pdfDlg.hidden = true; exportBoardPdf(b.dataset.mode); }
+    });
+    on('access-btn', () => toggleAccessPanel());
+    const erSize = document.getElementById('eraser-size');
+    if (erSize) erSize.addEventListener('input', () => { eraserRadius = +erSize.value; const v = document.getElementById('eraser-size-val'); if (v) v.textContent = eraserRadius; });
+    // Роль по ссылке (владелец): переключение сегмента.
+    const apDefault = document.getElementById('ap-default');
+    if (apDefault) apDefault.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; boardDefaultRole = b.dataset.role; refreshAccessPanel(); send({ action: 'set_role', target: null, role: b.dataset.role }); });
+    // Личная роль участника (владелец).
+    const apPeople = document.getElementById('ap-people');
+    if (apPeople) apPeople.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; const seg = b.closest('.ap-seg'); if (!seg) return; const uid = seg.getAttribute('data-uid'), role = b.dataset.r; boardRoles[uid] = role; refreshAccessPanel(); send({ action: 'set_role', target: uid, role: role }); });
+    on('pdf-prev', () => { const el = selectedPdf(); if (el) setPdfPage(el, (el.data.page || 1) - 1); });
+    on('pdf-next', () => { const el = selectedPdf(); if (el) setPdfPage(el, (el.data.page || 1) + 1); });
+    on('pdf-extract', () => { const el = selectedPdf(); if (el) extractPdfPage(el, el.data.page || 1); });
+    on('pdf-extract-all', () => { const el = selectedPdf(); if (el) { const n = el.data.pages || 1; const collected = new Array(n).fill(null); let done = 0; for (let p = 1; p <= n; p++) extractPdfPage(el, p, (id) => { collected[p - 1] = id; if (++done === n && n >= 2) autoGridArrange(collected.filter(Boolean)); }); } });
+    // Мои инструменты (макросы).
+    function closeMacroFly() { const f = document.querySelector('[data-flyout="macros"]'); if (f) f.classList.remove('open'); }
+    on('macro-create', () => { closeMacroFly(); startMacroRecord(); });
+    const mlist = document.getElementById('macro-list');
+    if (mlist) mlist.addEventListener('click', (e) => {
+      const del = e.target.closest('.macro-del');
+      if (del) { e.stopPropagation(); const i = +del.dataset.macro; const list = loadMacros(); list.splice(i, 1); saveMacros(list); renderMacroTools(); return; }
+      const t = e.target.closest('.macro-tool');
+      if (t) { const list = loadMacros(); const m = list[+t.dataset.macro]; if (m) { closeMacroFly(); startMacroApply(m); } }
+    });
+    renderMacroTools();
+  })();
+
+
+  // ── Чужие курсоры ─────────────────────────────────────────────────────
+  const cursors = new Map(); // userId → { el, x, y, color }
+  let showPeerCursors = true; // тумблер «Курсоры участников» в меню доски
+  const PALETTE = ['#e7505a', '#27ae60', '#8e44ad', '#e67e22', '#16a2b8', '#d63384'];
+  function colorForUser(uid) {
+    const n = Math.abs(String(uid).split('').reduce((a, c) => a + c.charCodeAt(0), 0));
+    return PALETTE[n % PALETTE.length];
+  }
+
+  function showRemoteCursor(uid, label, wx, wy) {
+    if (uid === myId || !showPeerCursors) return;
+    let c = cursors.get(uid);
+    if (!c) {
+      const el = document.createElement('div');
+      el.className = 'remote-cursor';
+      const color = colorForUser(uid);
+      el.innerHTML = '<span class="arrow"><svg width="16" height="16" viewBox="0 0 24 24" fill="'
+        + color + '"><path d="M4 2l6.5 17 2.4-7 7-2.4z"/></svg></span>'
+        + '<span class="name" style="background:' + color + '">' + escapeHtml(label || '?') + '</span>';
+      cursorLayerEl.appendChild(el);
+      c = { el, x: wx, y: wy };
+      cursors.set(uid, c);
+    }
+    c.x = wx; c.y = wy;
+    placeCursor(c);
+  }
+
+  function placeCursor(c) {
+    // world → экран: умножаем на масштаб и прибавляем смещение сцены.
+    const sx = c.x * stage.scaleX() + stage.x();
+    const sy = c.y * stage.scaleY() + stage.y();
+    c.el.style.left = sx + 'px';
+    c.el.style.top = sy + 'px';
+  }
+  function repositionCursors() { cursors.forEach(placeCursor); repositionGGB(); repositionWidgets(); if (activeFrameId) updateFuncEditor(); updatePdfControls(); sendView(); }
+
+  // ── Лазер: гаснущий след (эфемерный, синхронизируется) ─────────────────
+  // Рисуешь лазером — остаётся яркая линия, которая тает по возрасту точек
+  // (хвост исчезает первым), полностью пропадая через LASER_TTL. Не сохраняется
+  // на доске; точки рассылаются участникам, как курсор.
+  const LASER_TTL = 1400; // мс жизни точки следа
+  const laserTrails = new Map(); // uid → [{x,y,t,brk}]
+  let laserDrawing = false, laserRAF = null, lastLaserSentAt = 0;
+  const laserLayer = new Konva.Layer({ listening: false });
+  stage.add(laserLayer);
+  const laserShape = new Konva.Shape({ listening: false, sceneFunc: drawLasers });
+  laserLayer.add(laserShape);
+  function laserNow() { return Date.now(); }
+  function addLaserPoint(uid, x, y, brk) {
+    let pts = laserTrails.get(uid); if (!pts) { pts = []; laserTrails.set(uid, pts); }
+    pts.push({ x: x, y: y, t: laserNow(), brk: !!brk });
+    if (pts.length > 600) pts.shift();
+    ensureLaserLoop();
+  }
+  function drawLasers(ctx) {
+    const now = laserNow(), s = stage.scaleX();
+    laserTrails.forEach((pts, uid) => {
+      const col = colorForUser(uid);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
+        if (p1.brk) continue; // разрыв между отдельными штрихами
+        const age = now - p1.t; if (age >= LASER_TTL) continue;
+        const a = 1 - age / LASER_TTL;
+        ctx.beginPath();
+        ctx.strokeStyle = hexToRgba(col, Math.max(0, a));
+        ctx.lineWidth = (1 + 4 * a) / s; // хвост тоньше, голова толще
+        ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+        ctx.stroke();
+      }
+    });
+  }
+  function laserTick() {
+    const now = laserNow(); let any = false;
+    laserTrails.forEach((pts, uid) => {
+      while (pts.length && (now - pts[0].t) >= LASER_TTL) pts.shift();
+      if (pts.length) any = true; else laserTrails.delete(uid);
+    });
+    laserLayer.batchDraw();
+    if (any || laserDrawing) laserRAF = requestAnimationFrame(laserTick);
+    else { laserRAF = null; }
+  }
+  function ensureLaserLoop() { if (!laserRAF) laserRAF = requestAnimationFrame(laserTick); }
+  function sendLaser(x, y, brk) {
+    const now = laserNow(); if (!brk && now - lastLaserSentAt < 33) return; lastLaserSentAt = now;
+    send({ action: 'laser', x: x, y: y, s: brk ? 1 : 0 });
+  }
+  function laserDown() { laserDrawing = true; const p = worldPoint(); addLaserPoint(myId, p.x, p.y, true); sendLaser(p.x, p.y, true); }
+  function laserMove() { if (!laserDrawing) return; const p = worldPoint(); addLaserPoint(myId, p.x, p.y, false); sendLaser(p.x, p.y, false); }
+  function laserUp() { laserDrawing = false; }
+
+  // ── Живое занятие: режим ведущего, только-просмотр ─────────────────────
+  let presenterOn = false, followOn = false, viewOnly = false, applyingView = false, lastViewAt = 0;
+  function sendView() {
+    if (!presenterOn || applyingView) return;
+    const now = Date.now(); if (now - lastViewAt < 60) return; lastViewAt = now;
+    send({ action: 'view', x: stage.x(), y: stage.y(), scale: stage.scaleX() });
+  }
+  function applyView(x, y, scale) {
+    if (!followOn) return;
+    applyingView = true; stage.scale({ x: scale, y: scale }); stage.position({ x: x, y: y }); applyingView = false;
+    scheduleViewRedraw();
+  }
+  function setPresenter(on) { presenterOn = on; const b = document.getElementById('present-btn'); if (b) b.classList.toggle('on', on); if (on) { setFollow(false); sendView(); } boardHint(on ? 'Вы ведёте — ваш вид транслируется' : 'Трансляция вида выключена'); }
+  function setFollow(on) { followOn = on; const b = document.getElementById('follow-btn'); if (b) b.classList.toggle('on', on); if (on) setPresenter(false); boardHint(on ? 'Следуем за ведущим' : 'Свободный просмотр'); }
+  function setViewOnly(on) { if (roleViewer) on = true; viewOnly = on; const b = document.getElementById('viewonly-btn'); if (b) { b.classList.toggle('on', on); b.disabled = roleViewer; } setTool(on ? 'select' : tool); if (!roleViewer) boardHint(on ? 'Только просмотр — правки заблокированы' : 'Правки разрешены'); }
+
+  // ── Роли доступа (серверные) ────────────────────────────────────────────
+  // myRole приходит с сервера; наблюдатель («viewer») не может править — сервер
+  // отклоняет его правки, а клиент запирает UI (view-only без права выключить).
+  let boardIsOwner = false, myRole = 'editor', boardDefaultRole = 'editor', boardRoles = {}, roleViewer = false;
+  function computeMyRole() { if (boardIsOwner) return 'editor'; const r = boardRoles[String(myId)]; return (r === 'viewer' || r === 'editor') ? r : boardDefaultRole; }
+  function applyMyRole() {
+    myRole = computeMyRole(); roleViewer = (myRole === 'viewer');
+    const badge = document.getElementById('role-badge');
+    if (badge) { if (boardIsOwner) { badge.hidden = true; } else { badge.hidden = false; badge.textContent = roleViewer ? 'Наблюдатель' : 'Редактор'; badge.classList.toggle('viewer', roleViewer); } }
+    const ab = document.getElementById('access-btn'); if (ab) ab.hidden = !boardIsOwner;
+    if (roleViewer) { setViewOnly(true); boardHint('Ваша роль — наблюдатель: можно только смотреть'); }
+    else { const vb = document.getElementById('viewonly-btn'); if (vb) vb.disabled = false; setViewOnly(false); }
+  }
+  function peerLabels() { const m = {}; peers.forEach((lab, uid) => { m[String(uid)] = lab; }); return m; }
+  function refreshAccessPanel() {
+    const seg = document.getElementById('ap-default');
+    if (seg) seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.role === boardDefaultRole));
+    const box = document.getElementById('ap-people'); if (!box) return;
+    const labels = peerLabels(), ids = new Set();
+    peers.forEach((_, uid) => ids.add(String(uid))); Object.keys(boardRoles).forEach((uid) => ids.add(String(uid))); ids.delete(String(myId));
+    if (!ids.size) { box.innerHTML = '<div class="ap-empty">Пока никто не подключён</div>'; return; }
+    let html = '';
+    ids.forEach((uid) => {
+      const label = labels[uid] || ('участник #' + uid), r = boardRoles[uid], eff = (r === 'viewer' || r === 'editor') ? r : boardDefaultRole;
+      html += '<div class="ap-person"><span class="ap-name">' + escapeHtml(label) + '</span>'
+        + '<div class="ap-seg" data-uid="' + uid + '">'
+        + '<button data-r="editor"' + (eff === 'editor' ? ' class="on"' : '') + '>Ред.</button>'
+        + '<button data-r="viewer"' + (eff === 'viewer' ? ' class="on"' : '') + '>Набл.</button>'
+        + '</div></div>';
+    });
+    box.innerHTML = html;
+  }
+  function toggleAccessPanel(force) {
+    const p = document.getElementById('access-panel'), ab = document.getElementById('access-btn'); if (!p) return;
+    const show = force === undefined ? p.hidden : force;
+    p.hidden = !show; if (ab) ab.classList.toggle('on', show); if (show) refreshAccessPanel();
+  }
+  function syncBgUI() {
+    document.querySelectorAll('#bg-seg button').forEach((b) => b.classList.toggle('on', b.dataset.bg === boardBg));
+    const dots = Array.from(document.querySelectorAll('#bg-color .bgdot'));
+    dots.forEach((b) => b.classList.toggle('on', b.dataset.color === boardBgColor));
+    const pick = document.getElementById('bg-color-custom');
+    if (pick) {
+      const cur = (boardBgColor || '').toLowerCase(), isCustom = !!cur && dots.every((b) => b.dataset.color.toLowerCase() !== cur);
+      if (/^#[0-9a-f]{6}$/.test(cur)) pick.value = cur;
+      pick.classList.toggle('on', isCustom);
+    }
+    const gdots = Array.from(document.querySelectorAll('#bg-grid-color .bgdot'));
+    gdots.forEach((b) => b.classList.toggle('on', b.dataset.color === boardGridColor));
+    const gpick = document.getElementById('bg-grid-color-custom');
+    if (gpick) {
+      const gcur = (boardGridColor || '').toLowerCase(), gCustom = !!gcur && gdots.every((b) => b.dataset.color.toLowerCase() !== gcur);
+      if (/^#[0-9a-f]{6}$/.test(gcur)) gpick.value = gcur;
+      gpick.classList.toggle('on', gCustom);
+    }
+  }
+  // ── Меню доски (три точки): вид, курсоры, выравнивание, история, очистка ──
+  function hideBoardMenu() { const p = document.getElementById('board-menu'), b = document.getElementById('board-menu-btn'); if (p) p.hidden = true; if (b) b.classList.remove('on'); }
+  function toggleBoardMenu() {
+    const p = document.getElementById('board-menu'), b = document.getElementById('board-menu-btn'); if (!p) return;
+    const show = p.hidden; p.hidden = !show; if (b) b.classList.toggle('on', show);
+    if (show) { syncBgUI(); const c = document.getElementById('cursors-toggle'); if (c) c.checked = showPeerCursors; const g = document.getElementById('guides-toggle'); if (g) g.checked = guidesEnabled; }
+  }
+  // Клик мимо меню — закрыть.
+  document.addEventListener('mousedown', (e) => { const m = document.getElementById('board-menu'); if (m && !m.hidden && !e.target.closest('#board-menu') && !e.target.closest('#board-menu-btn')) hideBoardMenu(); });
+  // Показ курсоров участников (тумблер в меню).
+  function setPeerCursors(on) {
+    showPeerCursors = on;
+    if (!on) { cursors.forEach((c) => { if (c.el) c.el.style.display = 'none'; }); }
+    else { cursors.forEach((c) => { if (c.el) c.el.style.display = ''; }); }
+  }
+  function toggleHistoryPanel(show) {
+    const p = document.getElementById('history-panel'); if (!p) return;
+    p.hidden = !show; if (show) renderHistory();
+  }
+  function historyOpen() { const p = document.getElementById('history-panel'); return p && !p.hidden; }
+  // ── Общая история доски (сервер): последние 200 действий всех участников ──
+  let boardHistory = []; // [{id, action, eid, etype, label, ts, payload}] старые→новые
+  function applyHistoryEntry(entry) {
+    if (!entry) return;
+    const i = boardHistory.findIndex((e) => e.id === entry.id);
+    if (i >= 0) boardHistory[i] = entry; else boardHistory.push(entry);
+    if (boardHistory.length > 200) boardHistory = boardHistory.slice(-200);
+    if (historyOpen()) renderHistory();
+  }
+  function histActionWord(a) { return a === 'add' ? 'добавлен(а)' : a === 'delete' ? 'удалён(а)' : 'изменён(а)'; }
+  function histTime(ts) { if (!ts) return ''; try { const d = new Date(ts); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); } catch (e) { return ''; } }
+  function renderHistory() {
+    const box = document.getElementById('history-list'); if (!box) return;
+    if (!boardHistory.length) { box.innerHTML = '<div class="ap-hint">пока пусто</div>'; return; }
+    let html = '';
+    for (let i = boardHistory.length - 1; i >= 0; i--) {
+      const e = boardHistory[i], t = TYPE_NAMES[e.etype] || 'объект', gone = e.action !== 'delete' && !elements.has(e.eid);
+      const desc = histActionWord(e.action) + ' ' + t + (e.label ? ' · ' + e.label : '');
+      const act = e.action === 'delete'
+        ? '<button class="hist-restore" data-restore="' + e.id + '">Восстановить</button>'
+        : '<span class="hist-i">' + histTime(e.ts) + '</span>';
+      html += '<div class="hist-row' + (gone ? ' gone' : '') + '"' + (e.action !== 'delete' ? ' data-focus="' + escapeAttr(e.eid) + '"' : '') + '><span>' + escapeHtml(desc) + '</span>' + act + '</div>';
+    }
+    box.innerHTML = html;
+  }
+  function restoreFromHistory(hid) {
+    const e = boardHistory.find((x) => x.id === +hid); if (!e || !e.payload) { boardHint('Нечего восстанавливать'); return; }
+    if (roleViewer) { boardHint('Наблюдатель не может править доску'); return; }
+    if (elements.has(e.payload.id)) { boardHint('Объект уже на доске'); focusElement(e.payload.id); return; }
+    const el = { id: e.payload.id, type: e.payload.type, z: e.payload.z || 0, data: e.payload.data || {} };
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    reattachFuncs(); recomputeGeometry(); layer.batchDraw();
+    boardHint('Восстановлено: ' + (TYPE_NAMES[el.type] || 'объект')); focusElement(el.id);
+  }
+  function focusElement(eid) {
+    const el = elements.get(eid); if (!el) { boardHint('Объект уже удалён — можно восстановить из строки удаления'); return; }
+    const n = nodes.get(eid); let cx, cy;
+    if (el.type === 'frame') { cx = el.data.x + el.data.width / 2; cy = el.data.y + el.data.height / 2; }
+    else if (n && typeof n.getClientRect === 'function') { const b = n.getClientRect({ relativeTo: layer }); cx = b.x + b.width / 2; cy = b.y + b.height / 2; }
+    else if (el.data && el.data.x != null) { cx = el.data.x; cy = el.data.y; }
+    if (cx != null) { const s = stage.scaleX(); stage.position({ x: stage.width() / 2 - cx * s, y: stage.height() / 2 - cy * s }); redrawGrid(); repositionCursors(); layer.batchDraw(); }
+    if (nodes.has(eid) && !widgetItems.has(eid)) selectOnly(eid);
+  }
+  (function wireHistory() {
+    const box = document.getElementById('history-list'); if (!box) return;
+    box.addEventListener('click', (e) => {
+      const rb = e.target.closest('.hist-restore');
+      if (rb) { e.stopPropagation(); restoreFromHistory(rb.getAttribute('data-restore')); return; }
+      const row = e.target.closest('.hist-row'); if (!row || row.dataset.focus == null) return;
+      focusElement(row.dataset.focus);
+    });
+  })();
+  // Очистить доску — удалить все элементы (кроме конфигурации фона). С подтверждением.
+  function clearBoard() {
+    if (roleViewer) { boardHint('Наблюдатель не может очищать доску'); return; }
+    const ids = []; elements.forEach((el, id) => { if (el.type !== 'boardconfig') ids.push(id); });
+    if (!ids.length) { boardHint('Доска уже пуста'); return; }
+    if (!window.confirm('Удалить всё с доски (' + ids.length + ' объект(ов))? Действие можно отменить (Ctrl+Z).')) return;
+    const ops = ids.map((id) => ({ kind: 'del', el: clone(elements.get(id)) }));
+    ids.forEach((id) => { send({ action: 'element_delete', id: id }); removeNode(id); });
+    histBatch(ops);
+    clearSelection(); layer.batchDraw();
+    boardHint('Доска очищена (' + ids.length + ')');
+  }
+
+  // ── ГеоГебра: живые аплеты как DOM-оверлей в мировых координатах ───────
+  // Аплет интерактивный (не картинка), поэтому живёт отдельным слоем поверх
+  // холста и следует за панорамой/зумом. Синхронизируются позиция/размер и
+  // (для восстановления после перезагрузки) base64 построения. Живой push
+  // построения другим участникам в этом шаге не делаем, чтобы не сбивать руки.
+  const ggbItems = new Map(); // id → { el, wrapper, api, saveTimer }
+  const ggbLayerEl = document.getElementById('ggb-layer');
+
+  function whenGGBReady(fn) {
+    if (window.GGBApplet) fn();
+    else setTimeout(() => whenGGBReady(fn), 100);
+  }
+
+  function repositionGGB() {
+    if (!ggbItems.size) return;
+    const s = stage.scaleX();
+    ggbItems.forEach((item) => {
+      const d = item.el.data;
+      const x = (d.x || 0) * s + stage.x();
+      const y = (d.y || 0) * s + stage.y();
+      item.wrapper.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + s + ')';
+    });
+  }
+
+  function upsertGGB(el) {
+    let item = ggbItems.get(el.id);
+    if (item) {
+      // Обновляем только данные позиции/размера (построение не трогаем, чтобы
+      // не сбить того, кто сейчас в нём работает).
+      item.el = el;
+      repositionGGB();
+      return;
+    }
+    const d = el.data || {};
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ggb-item';
+    wrapper.style.width = (d.width || 600) + 'px';
+    const bar = document.createElement('div');
+    bar.className = 'ggb-bar';
+    bar.innerHTML = '<span class="ggb-title">GeoGebra</span>'
+      + '<button class="ggb-del" title="Удалить">'
+      + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button>';
+    const appletDiv = document.createElement('div');
+    appletDiv.className = 'ggb-applet';
+    const appletId = 'ggb-applet-' + el.id;
+    appletDiv.id = appletId;
+    wrapper.appendChild(bar);
+    wrapper.appendChild(appletDiv);
+    ggbLayerEl.appendChild(wrapper);
+
+    item = { el, wrapper, api: null, saveTimer: null };
+    ggbItems.set(el.id, item);
+    repositionGGB();
+
+    bar.querySelector('.ggb-del').addEventListener('click', () => {
+      send({ action: 'element_delete', id: el.id });
+      removeGGB(el.id);
+      elements.delete(el.id);
+    });
+    enableGGBDrag(item, bar);
+
+    whenGGBReady(() => {
+      const params = {
+        appName: d.appName || 'graphing',
+        width: d.width || 600, height: d.height || 420,
+        showToolBar: true, showMenuBar: false, showAlgebraInput: true,
+        showResetIcon: false, enableShiftDragZoom: true, errorDialogsActive: false,
+        language: 'ru', borderColor: '#e3e3e8',
+        ggbBase64: d.base64 || undefined,
+        appletOnLoad: (api) => { item.api = api; registerGGBSave(item); },
+      };
+      new GGBApplet(params, true).inject(appletId);
+    });
+  }
+
+  function registerGGBSave(item) {
+    const api = item.api;
+    if (!api || !api.registerUpdateListener) return;
+    const save = () => {
+      if (item.saveTimer) clearTimeout(item.saveTimer);
+      item.saveTimer = setTimeout(() => {
+        try {
+          item.el.data.base64 = api.getBase64();
+          send({ action: 'element_update', element: item.el });
+        } catch (e) { /* ignore */ }
+      }, 1200);
+    };
+    try {
+      api.registerUpdateListener(save);
+      api.registerAddListener(save);
+      api.registerRemoveListener(save);
+      api.registerClearListener(save);
+    } catch (e) { /* ignore */ }
+  }
+
+  function enableGGBDrag(item, handle) {
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.ggb-del')) return;
+      e.preventDefault();
+      const s = stage.scaleX();
+      const startX = e.clientX, startY = e.clientY;
+      const ox = item.el.data.x || 0, oy = item.el.data.y || 0;
+      const onMove = (ev) => {
+        item.el.data.x = ox + (ev.clientX - startX) / s;
+        item.el.data.y = oy + (ev.clientY - startY) / s;
+        repositionGGB();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        send({ action: 'element_update', element: item.el });
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  function removeGGB(id) {
+    const item = ggbItems.get(id);
+    if (!item) return;
+    if (item.saveTimer) clearTimeout(item.saveTimer);
+    try { if (item.api && item.api.remove) item.api.remove(); } catch (e) { /* ignore */ }
+    item.wrapper.remove();
+    ggbItems.delete(id);
+  }
+
+  function insertGeoGebra() {
+    const p = worldPoint();
+    const el = { id: uuid(), type: 'geogebra', z: 0,
+      data: { x: p.x, y: p.y, width: 600, height: 420, appName: 'graphing' } };
+    upsertNode(el);
+    send({ action: 'element_add', element: el });
+    histAdd(el);
+    setTool('select');
+  }
+
+  function removeCursor(uid) {
+    const c = cursors.get(uid);
+    if (c) { c.el.remove(); cursors.delete(uid); }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (m) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
+    ));
+  }
+
+  // ── Экспорт доски в PDF ────────────────────────────────────────────────
+  // Холст — Konva-canvas, а текст/виджеты — DOM (#widget-layer). Чтобы собрать
+  // и то, и другое, снимаем всю область через html2canvas, затем кладём в PDF
+  // (jsPDF). Библиотеки грузим лениво — только при первом экспорте.
+  let _exportLibs = null;
+  function loadExportLibs() {
+    if (_exportLibs) return _exportLibs;
+    const load = (src) => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load ' + src)); document.head.appendChild(s); });
+    _exportLibs = Promise.all([
+      (typeof html2canvas !== 'undefined') ? Promise.resolve() : load('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'),
+      (window.jspdf) ? Promise.resolve() : load('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js'),
+    ]).catch((e) => { _exportLibs = null; throw e; });
+    return _exportLibs;
+  }
+  function contentBBox() {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, any = false;
+    nodes.forEach((n, id) => {
+      const el = elements.get(id); if (el && el.data && el.data.hidden && !revealHidden) return;
+      const b = n.getClientRect({ relativeTo: layer });
+      if (b.width || b.height) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); any = true; }
+    });
+    widgetItems.forEach((it) => { const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0; if (w || h) { x0 = Math.min(x0, d.x || 0); y0 = Math.min(y0, d.y || 0); x1 = Math.max(x1, (d.x || 0) + w); y1 = Math.max(y1, (d.y || 0) + h); any = true; } });
+    if (!any) return null;
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }
+  const EXPORT_HIDE_IDS = ['board-toolbar', 'board-topbar', 'board-head', 'board-menu', 'zoom-control', 'board-version', 'cursor-layer', 'tbox-bar', 'dp-pop', 'shape-panel', 'conn-panel', 'settings-btn', 'settings-menu', 'history-panel', 'access-panel', 'point-settings', 'figure-settings', 'func-editor', 'text-editor', 'conn-banner'];
+  function exportIgnore(el) {
+    if (!el) return false;
+    if (el.id && EXPORT_HIDE_IDS.indexOf(el.id) >= 0) return true;
+    return !!(el.classList && (el.classList.contains('tool-flyout') || el.classList.contains('cn-pop') || el.classList.contains('te-pop') || el.classList.contains('color-palette') || el.classList.contains('eraser-ring') || el.classList.contains('mtext-del')));
+  }
+  let _exporting = false;
+  // Снимок области ЭКРАНА (screen-коорды) в картинку через html2canvas.
+  async function pdfCapture(screenRect) {
+    await new Promise((r) => setTimeout(r, 130)); // дать DOM/Konva перерисоваться
+    const canvas = await html2canvas(document.body, {
+      backgroundColor: boardBgColor || '#ffffff', scale: 2, logging: false, useCORS: true,
+      ignoreElements: exportIgnore,
+      x: screenRect.x, y: screenRect.y, width: screenRect.width, height: screenRect.height,
+      windowWidth: document.documentElement.scrollWidth, windowHeight: document.documentElement.scrollHeight,
+    });
+    return { img: canvas.toDataURL('image/jpeg', 0.92), wpx: canvas.width, hpx: canvas.height };
+  }
+  // Вписать мировой прямоугольник (коорды layer) в вьюпорт холста; вернуть масштаб.
+  function pdfFitStageTo(rect, pad) {
+    const vw = stage.width(), vh = stage.height();
+    let s = Math.min((vw - 2 * pad) / rect.width, (vh - 2 * pad) / rect.height); s = Math.max(0.05, Math.min(s, 4));
+    stage.scale({ x: s, y: s });
+    stage.position({ x: pad - rect.x * s + (vw - 2 * pad - rect.width * s) / 2, y: pad - rect.y * s + (vh - 2 * pad - rect.height * s) / 2 });
+    redrawGrid(); repositionWidgets(); layer.draw();
+    return s;
+  }
+  // Экранный прямоугольник мирового прямоугольника при текущем трансформе сцены.
+  function pdfScreenRectOf(rect) {
+    const c = stage.container().getBoundingClientRect(), s = stage.scaleX();
+    return { x: c.left + rect.x * s + stage.x(), y: c.top + rect.y * s + stage.y(), width: rect.width * s, height: rect.height * s };
+  }
+  // BBox набора узлов (коорды layer), включая DOM-виджеты.
+  function pdfNodesBBox(ids) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, any = false;
+    ids.forEach((id) => {
+      const n = nodes.get(id);
+      if (n) { const b = n.getClientRect({ relativeTo: layer }); if (b.width || b.height) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); any = true; } }
+      const it = widgetItems.get(id);
+      if (it) { const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0; if (w || h) { x0 = Math.min(x0, d.x || 0); y0 = Math.min(y0, d.y || 0); x1 = Math.max(x1, (d.x || 0) + w); y1 = Math.max(y1, (d.y || 0) + h); any = true; } }
+    });
+    return any ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+  }
+  // Добавить снимок как страницу A4 (ориентация по пропорциям снимка), вписав по центру.
+  function pdfAddPage(ref, cap) {
+    const landscape = cap.wpx >= cap.hpx;
+    if (!ref.pdf) { const jsPDF = window.jspdf.jsPDF; ref.pdf = new jsPDF({ orientation: landscape ? 'l' : 'p', unit: 'pt', format: 'a4' }); }
+    else ref.pdf.addPage('a4', landscape ? 'l' : 'p');
+    const pdf = ref.pdf, pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
+    const r = Math.min(pw / cap.wpx, ph / cap.hpx), dw = cap.wpx * r, dh = cap.hpx * r;
+    pdf.addImage(cap.img, 'JPEG', (pw - dw) / 2, (ph - dh) / 2, dw, dh);
+  }
+  // Экспорт доски в PDF. mode: 'whole' (вся доска тайлами A4), 'frames' (по окну
+  // на страницу), 'selection' (только выделенное — одна страница).
+  async function exportBoardPdf(mode) {
+    if (_exporting) return;
+    mode = mode || 'whole';
+    const selIds = Array.from(selected);
+    if (mode === 'selection' && !selIds.length) { boardHint('Сначала выделите объекты'); return; }
+    const frames = [];
+    elements.forEach((e) => { if (e.type === 'frame') frames.push(e); });
+    frames.sort((a, b) => (a.data.y - b.data.y) || (a.data.x - b.data.x)); // порядок чтения
+    if (mode === 'frames' && !frames.length) { boardHint('На доске нет матокон'); return; }
+    const bbox = contentBBox();
+    if (!bbox) { boardHint('Доска пуста — нечего экспортировать'); return; }
+    const selBox = (mode === 'selection') ? pdfNodesBBox(selIds) : null;
+    if (mode === 'selection' && !selBox) { boardHint('Не удалось определить область выделения'); return; }
+    _exporting = true; boardHint('Готовлю PDF…');
+    const save = { x: stage.x(), y: stage.y(), s: stage.scaleX() };
+    const restore = () => { stage.scale({ x: save.s, y: save.s }); stage.position({ x: save.x, y: save.y }); redrawGrid(); repositionWidgets(); layer.batchDraw(); };
+    clearSelection(); if (handlesGroup && handlesGroup.visible()) handlesGroup.hide(); if (connHandles && connHandles.visible()) connHandles.hide(); tr.nodes([]);
+    const ref = { pdf: null };
+    try {
+      await loadExportLibs();
+      if (mode === 'selection') {
+        pdfFitStageTo(selBox, 24);
+        pdfAddPage(ref, await pdfCapture(pdfScreenRectOf(selBox)));
+      } else if (mode === 'frames') {
+        for (let i = 0; i < frames.length; i++) {
+          const fr = frames[i], wr = { x: fr.data.x, y: fr.data.y, width: fr.data.width, height: fr.data.height };
+          pdfFitStageTo(wr, 18);
+          boardHint('Страница ' + (i + 1) + ' из ' + frames.length + '…');
+          pdfAddPage(ref, await pdfCapture(pdfScreenRectOf(wr)));
+        }
+      } else { // 'whole' — вся доска, тайлами A4 по текущему масштабу (крупно)
+        const vw = stage.width(), vh = stage.height();
+        let S = Math.max(0.06, save.s); // масштаб «как сейчас видно»
+        let cols = Math.max(1, Math.ceil(bbox.width * S / vw)), rows = Math.max(1, Math.ceil(bbox.height * S / vh));
+        while (cols * rows > 40 && S > 0.06) { S *= 0.8; cols = Math.max(1, Math.ceil(bbox.width * S / vw)); rows = Math.max(1, Math.ceil(bbox.height * S / vh)); }
+        const cont = stage.container().getBoundingClientRect(), total = cols * rows;
+        let page = 0;
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            stage.scale({ x: S, y: S });
+            stage.position({ x: -(bbox.x * S + c * vw), y: -(bbox.y * S + r * vh) });
+            redrawGrid(); repositionWidgets(); layer.draw();
+            page++; boardHint('Страница ' + page + ' из ' + total + '…');
+            pdfAddPage(ref, await pdfCapture({ x: cont.left, y: cont.top, width: cont.width, height: cont.height }));
+          }
+        }
+      }
+      restore();
+      if (!ref.pdf) { boardHint('Нечего экспортировать'); return; }
+      const title = ((document.getElementById('board-title') || {}).textContent || 'Доска').trim() || 'Доска';
+      ref.pdf.save(title + '.pdf');
+      boardHint('PDF готов');
+    } catch (e) {
+      restore();
+      boardHint('Не удалось сделать PDF (проверьте связь для загрузки библиотек)');
+      try { console.error('export pdf', e); } catch (_) {}
+    } finally { _exporting = false; }
+  }
+
+  // ── Связь по WebSocket ────────────────────────────────────────────────
+  let ws = null;
+  let lastCursorAt = 0;
+  const connDot = document.getElementById('conn-dot');
+  const peersEl = document.getElementById('peers');
+  const peers = new Map(); // userId → label
+
+  let reconnectDelay = 1000, reconnectTimer = null;
+  let connBanner = null;
+  const pendingOps = []; // правки, сделанные при разрыве связи — досылаем при реконнекте
+  function setConnState(online) {
+    if (connDot) { connDot.classList.toggle('online', online); connDot.title = online ? 'Связь есть' : 'Связь потеряна — переподключаемся…'; }
+    if (online) { if (connBanner) connBanner.style.display = 'none'; }
+    else {
+      if (!connBanner) { connBanner = document.createElement('div'); connBanner.id = 'conn-banner'; connBanner.textContent = 'Связь потеряна — переподключаемся…'; document.body.appendChild(connBanner); }
+      connBanner.style.display = 'block';
+    }
+  }
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(15000, Math.round(reconnectDelay * 1.7)); // бэкофф до 15с
+  }
+  function connect() {
+    clearTimeout(reconnectTimer);
+    const url = cfg.wsScheme + '://' + location.host + '/ws/board/' + cfg.code + '/';
+    try { ws = new WebSocket(url); } catch (e) { scheduleReconnect(); return; }
+    ws.onopen = () => { reconnectDelay = 1000; setConnState(true); };
+    ws.onclose = () => { setConnState(false); scheduleReconnect(); };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; } handleMessage(m); };
+  }
+  // Мгновенный реконнект при возврате сети/вкладки (не ждём таймер бэкоффа).
+  window.addEventListener('online', () => { reconnectDelay = 1000; if (!ws || ws.readyState > 1) connect(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && (!ws || ws.readyState > 1)) { reconnectDelay = 1000; connect(); } });
+
+  const PERSIST_ACTIONS = { element_add: 1, element_update: 1, element_delete: 1 };
+  function send(obj) {
+    // Наблюдатель не шлёт правки — сервер их всё равно отклонит; так чище и без
+    // лишнего трафика (UI правок у наблюдателя и так заблокирован ролью).
+    if (roleViewer && obj && PERSIST_ACTIONS[obj.action]) return;
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return; }
+    // Оффлайн: копим правки холста, чтобы не потерять (курсоры/лазер/вид — эфемерные, не копим).
+    if (obj && PERSIST_ACTIONS[obj.action]) queueOp(obj);
+  }
+  function queueOp(obj) {
+    const id = obj.id || (obj.element && obj.element.id);
+    if (id) {
+      if (obj.action === 'element_delete') {
+        for (let i = pendingOps.length - 1; i >= 0; i--) { const o = pendingOps[i]; if ((o.id || (o.element && o.element.id)) === id) pendingOps.splice(i, 1); }
+      } else {
+        const idx = pendingOps.findIndex((o) => o.action !== 'element_delete' && o.element && o.element.id === id);
+        if (idx >= 0) { pendingOps[idx] = obj; return; } // заменяем прежнюю правку того же элемента
+      }
+    }
+    pendingOps.push(obj);
+    if (pendingOps.length > 5000) pendingOps.shift();
+  }
+  function flushPending() {
+    if (!pendingOps.length || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const q = pendingOps.splice(0, pendingOps.length);
+    q.forEach((o) => ws.send(JSON.stringify(o)));
+  }
+
+  function sendCursor() {
+    const now = Date.now();
+    if (now - lastCursorAt < 40) return;
+    lastCursorAt = now;
+    const p = worldPoint();
+    send({ action: 'cursor', x: p.x, y: p.y });
+  }
+
+  function handleMessage(msg) {
+    switch (msg.action) {
+      case 'init':
+        myId = msg.me;
+        boardIsOwner = !!msg.is_owner;
+        boardDefaultRole = msg.default_role || 'editor';
+        boardRoles = msg.roles || {};
+        (msg.elements || []).forEach(upsertNode);
+        reattachFuncs(); // функции могли загрузиться раньше своих окон
+        recomputeGeometry(); // построения — после загрузки всех точек
+        applyMyRole();
+        if (boardIsOwner) refreshAccessPanel();
+        boardHistory = msg.history || [];
+        if (historyOpen()) renderHistory();
+        flushPending(); // досылаем правки, накопленные в оффлайне (при переподключении)
+        break;
+      case 'history':
+        applyHistoryEntry(msg.entry);
+        break;
+      case 'roles_update':
+        boardDefaultRole = msg.default_role || boardDefaultRole;
+        boardRoles = msg.roles || {};
+        applyMyRole();
+        if (boardIsOwner) refreshAccessPanel();
+        break;
+      case 'element_add':
+      case 'element_update':
+        upsertNode(msg.element);
+        break;
+      case 'element_delete':
+        removeNode(msg.id);
+        break;
+      case 'cursor':
+        showRemoteCursor(msg.user, msg.label, msg.x, msg.y);
+        if (msg.user !== myId && !peers.has(msg.user)) {
+          peers.set(msg.user, msg.label); renderPeers();
+        }
+        break;
+      case 'presence':
+        if (msg.event === 'join' && msg.user !== myId) { peers.set(msg.user, msg.label); renderPeers(); }
+        if (msg.event === 'leave') { peers.delete(msg.user); removeCursor(msg.user); laserTrails.delete(msg.user); renderPeers(); }
+        break;
+      case 'laser':
+        if (msg.user !== myId) addLaserPoint(msg.user, msg.x, msg.y, !!msg.s);
+        break;
+      case 'view':
+        if (msg.user !== myId) applyView(msg.x, msg.y, msg.scale);
+        break;
+    }
+  }
+
+  function renderPeers() {
+    if (peers.size === 0) { peersEl.textContent = ''; }
+    else peersEl.textContent = '· с вами: ' + Array.from(peers.values()).join(', ');
+    const ap = document.getElementById('access-panel');
+    if (boardIsOwner && ap && !ap.hidden) refreshAccessPanel();
+  }
+
+  // ── Старт ─────────────────────────────────────────────────────────────
+  setTool('pen');
+  redrawGrid();
+  updateDebug();
+  connect();
+})();

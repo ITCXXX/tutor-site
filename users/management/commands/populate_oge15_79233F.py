@@ -4,7 +4,7 @@
 from django.core.management.base import BaseCommand
 from ._oge15_dorogi import (
     build_context_html, t1_question, t2_question, t3_question,
-    t4_question_route, t5_table_html, t5_cheapest_question, deploy,
+    t4_question_route, t5_table_html, t5_cheapest_question, deploy, _plan_markup,
 )
 
 
@@ -31,8 +31,7 @@ INTRO_HTML = (
     "Есть и третий маршрут: в деревне Куровка можно свернуть на прямую тропинку "
     "в село Вятское, которая идёт мимо пруда.</p>"
     "<p>Лесная дорожка и тропинка образуют с шоссе прямоугольные треугольники.</p>"
-    f'<img src="{IMG_PATH}" alt="План населённых пунктов" '
-    f'style="max-width:520px;display:block;margin:0.8em 0;">'
+    + _plan_markup(IMG_PATH) +
     "<p>По шоссе Никита с папой едут со скоростью <b>25 км/ч</b>, а по лесной "
     "дорожке и тропинке — со скоростью <b>15 км/ч</b>. На плане изображено "
     "взаимное расположение населённых пунктов, длина стороны каждой клетки "

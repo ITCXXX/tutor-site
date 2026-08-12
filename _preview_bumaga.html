@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Форматы бумаги — финал (альбомная, 1:√2)</title>
+<style>
+  body { font-family: Cambria, Georgia, serif; background:#f5f5f5; color:#1f1f1f;
+         padding:30px; max-width:900px; margin:0 auto; }
+  h1 { font-size:1.3rem; margin:1.2rem 0; }
+  .card { background:#fff; border:1px solid #e0e0e0; border-radius:.5rem; padding:20px;
+          box-shadow:0 1px 3px rgba(0,0,0,.06); text-align:center; }
+  .card p { color:#6b7280; font-size:.9rem; margin-top:.7rem; }
+  svg { display:block; margin:0 auto; background:#fff; max-width:100%; height:auto; }
+</style>
+</head>
+<body>
+<h1>Форматы бумаги A0–A5 — финал (то, что в БД)</h1>
+<div class="card">
+  <svg id="fig" xmlns="http://www.w3.org/2000/svg"></svg>
+  <p>Альбомная ориентация, отношение сторон ровно 1:√2. А0 — заголовком над листом.</p>
+</div>
+<script>
+const H=240, W=H*Math.SQRT2, PAD=16, TH=30;
+function el(svg,tag,a={},t){const n=document.createElementNS('http://www.w3.org/2000/svg',tag);
+  for(const k in a)n.setAttribute(k,a[k]); if(t!==undefined)n.textContent=t; svg.appendChild(n); return n;}
+const svg=document.getElementById('fig');
+svg.setAttribute('viewBox',`0 0 ${W+2*PAD} ${H+2*PAD+TH}`);
+svg.setAttribute('width',W+2*PAD); svg.setAttribute('height',H+2*PAD+TH);
+const oy=PAD+TH;
+el(svg,'rect',{x:PAD,y:oy,width:W,height:H,fill:'none',stroke:'#000','stroke-width':2.5});
+let x=PAD,y=oy,w=W,h=H;
+for(let n=1;n<=5;n++){
+  let lab,rem;
+  if(w>=h){ const lw=w/2;
+    el(svg,'line',{x1:x+lw,y1:y,x2:x+lw,y2:y+h,stroke:'#000','stroke-width':1.4});
+    lab=[x+lw,y,lw,h]; rem=[x,y,lw,h];
+  } else { const hh=h/2;
+    el(svg,'line',{x1:x,y1:y+hh,x2:x+w,y2:y+hh,stroke:'#000','stroke-width':1.4});
+    lab=[x,y+hh,w,hh]; rem=[x,y,w,hh];
+  }
+  const [rx,ry,rw,rh]=lab, fs=Math.max(8,Math.min(rw,rh)*0.42);
+  el(svg,'text',{x:rx+rw/2,y:ry+rh/2+fs*0.35,'text-anchor':'middle',
+    'font-family':'Arial, Helvetica, sans-serif','font-size':fs,'font-weight':700,fill:'#000'},'А'+n);
+  [x,y,w,h]=rem;
+}
+el(svg,'text',{x:PAD+W/2,y:PAD+22,'text-anchor':'middle',
+  'font-family':'Arial, Helvetica, sans-serif','font-size':24,'font-weight':700,fill:'#000'},'А0');
+</script>
+</body>
+</html>

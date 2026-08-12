@@ -160,7 +160,7 @@
                 <div class="task-square{% if t.is_done %} done{% elif t.percent > 0 %} partial{% endif %}{% if not is_manual %} readonly{% endif %}"
                      {% if is_manual %}data-student-id="{{ student.id }}" data-assignment-id="{{ t.id }}"{% endif %}
                      title="{{ t.title }}{% if not is_manual and t.percent > 0 and not t.is_done %} — {{ t.percent }}%{% endif %}">
-                    {{ forloop.counter }}
+                    {{ t.display_num|default:forloop.counter }}
                 </div>
                 {% endfor %}
             </div>

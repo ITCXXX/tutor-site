@@ -1,4 +1,5 @@
 {% extends "users/visitor_base.html" %}
+{% load static %}
 
 {% block title %}{{ title }}{% endblock %}
 
@@ -79,6 +80,9 @@
 .nav-toggle-link:not(.collapsed) .nav-chevron { transform: rotate(90deg); }
 .choice-btn { transition: background-color .15s, border-color .15s; font-size: 1.1rem; }
 .choice-btn.selected { background-color: #0d6efd; border-color: #0d6efd; color: white; }
+.db-choice-btn { transition: background-color .15s, border-color .15s; }
+.db-choice-btn.selected { background-color: #0d6efd; border-color: #0d6efd; color: #fff; }
+.db-choice-btn:disabled { opacity: 1; }
 .MathJax { font-size: 1.2rem !important; }
 .problem-statement .card-body { background-color: #fcfdfe; }
 
@@ -170,13 +174,13 @@
                     {% if nav.is_current %}
                         <span class="proto-pill proto-pill-current"
                               title="{{ nav.title }}{% if nav.total %} ({{ nav.solved }}/{{ nav.total }}){% endif %}">
-                            {{ nav.order }}
+                            {{ nav.display_num }}
                         </span>
                     {% else %}
                         <a href="{% url 'assignment_practice' nav.id %}"
                            class="proto-pill {% if nav.is_complete %}proto-pill-complete{% endif %}"
                            title="{{ nav.title }}{% if nav.total %} ({{ nav.solved }}/{{ nav.total }}){% endif %}">
-                            {{ nav.order }}{% if nav.is_complete %} ✓{% endif %}
+                            {{ nav.display_num }}{% if nav.is_complete %} ✓{% endif %}
                         </a>
                     {% endif %}
                 {% endfor %}
@@ -291,8 +295,10 @@
                         {% endif %}
                     </div>
 
-                    <!-- Иллюстрация (SVG) если есть -->
-                    {% if q.image_svg %}
+                    <!-- Иллюстрация: загруженная картинка приоритетнее SVG -->
+                    {% if q.image_url %}
+                    <div class="q-image mb-2"><img src="{{ q.image_url }}" alt="" class="img-fluid" style="max-height: 320px;"></div>
+                    {% elif q.image_svg %}
                     <div class="q-image mb-2">{{ q.image_svg|safe }}</div>
                     {% endif %}
 
@@ -300,6 +306,29 @@
                     <div class="q-text mb-3">{{ q.text|safe }}</div>
 
                     <!-- Ввод ответа -->
+                    {% if q.type == 'single_choice' %}
+                    <div class="db-choices mb-2">
+                        {% for ch in q.choices %}
+                        <button type="button"
+                                class="db-choice-btn btn btn-outline-secondary w-100 mb-1 text-start p-2"
+                                data-qid="{{ q.id }}" data-choice="{{ forloop.counter }}"
+                                {% if q.solved %}disabled{% endif %}>
+                            <span class="fw-bold me-1">{{ forloop.counter }}.</span>
+                            <span class="choice-latex">{{ ch|safe }}</span>
+                        </button>
+                        {% endfor %}
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <input type="hidden" class="q-input" id="q-input-{{ q.id }}"
+                               data-qid="{{ q.id }}"
+                               data-solved="{% if q.solved %}1{% else %}0{% endif %}"
+                               {% if q.solved %}value="{{ q.correct_answer }}"{% endif %}>
+                        <button class="btn btn-primary btn-sm q-check-btn"
+                                id="q-btn-{{ q.id }}" data-qid="{{ q.id }}"
+                                data-assignment="{{ assignment.id }}">Проверить</button>
+                        <div class="q-feedback" id="q-feedback-{{ q.id }}"></div>
+                    </div>
+                    {% else %}
                     <div class="d-flex align-items-center gap-2">
                         <div class="input-group input-group-sm" style="max-width:320px;">
                             <input type="text"
@@ -319,6 +348,7 @@
                         </div>
                         <div class="q-feedback" id="q-feedback-{{ q.id }}"></div>
                     </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -402,9 +432,8 @@
 
                                 {% else %}
                                 <div class="mb-3">
-                                    <label class="form-label">Введите ответ (десятичная дробь):</label>
-                                    <input type="text" class="form-control" name="answer" id="answerInput"
-                                           placeholder="Например, 0.25"
+                                    <label class="form-label">Введите ответ:</label>
+                                    <input type="text" class="form-control js-latex-input" name="answer" id="answerInput"
                                            {% if problem.status == 'solved' %}disabled{% endif %}>
                                 </div>
                                 <div class="d-flex gap-2">
@@ -541,6 +570,7 @@
 
 
 {% block extra_js %}
+<script src="{% static 'js/latex_preview.js' %}?v=2"></script>
 {% if is_db_mode %}
 {# ── JS для DB-режима ── #}
 <script>
@@ -614,6 +644,17 @@ document.querySelectorAll('.q-input').forEach(inp => {
         if (e.key === 'Enter') checkAnswer(inp.dataset.qid);
     });
 });
+// ── Выбор варианта (single_choice) — кладём индекс в скрытый q-input ──
+document.querySelectorAll('.db-choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const qid = btn.dataset.qid;
+        document.querySelectorAll('.db-choice-btn[data-qid="' + qid + '"]')
+            .forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        const inp = document.getElementById('q-input-' + qid);
+        if (inp) inp.value = btn.dataset.choice;
+    });
+});
 
 async function checkAnswer(qid) {
     const input  = document.getElementById('q-input-' + qid);
@@ -667,6 +708,12 @@ function markSolved(qid, correctAnswer) {
     badge.classList.remove('d-none', 'bg-light', 'text-secondary');
     badge.classList.add('bg-success');
     badge.innerHTML = '<i class="bi bi-check-lg"></i> Решено';
+
+    // single_choice: подсветить правильный вариант и заблокировать выбор
+    document.querySelectorAll('.db-choice-btn[data-qid="' + qid + '"]').forEach(b => {
+        b.disabled = true;
+        b.classList.toggle('selected', b.dataset.choice === String(correctAnswer));
+    });
 
     document.getElementById('q-feedback-' + qid).innerHTML = '';
 

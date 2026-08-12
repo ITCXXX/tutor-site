@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Сосновка (5BF94C) — план</title>
+<style>
+  body {
+    font-family: Cambria, Georgia, serif;
+    background: #f5f5f5;
+    color: #1f1f1f;
+    padding: 30px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 1.8rem 0 1.2rem; }
+  .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: .5rem;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 22px;
+    text-align: center;
+  }
+  .card p { color: #6b7280; font-size: .9rem; margin-top: .7rem; }
+  svg { display: block; margin: 0 auto; background: #fff; max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+
+<h1>Сосновка (5BF94C) — поле 25×13, забор 15×10, ворота на правой стороне</h1>
+<div class="card">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 770 410" width="770" height="410" id="plan"></svg>
+  <p>
+    Забор (2,2) → (17,12). Ворота на правой стороне между узлами (17,6) и (17,8), створки наружу (вправо).<br>
+    Объекты: 1 — дом (3×2), 2 — дом (4×3), 4 — дом (3×3), 5 — дом (3×1), 6 — огород (5×6), 7 — дом Г-образный.<br>
+    Объект 3 пока не описан.
+  </p>
+</div>
+
+<script>
+const CELL = 30;
+const OFFSET = 10;
+const COLS = 25;
+const ROWS = 13;
+
+function el(tag, attrs = {}, text) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function px(c) { return OFFSET + c * CELL; }
+function py(c) { return OFFSET + (ROWS - c) * CELL; }
+
+const svg = document.getElementById('plan');
+
+// ----- Сетка -----
+for (let i = 0; i <= COLS; i++) {
+  svg.appendChild(el('line', {
+    x1: px(i), y1: py(0), x2: px(i), y2: py(ROWS),
+    stroke: '#d0d0d0', 'stroke-width': 0.7,
+  }));
+}
+for (let i = 0; i <= ROWS; i++) {
+  svg.appendChild(el('line', {
+    x1: px(0), y1: py(i), x2: px(COLS), y2: py(i),
+    stroke: '#d0d0d0', 'stroke-width': 0.7,
+  }));
+}
+
+// ----- Отладочные координаты -----
+for (let i = 0; i <= COLS; i++) {
+  if (i % 2 === 0) {
+    svg.appendChild(el('text', {
+      x: px(i), y: py(0) + 10, 'text-anchor': 'middle',
+      'font-family': 'Arial', 'font-size': 8, fill: '#aaa',
+    }, String(i)));
+  }
+}
+for (let i = 0; i <= ROWS; i++) {
+  if (i % 2 === 0) {
+    svg.appendChild(el('text', {
+      x: px(0) - 4, y: py(i) + 3, 'text-anchor': 'end',
+      'font-family': 'Arial', 'font-size': 8, fill: '#aaa',
+    }, String(i)));
+  }
+}
+
+// ----- Забор с воротами на ПРАВОЙ стороне (17, 6..8) -----
+const fenceW = 3;
+function L(x1, y1, x2, y2, w = fenceW) {
+  svg.appendChild(el('line', {x1: px(x1), y1: py(y1), x2: px(x2), y2: py(y2),
+    stroke: '#000', 'stroke-width': w}));
+}
+L(2, 2, 17, 2);     // низ
+L(2, 12, 17, 12);   // верх
+L(2, 2, 2, 12);     // лево
+// Правая сторона с разрывом на y=6..8
+L(17, 2, 17, 6);
+L(17, 8, 17, 12);
+// Створки наружу (вправо). Внешняя сторона клеток разрыва — на x=18.
+// Нижняя створка: от (17, 6) к середине внешней стороны клетки (17..18, 6..7) = (18, 6.5)
+L(17, 6, 18, 6.5, 1.8);
+// Верхняя створка: от (17, 8) к середине внешней стороны клетки (17..18, 7..8) = (18, 7.5)
+L(17, 8, 18, 7.5, 1.8);
+
+// =================================================
+//   ХЕЛПЕРЫ
+// =================================================
+
+function building(vertices) {
+  const d = vertices.map((v, i) => `${i === 0 ? 'M' : 'L'} ${px(v[0])},${py(v[1])}`).join(' ') + ' Z';
+  svg.appendChild(el('path', {
+    d, fill: '#888', stroke: '#000', 'stroke-width': 2.5,
+    'stroke-linejoin': 'miter',
+  }));
+}
+
+function dashedArea(vertices) {
+  const d = vertices.map((v, i) => `${i === 0 ? 'M' : 'L'} ${px(v[0])},${py(v[1])}`).join(' ') + ' Z';
+  svg.appendChild(el('path', {
+    d, fill: 'none', stroke: '#000', 'stroke-width': 1.2,
+    'stroke-dasharray': '4,3',
+  }));
+}
+
+function numCircle(x, y, n) {
+  const cx = px(x), cy = py(y);
+  svg.appendChild(el('circle', {cx, cy, r: 9, fill: '#fff', stroke: '#000', 'stroke-width': 1.5}));
+  svg.appendChild(el('text', {
+    x: cx, y: cy + 4.5, 'text-anchor': 'middle',
+    'font-family': 'Arial, Helvetica, sans-serif',
+    'font-size': 13, 'font-weight': 700, fill: '#000',
+  }, String(n)));
+}
+
+// =================================================
+//   ОБЪЕКТЫ
+// =================================================
+
+// 1 — дом 3×2: (14,10)-(17,12)
+building([[14,10],[14,12],[17,12],[17,10]]);
+numCircle(15.5, 11, 1);
+
+// 2 — дом 4×3: (13,2)-(17,5)
+building([[13,2],[13,5],[17,5],[17,2]]);
+numCircle(15, 3.5, 2);
+
+// 4 — дом 3×3: (2,2)-(5,5)
+building([[2,2],[2,5],[5,5],[5,2]]);
+numCircle(3.5, 3.5, 4);
+
+// 5 — дом 3×1: (3,10)-(6,11)
+building([[3,10],[3,11],[6,11],[6,10]]);
+numCircle(4.5, 10.5, 5);
+
+// 6 — огород 5×6: (2,6)-(7,12)
+dashedArea([[2,6],[2,12],[7,12],[7,6]]);
+numCircle(4.5, 8.5, 6);
+
+// 7 — дом Г-образный
+building([[8,7],[8,11],[13,11],[13,8],[10,8],[10,7]]);
+numCircle(10.5, 9.5, 7);
+
+// ----- Морковки в огороде -----
+function carrot(cxPx, cyPx, s = 0.5) {
+  const top = cyPx - 18*s, bot = cyPx + 22*s, dx = 8*s;
+  svg.appendChild(el('path', {
+    d: `M ${cxPx},${top} C ${cxPx-dx},${top} ${cxPx-dx},${top+15*s} ${cxPx-dx*0.75},${cyPx+8*s}
+        C ${cxPx-dx*0.5},${bot} ${cxPx+dx*0.5},${bot} ${cxPx+dx*0.75},${cyPx+8*s}
+        C ${cxPx+dx},${top+15*s} ${cxPx+dx},${top} ${cxPx},${top} Z`,
+    fill: '#000',
+  }));
+  svg.appendChild(el('path', {
+    d: `M ${cxPx},${top} L ${cxPx-4*s},${top-14*s}
+        M ${cxPx},${top} L ${cxPx+2*s},${top-20*s}
+        M ${cxPx},${top} L ${cxPx+6*s},${top-12*s}`,
+    stroke: '#000', 'stroke-width': 2*s, 'stroke-linecap': 'round',
+  }));
+}
+carrot(px(5.5), py(6.5), 0.5);
+carrot(px(6.5), py(6.5), 0.5);
+
+// ----- Яблоня -----
+function appleTree(cxPx, cyBasePx, s = 0.5) {
+  svg.appendChild(el('rect', {
+    x: cxPx - 3*s, y: cyBasePx - 22*s,
+    width: 6*s, height: 22*s, fill: '#000',
+  }));
+  const cropCy = cyBasePx - 38*s;
+  svg.appendChild(el('path', {
+    d: `M ${cxPx},${cropCy - 26*s}
+        C ${cxPx-18*s},${cropCy-20*s} ${cxPx-22*s},${cropCy+2*s} ${cxPx-12*s},${cropCy+12*s}
+        C ${cxPx-5*s},${cropCy+18*s} ${cxPx+5*s},${cropCy+18*s} ${cxPx+12*s},${cropCy+12*s}
+        C ${cxPx+22*s},${cropCy+2*s} ${cxPx+18*s},${cropCy-20*s} ${cxPx},${cropCy - 26*s} Z`,
+    fill: '#000',
+  }));
+}
+
+// ----- Плитка крупная 0.5 клетки (как в Авдеево) -----
+function pavementArea(x1, x2, y1, y2) {
+  const tileSize = CELL / 2;      // 15
+  const gap = 2;
+  const draw = tileSize - gap;    // 13
+  const cols = Math.round((x2 - x1) * 2);
+  const rows = Math.round((y2 - y1) * 2);
+  const leftPx = px(x1);
+  const topPx  = py(y2);
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      svg.appendChild(el('rect', {
+        x: leftPx + i * tileSize + gap / 2,
+        y: topPx  + j * tileSize + gap / 2,
+        width: draw, height: draw, fill: '#6b6b6b',
+      }));
+    }
+  }
+}
+
+// ----- Площадка от ворот шириной 2 клетки, по высоте между зданиями 1 и 2 -----
+//   x=15..17 (2 клетки от правого забора), y=5..10 (между верхом дома 2 и низом дома 1)
+pavementArea(15, 17, 5, 10);
+
+// ----- Дорожка: второй ряд плиток снизу площадки (y=5.5..6) идёт влево до x=4 -----
+pavementArea(4, 15, 5.5, 6);
+
+// ----- Опуск к зданию 4: 1 плитка от левого конца дорожки к верху дома 4 -----
+pavementArea(4, 4.5, 5, 5.5);
+
+// ----- Отвод вверх к дому 7 (на 2 клетки левее предыдущего: x=8.5..9) -----
+//   В этой x-полосе дом 7 — расширение (x=8..10, y=7..8), нижний край y=7
+pavementArea(8.5, 9, 6, 7);
+
+// ----- Яблоневые посадки 3: яблоня, цифра 3, яблоня (в 2 клетках от дома 2) -----
+appleTree(px(11.5), py(3.5), 0.5);
+appleTree(px(9.5), py(3.5), 0.5);
+numCircle(10.5, 3.5, 3);
+
+// =================================================
+//   ЛЕГЕНДА (справа от забора)
+// =================================================
+
+function legendLabel(x, y, text) {
+  svg.appendChild(el('text', {
+    x: px(x), y: py(y) + 5,
+    'text-anchor': 'start',
+    'font-family': 'Cambria, Georgia, serif',
+    'font-size': 15, fill: '#000',
+  }, text));
+}
+
+// 1) 4 плитки в квадрате 1×1 клетки (как образец плитки на плане)
+pavementArea(19, 20, 10, 11);
+legendLabel(20.5, 10.5, 'плитка');
+
+// 2) Яблоня
+appleTree(px(19.5), py(8) + 5, 0.55);
+legendLabel(20.5, 8.5, 'яблоня');
+
+// 3) Морковка (= огород)
+carrot(px(19.5), py(6.5), 0.6);
+legendLabel(20.5, 6.5, 'огород');
+
+// 4) Масштаб: горизонтальная линия 1 клетки + засечки вверх + подпись «2 м»
+(function() {
+  const y0 = 4;
+  const tickLen = 1/3;
+  const xL = 19, xR = 20;
+  const sw = 3;
+  svg.appendChild(el('line', {
+    x1: px(xL), y1: py(y0), x2: px(xR), y2: py(y0),
+    stroke: '#000', 'stroke-width': sw, 'stroke-linecap': 'butt',
+  }));
+  svg.appendChild(el('line', {
+    x1: px(xL), y1: py(y0), x2: px(xL), y2: py(y0 + tickLen),
+    stroke: '#000', 'stroke-width': sw, 'stroke-linecap': 'butt',
+  }));
+  svg.appendChild(el('line', {
+    x1: px(xR), y1: py(y0), x2: px(xR), y2: py(y0 + tickLen),
+    stroke: '#000', 'stroke-width': sw, 'stroke-linecap': 'butt',
+  }));
+  svg.appendChild(el('text', {
+    x: px(19.5), y: py(y0) + 17,
+    'text-anchor': 'middle',
+    'font-family': 'Cambria, Georgia, serif', 'font-size': 14, fill: '#000',
+  }, '2 м'));
+})();
+
+// Подпись «ворота» сверху от верхней створки, повёрнута на -90° (читается снизу вверх).
+//   Верхняя створка идёт от (17, 8) к (18, 7.5). Якорь над ней.
+(function() {
+  const xa = px(17.5), ya = py(8.3);
+  svg.appendChild(el('text', {
+    x: xa, y: ya,
+    'text-anchor': 'start',
+    'font-family': 'Cambria, Georgia, serif',
+    'font-size': 15, fill: '#000',
+    transform: `rotate(-90 ${xa} ${ya})`,
+  }, 'ворота'));
+})();
+</script>
+
+</body>
+</html>

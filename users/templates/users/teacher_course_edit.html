@@ -1,0 +1,92 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.form-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff; border-radius: 12px; padding: 1.25rem 1.75rem; margin-bottom: 1.25rem;
+}
+.form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.form-hero .meta { opacity: .9; font-size: .9rem; }
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.theme-card { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: .5rem; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+.theme-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: .5rem; flex-wrap: wrap; }
+.theme-rename { display: flex; gap: .35rem; align-items: center; flex: 1; min-width: 200px; }
+.theme-rename input { border: 1px solid transparent; background: transparent; font-weight: 600; font-size: 1.05rem; padding: .2rem .4rem; border-radius: .3rem; flex: 1; }
+.theme-rename input:focus { border-color: var(--c-border); background: var(--c-bg); outline: none; }
+.proto-row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .5rem .6rem; border-top: 1px solid var(--c-border); }
+.proto-row:first-of-type { border-top: 1px dashed var(--c-border); }
+.muted { color: var(--c-text-muted); font-size: .85rem; }
+.empty-state { color: var(--c-text-muted); padding: 1rem; text-align: center; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 820px;">
+
+        <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
+
+        <div class="form-hero">
+            <h1>{{ course.title }}</h1>
+            <div class="meta">Закрытый ОГЭ-курс. Добавляйте темы и прототипы — ученики решают их на сайте с автопроверкой.</div>
+        </div>
+
+        <div class="d-flex gap-2 mb-4">
+            <a href="{% url 'teacher_course_enroll' course.slug %}" class="btn btn-sm btn-primary">Записать учеников</a>
+            <a href="{% url 'teacher_course_progress' course.slug %}" class="btn btn-sm btn-outline-primary">Прогресс учеников</a>
+        </div>
+
+        <form method="post" action="{% url 'teacher_theme_new' course.slug %}" class="d-flex gap-2 mb-4">
+            {% csrf_token %}
+            <input type="text" name="name" class="form-control" placeholder="Название темы (например, Задание 6)">
+            <button class="btn btn-primary" type="submit" style="white-space: nowrap;">+ Тема</button>
+        </form>
+
+        {% for t in themes %}
+        <div class="theme-card">
+            <div class="theme-head">
+                <form method="post" action="{% url 'teacher_theme_rename' course.slug t.lesson.id %}" class="theme-rename">
+                    {% csrf_token %}
+                    <input type="text" name="name" value="{{ t.lesson.title }}" aria-label="Название темы">
+                    <button type="submit" class="btn btn-sm btn-link p-0" style="white-space: nowrap;">сохранить</button>
+                </form>
+                <form method="post" action="{% url 'teacher_theme_delete' course.slug t.lesson.id %}"
+                      onsubmit="return confirm('Удалить тему «{{ t.lesson.title|escapejs }}» со всеми прототипами?')">
+                    {% csrf_token %}
+                    <button class="btn btn-sm btn-outline-danger" type="submit">Удалить тему</button>
+                </form>
+            </div>
+
+            {% for p in t.prototypes %}
+            <div class="proto-row">
+                <span>{{ p.title }} <span class="muted">· {{ p.q_count }} вопр.</span></span>
+                <span class="d-flex gap-1">
+                    <a href="{% url 'teacher_prototype_edit' course.slug t.lesson.id p.id %}" class="btn btn-sm btn-outline-secondary">Править</a>
+                    <form method="post" action="{% url 'teacher_prototype_delete' course.slug t.lesson.id p.id %}"
+                          class="d-inline" onsubmit="return confirm('Удалить прототип «{{ p.title|escapejs }}»?')">
+                        {% csrf_token %}
+                        <button class="btn btn-sm btn-outline-danger" type="submit" title="Удалить">×</button>
+                    </form>
+                </span>
+            </div>
+            {% empty %}
+            <div class="muted" style="padding: .5rem 0;">Пока нет прототипов.</div>
+            {% endfor %}
+
+            <div class="d-flex gap-2 mt-2">
+                <a href="{% url 'teacher_prototype_new' course.slug t.lesson.id %}" class="btn btn-sm btn-primary">+ Прототип</a>
+                <a href="{% url 'teacher_prototype_from_bank' course.slug t.lesson.id %}" class="btn btn-sm btn-outline-primary">+ Из банка</a>
+            </div>
+        </div>
+        {% empty %}
+        <div class="empty-state">Пока нет тем. Добавьте первую тему выше.</div>
+        {% endfor %}
+
+    </div>
+</section>
+{% endblock %}

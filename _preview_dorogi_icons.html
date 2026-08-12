@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>План дорог — значки (метки пунктов, дорога, пруд)</title>
+<style>
+  body {
+    font-family: Cambria, Georgia, serif;
+    background: #f5f5f5;
+    color: #1f1f1f;
+    padding: 30px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 1.8rem 0 1.2rem; }
+  h2 { font-size: 1rem; margin: 0 0 .8rem; }
+  .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: .5rem;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 22px;
+    text-align: center;
+  }
+  .card p { color: #6b7280; font-size: .9rem; margin-top: .7rem; }
+  svg { display: block; margin: 0 auto; background: #fff; max-width: 100%; height: auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>1. Каплевидные метки пунктов (4 варианта)</h1>
+<div class="grid">
+  <div class="card">
+    <h2>А — закрашенная капля</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 100" width="80" height="100" id="pin1"></svg>
+    <p>Сплошной чёрный силуэт.</p>
+  </div>
+  <div class="card">
+    <h2>Б — контур + белая середина</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 100" width="80" height="100" id="pin2"></svg>
+    <p>Толстый чёрный контур, белая заливка.</p>
+  </div>
+  <div class="card">
+    <h2>В — с буквой/цифрой внутри</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 100" width="80" height="100" id="pin3"></svg>
+    <p>Контур + цифра в кругу (пример: 1).</p>
+  </div>
+  <div class="card">
+    <h2>Г — круг с маленьким хвостом</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 100" width="80" height="100" id="pin4"></svg>
+    <p>Круглая голова + короткий заострённый хвост.</p>
+  </div>
+</div>
+
+<h1>2. Пунктирная дорога (4 варианта)</h1>
+<div class="grid">
+  <div class="card">
+    <h2>А — короткий пунктир</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" width="220" height="40" id="road1"></svg>
+    <p>dasharray = «5,3», толщина 1.5.</p>
+  </div>
+  <div class="card">
+    <h2>Б — длинные тире</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" width="220" height="40" id="road2"></svg>
+    <p>dasharray = «12,5», толщина 2.</p>
+  </div>
+  <div class="card">
+    <h2>В — двойная пунктирная</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" width="220" height="40" id="road3"></svg>
+    <p>Две параллельные линии «8,4», расстояние 4 пикс.</p>
+  </div>
+  <div class="card">
+    <h2>Г — точки</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" width="220" height="40" id="road4"></svg>
+    <p>dasharray = «1,6», толщина 3, linecap round.</p>
+  </div>
+</div>
+
+<h1>3. Пруд (4 варианта)</h1>
+<div class="grid">
+  <div class="card">
+    <h2>А — простой эллипс</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 100" width="140" height="100" id="pond1"></svg>
+    <p>Голубая заливка, контур синий.</p>
+  </div>
+  <div class="card">
+    <h2>Б — кляксообразный полигон</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 100" width="140" height="100" id="pond2"></svg>
+    <p>Неправильная форма, имитирует природный пруд.</p>
+  </div>
+  <div class="card">
+    <h2>В — с волнами внутри</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 100" width="140" height="100" id="pond3"></svg>
+    <p>Эллипс + три горизонтальные волны (символ воды).</p>
+  </div>
+  <div class="card">
+    <h2>Г — серый контур (под чёрно-белый план)</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 100" width="140" height="100" id="pond4"></svg>
+    <p>Без цвета: контур + штриховка (для монохромного плана).</p>
+  </div>
+</div>
+
+<script>
+function el(id) { return document.getElementById(id); }
+function E(svg, tag, attrs = {}) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+}
+function T(svg, attrs, text) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  n.textContent = text;
+  return n;
+}
+
+// =================================================
+//   1. КАПЛЕВИДНЫЕ МЕТКИ ПУНКТОВ
+// =================================================
+
+// А — сплошная чёрная капля
+(function() {
+  const s = el('pin1');
+  // Каплевидный силуэт: круглая голова + остриё снизу
+  s.appendChild(E(s, 'path', {
+    d: 'M 40,10 C 22,10 14,26 18,42 C 22,55 32,68 40,82 C 48,68 58,55 62,42 C 66,26 58,10 40,10 Z',
+    fill: '#000',
+  }));
+})();
+
+// Б — контур + белая середина
+(function() {
+  const s = el('pin2');
+  s.appendChild(E(s, 'path', {
+    d: 'M 40,10 C 22,10 14,26 18,42 C 22,55 32,68 40,82 C 48,68 58,55 62,42 C 66,26 58,10 40,10 Z',
+    fill: '#fff', stroke: '#000', 'stroke-width': 3, 'stroke-linejoin': 'round',
+  }));
+  // Маленький круг внутри (как метка центра)
+  s.appendChild(E(s, 'circle', {cx: 40, cy: 36, r: 6, fill: '#000'}));
+})();
+
+// В — с цифрой внутри (пример: 1)
+(function() {
+  const s = el('pin3');
+  s.appendChild(E(s, 'path', {
+    d: 'M 40,10 C 22,10 14,26 18,42 C 22,55 32,68 40,82 C 48,68 58,55 62,42 C 66,26 58,10 40,10 Z',
+    fill: '#fff', stroke: '#000', 'stroke-width': 3, 'stroke-linejoin': 'round',
+  }));
+  s.appendChild(T(s, {
+    x: 40, y: 42, 'text-anchor': 'middle',
+    'font-family': 'Arial, Helvetica, sans-serif',
+    'font-size': 22, 'font-weight': 700, fill: '#000',
+  }, '1'));
+})();
+
+// Г — круг + короткий хвост
+(function() {
+  const s = el('pin4');
+  // Большой круг (голова)
+  s.appendChild(E(s, 'circle', {cx: 40, cy: 36, r: 18, fill: '#fff', stroke: '#000', 'stroke-width': 3}));
+  // Хвост — маленький треугольник вниз от круга
+  s.appendChild(E(s, 'path', {
+    d: 'M 32,50 L 48,50 L 40,68 Z',
+    fill: '#fff', stroke: '#000', 'stroke-width': 3, 'stroke-linejoin': 'miter',
+  }));
+  // Закрыть стык
+  s.appendChild(E(s, 'line', {x1: 33, y1: 50, x2: 47, y2: 50, stroke: '#fff', 'stroke-width': 3}));
+  // Точка внутри круга
+  s.appendChild(E(s, 'circle', {cx: 40, cy: 36, r: 4, fill: '#000'}));
+})();
+
+// =================================================
+//   2. ПУНКТИРНАЯ ДОРОГА
+// =================================================
+
+// А — короткий пунктир
+(function() {
+  const s = el('road1');
+  s.appendChild(E(s, 'line', {
+    x1: 10, y1: 20, x2: 210, y2: 20,
+    stroke: '#000', 'stroke-width': 1.5, 'stroke-dasharray': '5,3',
+  }));
+})();
+
+// Б — длинные тире
+(function() {
+  const s = el('road2');
+  s.appendChild(E(s, 'line', {
+    x1: 10, y1: 20, x2: 210, y2: 20,
+    stroke: '#000', 'stroke-width': 2, 'stroke-dasharray': '12,5',
+  }));
+})();
+
+// В — двойная пунктирная
+(function() {
+  const s = el('road3');
+  s.appendChild(E(s, 'line', {
+    x1: 10, y1: 16, x2: 210, y2: 16,
+    stroke: '#000', 'stroke-width': 1.5, 'stroke-dasharray': '8,4',
+  }));
+  s.appendChild(E(s, 'line', {
+    x1: 10, y1: 24, x2: 210, y2: 24,
+    stroke: '#000', 'stroke-width': 1.5, 'stroke-dasharray': '8,4',
+  }));
+})();
+
+// Г — точки
+(function() {
+  const s = el('road4');
+  s.appendChild(E(s, 'line', {
+    x1: 10, y1: 20, x2: 210, y2: 20,
+    stroke: '#000', 'stroke-width': 3, 'stroke-dasharray': '1,6', 'stroke-linecap': 'round',
+  }));
+})();
+
+// =================================================
+//   3. ПРУД
+// =================================================
+
+// А — простой эллипс
+(function() {
+  const s = el('pond1');
+  s.appendChild(E(s, 'ellipse', {
+    cx: 70, cy: 50, rx: 50, ry: 28,
+    fill: '#c4e0f5', stroke: '#3b82a6', 'stroke-width': 1.8,
+  }));
+})();
+
+// Б — кляксообразный полигон
+(function() {
+  const s = el('pond2');
+  s.appendChild(E(s, 'path', {
+    d: 'M 30,40 C 20,30 25,15 45,18 C 60,20 70,12 90,18 C 110,24 122,40 118,58 ' +
+       'C 114,75 95,82 75,80 C 55,78 35,80 25,68 C 15,55 22,48 30,40 Z',
+    fill: '#c4e0f5', stroke: '#3b82a6', 'stroke-width': 1.8, 'stroke-linejoin': 'round',
+  }));
+})();
+
+// В — эллипс + волны внутри
+(function() {
+  const s = el('pond3');
+  s.appendChild(E(s, 'ellipse', {
+    cx: 70, cy: 50, rx: 50, ry: 28,
+    fill: '#c4e0f5', stroke: '#3b82a6', 'stroke-width': 1.8,
+  }));
+  // Три волны разной ширины
+  s.appendChild(E(s, 'path', {
+    d: 'M 38,42 Q 50,38 62,42 T 86,42',
+    fill: 'none', stroke: '#3b82a6', 'stroke-width': 1.2,
+  }));
+  s.appendChild(E(s, 'path', {
+    d: 'M 46,52 Q 58,48 70,52 T 94,52',
+    fill: 'none', stroke: '#3b82a6', 'stroke-width': 1.2,
+  }));
+  s.appendChild(E(s, 'path', {
+    d: 'M 40,62 Q 52,58 64,62 T 88,62',
+    fill: 'none', stroke: '#3b82a6', 'stroke-width': 1.2,
+  }));
+})();
+
+// Г — серый контур со штриховкой (монохром)
+(function() {
+  const s = el('pond4');
+  // Контур
+  s.appendChild(E(s, 'ellipse', {
+    cx: 70, cy: 50, rx: 50, ry: 28,
+    fill: '#f0f0f0', stroke: '#000', 'stroke-width': 1.8,
+  }));
+  // Подпись «пруд» внутри
+  s.appendChild(T(s, {
+    x: 70, y: 56, 'text-anchor': 'middle',
+    'font-family': 'Cambria, Georgia, serif', 'font-style': 'italic',
+    'font-size': 16, fill: '#555',
+  }, 'пруд'));
+})();
+</script>
+
+</body>
+</html>

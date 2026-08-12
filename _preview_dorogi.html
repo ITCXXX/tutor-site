@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>4-точечные планы дорог — сравнение с оригиналами</title>
+<style>
+  body {
+    font-family: Cambria, Georgia, serif;
+    background: #f5f5f5;
+    color: #1f1f1f;
+    padding: 30px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 1.8rem 0 1.2rem; }
+  h2 { font-size: 1.1rem; margin: 0 0 .8rem; }
+  .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: .5rem;
+    padding: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 20px;
+  }
+  .card .row {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+  }
+  .card .cell {
+    flex: 1 1 0;
+    text-align: center;
+    min-width: 0;
+  }
+  .card .cell .label {
+    font-size: .85rem;
+    color: #6b7280;
+    margin-bottom: .4rem;
+  }
+  .card .cell img,
+  .card .cell svg {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #eee;
+    background: #fff;
+  }
+  .card p.coords {
+    color: #6b7280;
+    font-size: .85rem;
+    margin-top: .6rem;
+    font-family: monospace;
+  }
+  @media (max-width: 900px) {
+    .card .row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<h1>10 рисунков 4-точечных планов — сравнение с оригиналом</h1>
+<p style="color:#6b7280;font-size:.9rem;">
+  Слева — оригинальная фотка из БД, справа — мой новый SVG-рисунок.
+  Точки соединены пунктиром по схеме 1→2→3→4→1.
+</p>
+
+<div id="cards"></div>
+
+<script>
+const CELL = 22;
+const PAD = 2;
+
+// Формат ребра: [i, j, dashed]  (true = пунктир, false = жирная обычная)
+// Индексы 0,1,2,3 = точки 1,2,3,4.
+const GROUPS = [
+  {gid: '34E199', no: 1, title: 'Дивная → Ольгино', cropBottom: true,
+   points: [{x:30,y:2},{x:22,y:2},{x:2,y:2},{x:2,y:23}],
+   edges: [[0,1,false],[1,2,false],[2,3,false],[3,0,true],[3,1,true]],
+   pond: {edge: [3,1], side: 'left'}},   // слева от 4-2
+
+  {gid: '35C016', no: 2, title: 'Ёлочки → Кленовое', cropBottom: true,
+   points: [{x:2,y:17},{x:10,y:17},{x:2,y:11},{x:2,y:2}],
+   edges: [[0,1,false],[2,3,false],[3,0,false],[1,2,true],[1,3,true]],
+   pond: {edge: [1,2], side: 'top', size: 0.7, offset: {dx:-2, dy:-3}}},
+
+  {gid: '650747', no: 3, title: 'Масловка → Захарово', cropBottom: true,
+   points: [{x:1,y:2},{x:1,y:8},{x:1,y:23},{x:21,y:23}],
+   edges: [[0,1,false],[1,2,false],[2,3,false],[3,0,true],[3,1,true]],
+   pond: {edge: [3,1], side: 'top', offset: {dx:0, dy:-1.5}}},
+
+  {gid: '79233F', no: 4, title: 'Лягушкино → Вятское', cropBottom: true,
+   points: [{x:10,y:2},{x:16,y:10},{x:16,y:2},{x:1,y:2}],
+   edges: [[1,2,false],[2,3,false],[3,0,false],[0,1,true],[3,1,true]],
+   pond: {edge: [1,0], side: 'right', size: 0.7, offset: {dx:-2, dy:0}}},
+
+  {gid: '8C173F', no: 5, title: 'Пирожки → Княжеское', cropBottom: true,
+   points: [{x:7,y:10},{x:1,y:2},{x:1,y:10},{x:16,y:10}],
+   edges: [[1,2,false],[2,3,false],[3,0,false],[0,1,true],[3,1,true]],
+   pond: {edge: [1,0], side: 'left', size: 0.7, offset: {dx:2.5, dy:1.5}}},
+
+  {gid: 'BA66FC', no: 6, title: 'Осиновка → Николаево',
+   points: [{x:2,y:19},{x:2,y:11},{x:17,y:19},{x:2,y:-1}],
+   edges: [[0,1,false],[3,0,false],[2,0,false],[1,2,true],[2,3,true]],
+   pond: {edge: [2,1], side: 'top', offset: {dx:-2, dy:-2}}},
+
+  {gid: 'C09A0A', no: 7, title: 'Грушёвка → Абрамово',
+   points: [{x:2,y:11},{x:2,y:6},{x:2,y:2},{x:14,y:11}],
+   edges: [[0,1,false],[1,2,false],[3,0,false],[3,1,true],[2,3,true]],
+   pond: {edge: [3,1], side: 'top', size: 0.7, offset: {dx:-3, dy:-3}}},
+
+  {gid: 'E4DF9C', no: 8, title: 'Васильково → Иваново',
+   points: [{x:1,y:18},{x:13,y:18},{x:1,y:13},{x:1,y:2}],
+   edges: [[0,1,false],[2,3,false],[3,0,false],[1,2,true],[1,3,true]],
+   pond: {edge: [2,1], side: 'top', size: 0.7, offset: {dx:-3, dy:-3}}},
+
+  {gid: 'EAE764', no: 9, title: 'Васильевка → Плодородное',
+   points: [{x:11,y:2},{x:2,y:14},{x:6,y:14},{x:11,y:14}],
+   edges: [[1,2,false],[2,3,false],[3,0,false],[0,1,true],[0,2,true]],
+   pond: {edge: [2,0], side: 'right', size: 0.7, offset: {dx:-4, dy:4}}},
+
+  {gid: 'F6B6DD', no: 10, title: 'Ясная → Майское',
+   points: [{x:2,y:2},{x:13,y:2},{x:18,y:2},{x:18,y:14}],
+   edges: [[0,1,false],[1,2,false],[3,0,false],[3,1,true],[2,3,true]],
+   pond: {edge: [3,1], side: 'left', offset: {dx:0, dy:-2}}},
+];
+
+function el(tag, attrs = {}, text) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function pinDrop(svg, cxPx, cyTipPx, n, scale = 0.38) {
+  const g = el('g', {
+    transform: `translate(${cxPx} ${cyTipPx}) scale(${scale}) translate(-40 -82)`,
+  });
+  g.appendChild(el('path', {
+    d: 'M 40,10 C 22,10 14,26 18,42 C 22,55 32,68 40,82 C 48,68 58,55 62,42 C 66,26 58,10 40,10 Z',
+    fill: '#fff', stroke: '#000', 'stroke-width': 3, 'stroke-linejoin': 'round',
+  }));
+  g.appendChild(el('text', {
+    x: 40, y: 50,
+    'text-anchor': 'middle',
+    'font-family': 'Arial, Helvetica, sans-serif',
+    'font-size': 26, 'font-weight': 700, fill: '#000',
+  }, String(n)));
+  svg.appendChild(g);
+}
+
+// Параметры пруда (в клетках)
+const POND_W = 4;
+const POND_H = 3;
+const POND_OFFSET = 3.5;   // расстояние от середины связи до центра пруда
+
+function getPondCenter(p1, p2, side) {
+  const cx = (p1.x + p2.x) / 2;
+  const cy = (p1.y + p2.y) / 2;
+  let dx = 0, dy = 0;
+  if (side === 'left')   dx = -POND_OFFSET;
+  if (side === 'right')  dx =  POND_OFFSET;
+  if (side === 'top')    dy =  POND_OFFSET;
+  if (side === 'bottom') dy = -POND_OFFSET;
+  return {x: cx + dx, y: cy + dy};
+}
+
+function drawPond(svg, cxPx, cyPx, sizeMul = 1) {
+  const w = POND_W * CELL * sizeMul, h = POND_H * CELL * sizeMul;
+  // Path из варианта Б — кляксообразный полигон в собственном viewBox 0..140 × 0..100.
+  // Центрируем его в (cxPx, cyPx) через transform.
+  const g = el('g', {
+    transform: `translate(${cxPx - w/2} ${cyPx - h/2}) scale(${w/140} ${h/100})`,
+  });
+  g.appendChild(el('path', {
+    d: 'M 30,40 C 20,30 25,15 45,18 C 60,20 70,12 90,18 C 110,24 122,40 118,58 ' +
+       'C 114,75 95,82 75,80 C 55,78 35,80 25,68 C 15,55 22,48 30,40 Z',
+    fill: '#c4e0f5', stroke: '#3b82a6', 'stroke-width': 1.8, 'stroke-linejoin': 'round',
+    'vector-effect': 'non-scaling-stroke',
+  }));
+  svg.appendChild(g);
+}
+
+function drawPlan(svg, points, edges, cropBottom = false, pond = null) {
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  const xs = points.map(p => p.x);
+  const ys = points.map(p => p.y);
+
+  // Включаем bounding box пруда в расчёт границ поля
+  let pondCenter = null;
+  let pondSize = 1;
+  if (pond) {
+    const [i, j] = pond.edge;
+    pondCenter = getPondCenter(points[i], points[j], pond.side);
+    if (pond.offset) {
+      pondCenter.x += pond.offset.dx || 0;
+      pondCenter.y += pond.offset.dy || 0;
+    }
+    pondSize = pond.size || 1;
+    const halfW = (POND_W * pondSize) / 2;
+    const halfH = (POND_H * pondSize) / 2;
+    xs.push(pondCenter.x - halfW, pondCenter.x + halfW);
+    ys.push(pondCenter.y - halfH, pondCenter.y + halfH);
+  }
+
+  const xMin = Math.min(...xs) - PAD;
+  const xMax = Math.max(...xs) + PAD;
+  // Снизу всегда оставляем ровно 2 ряда клеток от самой нижней точки/пруда.
+  const yMin = Math.min(...ys) - 2;
+  const yMax = Math.max(...ys) + PAD;
+
+  const W = (xMax - xMin) * CELL;
+  const H = (yMax - yMin) * CELL;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+
+  const px = x => (x - xMin) * CELL;
+  const py = y => (yMax - y) * CELL;
+
+  for (let x = xMin; x <= xMax; x++) {
+    svg.appendChild(el('line', {
+      x1: px(x), y1: py(yMin), x2: px(x), y2: py(yMax),
+      stroke: '#d0d0d0', 'stroke-width': 0.6,
+    }));
+  }
+  for (let y = yMin; y <= yMax; y++) {
+    svg.appendChild(el('line', {
+      x1: px(xMin), y1: py(y), x2: px(xMax), y2: py(y),
+      stroke: '#d0d0d0', 'stroke-width': 0.6,
+    }));
+  }
+
+  // Пруд РИСУЕМ ДО рёбер и меток, чтобы они были поверх него
+  if (pondCenter) {
+    drawPond(svg, px(pondCenter.x), py(pondCenter.y), pondSize);
+  }
+
+  for (const e of edges) {
+    const [i, j, dashed] = e;
+    const p1 = points[i], p2 = points[j];
+    const attrs = {
+      x1: px(p1.x), y1: py(p1.y), x2: px(p2.x), y2: py(p2.y),
+      stroke: '#000',
+    };
+    if (dashed) {
+      attrs['stroke-width'] = 1.5;
+      attrs['stroke-dasharray'] = '5,3';
+    } else {
+      attrs['stroke-width'] = 2.8;
+    }
+    svg.appendChild(el('line', attrs));
+  }
+
+  points.forEach((p, idx) => {
+    pinDrop(svg, px(p.x), py(p.y), idx + 1, 0.38);
+  });
+}
+
+const container = document.getElementById('cards');
+for (const g of GROUPS) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <h2>Рисунок ${g.no} — ${g.gid} (${g.title})</h2>
+    <div class="row">
+      <div class="cell">
+        <div class="label">Оригинал из БД</div>
+        <img src="media/oge15/oge15_${g.gid}.png" alt="${g.gid} original">
+      </div>
+      <div class="cell">
+        <div class="label">Мой SVG</div>
+        <svg xmlns="http://www.w3.org/2000/svg" id="svg_${g.gid}"></svg>
+      </div>
+    </div>
+    <p class="coords">
+      Точки: 1:(${g.points[0].x},${g.points[0].y}) ·
+             2:(${g.points[1].x},${g.points[1].y}) ·
+             3:(${g.points[2].x},${g.points[2].y}) ·
+             4:(${g.points[3].x},${g.points[3].y})
+    </p>
+  `;
+  container.appendChild(card);
+  drawPlan(card.querySelector(`#svg_${g.gid}`), g.points, g.edges, !!g.cropBottom, g.pond);
+}
+</script>
+
+</body>
+</html>

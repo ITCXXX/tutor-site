@@ -13,16 +13,16 @@
                     <div class="card-body p-4">
                         <h2 class="text-center mb-4">Здравствуйте, {{ user.username }}!</h2>
 
-                        {% if total_assignments %}
+                        {% if has_courses %}
                         <div class="card border-0" style="background: var(--gradient-hero); color: white;">
                             <div class="card-body text-center">
                                 <div class="display-4 fw-bold mb-2">{{ progress_pct }}%</div>
-                                <p class="mb-2">Решено заданий</p>
+                                <p class="mb-2">Средний прогресс</p>
                                 <div class="progress bg-white bg-opacity-25" style="height: 8px;">
                                     <div class="progress-bar bg-white" style="width: {{ progress_pct }}%"></div>
                                 </div>
                                 <small class="d-block mt-2">
-                                    {{ completed_assignments }} из {{ total_assignments }}
+                                    по {{ courses_count }} курс{{ courses_count|pluralize:"у,ам" }}
                                 </small>
                             </div>
                         </div>
@@ -56,7 +56,10 @@
                 </div>
 
                 <div class="text-center mt-4">
-                    <a href="{% url 'logout' %}" class="btn btn-outline-secondary">Выйти из системы</a>
+                    <form method="post" action="{% url 'logout' %}" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-secondary">Выйти из системы</button>
+                    </form>
                 </div>
 
             </div>

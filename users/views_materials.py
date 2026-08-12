@@ -51,6 +51,11 @@ def material_view(request, material_id):
     """Страница просмотра материала."""
     material = get_object_or_404(Material, id=material_id)
 
+    # Доступ: бесплатные материалы — всем; платные — только авторизованным.
+    if not material.is_free and not request.user.is_authenticated:
+        messages.error(request, 'Этот материал доступен после входа в систему.')
+        return redirect('login')
+
     if not material.file:
         messages.error(request, "Файл не найден")
         return redirect('material_category_detail', slug=material.category.slug)
@@ -87,7 +92,7 @@ def material_view(request, material_id):
         'pdf_url': pdf_url,
         'total_pages': material.page_count or 1,
         'is_pdf': is_pdf,
-        'can_access': True,
+        'can_access': material.is_free or request.user.is_authenticated,
         'file_extension': filename.split('.')[-1] if '.' in filename else 'file',
     })
 

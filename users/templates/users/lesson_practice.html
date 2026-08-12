@@ -1,4 +1,5 @@
 {% extends "users/visitor_base.html" %}
+{% load static %}
 
 {% block title %}{{ lesson.title }} — практика{% endblock %}
 
@@ -79,6 +80,20 @@
     display: flex; gap: .65rem; flex-wrap: wrap; align-items: center;
 }
 .answer-row .form-control { max-width: 220px; }
+/* Мульти-ответ (вторая часть): несколько полей-корней */
+.answer-fields {
+    display: flex; gap: .65rem; flex-wrap: wrap; align-items: flex-start;
+}
+.answer-field { position: relative; }
+.answer-field .remove-answer {
+    position: absolute; top: -9px; right: -9px;
+    width: 20px; height: 20px; line-height: 18px;
+    border-radius: 50%; border: 1px solid #cbd5e1;
+    background: #fff; color: #64748b;
+    font-size: .8rem; text-align: center; cursor: pointer; padding: 0;
+}
+.answer-field .remove-answer:hover { color: var(--c-danger); border-color: var(--c-danger); }
+#add-answer-btn { white-space: nowrap; }
 .answer-row .feedback { font-size: .9rem; }
 .answer-row .feedback.correct { color: var(--c-success); font-weight: 600; }
 .answer-row .feedback.wrong { color: var(--c-danger); font-weight: 500; }
@@ -265,9 +280,16 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 {# UI ввода: либо текстовый input, либо набор кнопок-вариантов. #}
                 <div class="answer-row" id="answer-row-input"
                      {% if chosen_assignment.answer_type == 'single_choice' %}style="display:none"{% endif %}>
-                    <input type="text" id="answer-input" class="form-control"
-                           placeholder="Ваш ответ" autocomplete="off"
-                           {% if chosen_assignment.answer_type != 'single_choice' %}autofocus{% endif %}>
+                    <div class="answer-fields" id="answer-fields">
+                        <div class="answer-field">
+                            <input type="text" id="answer-input" class="form-control js-latex-input"
+                                   autocomplete="off"
+                                   {% if chosen_assignment.answer_type != 'single_choice' %}autofocus{% endif %}>
+                        </div>
+                    </div>
+                    <button type="button" id="add-answer-btn" class="btn btn-outline-secondary"
+                            {% if not task_data.multi_answer %}style="display:none"{% endif %}
+                            title="Добавить ещё один корень">+ корень</button>
                     <button type="button" id="check-btn" class="btn btn-primary">Проверить</button>
                     {% if is_oge %}
                     <button type="button" id="reveal-btn" class="btn btn-outline-secondary btn-sm">Узнать ответ</button>
@@ -383,9 +405,56 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
             const choicesContainer = document.getElementById('choices-container');
             const feedbackChoices = document.getElementById('feedback-choices');
             const totalCount = {{ generators|length }};
+            const answerFields = document.getElementById('answer-fields');
+            const addAnswerBtn = document.getElementById('add-answer-btn');
 
             // Тип ответа текущей задачи: 'single_choice' | 'decimal_input' | ...
             let currentAnswerType = "{{ chosen_assignment.answer_type|default:'decimal_input' }}";
+
+            // ── Мульти-ответ (вторая часть: несколько корней) ──────────────
+            let isMultiAnswer = {% if task_data.multi_answer %}true{% else %}false{% endif %};
+            let fieldSeq = 1;
+
+            function getAnswerInputs() {
+                return Array.from(answerFields.querySelectorAll('input'));
+            }
+            function collectAnswer() {
+                return getAnswerInputs().map(i => i.value.trim()).filter(Boolean).join(';');
+            }
+            function addAnswerField() {
+                fieldSeq += 1;
+                const wrap = document.createElement('div');
+                wrap.className = 'answer-field';
+                const inp = document.createElement('input');
+                inp.type = 'text';
+                inp.id = `answer-input-${fieldSeq}`;
+                inp.className = 'form-control js-latex-input';
+                inp.placeholder = 'Ещё корень';
+                inp.autocomplete = 'off';
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'remove-answer';
+                rm.textContent = '×';
+                rm.title = 'Убрать это поле';
+                rm.addEventListener('click', () => wrap.remove());
+                wrap.appendChild(inp);
+                wrap.appendChild(rm);
+                answerFields.appendChild(wrap);
+                if (window.LatexPreview) LatexPreview.attachAll();
+                inp.focus();
+                return inp;
+            }
+            function resetAnswerFields() {
+                getAnswerInputs().slice(1).forEach(i => i.closest('.answer-field').remove());
+                input.value = '';
+                input.dispatchEvent(new Event('input'));   // спрятать LaTeX-превью
+            }
+            function setMultiMode(flag) {
+                isMultiAnswer = !!flag;
+                addAnswerBtn.style.display = isMultiAnswer ? '' : 'none';
+                if (!isMultiAnswer) resetAnswerFields();
+            }
+            addAnswerBtn.addEventListener('click', addAnswerField);
 
             // Активный feedback-узел (зависит от UI-блока)
             function activeFeedback() {
@@ -405,8 +474,9 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 } else {
                     inputRow.style.display = '';
                     choicesRow.style.display = 'none';
-                    input.disabled = false;
+                    getAnswerInputs().forEach(i => i.disabled = false);
                     checkBtn.disabled = false;
+                    addAnswerBtn.disabled = false;
                     const rb = document.getElementById('reveal-btn');
                     if (rb) rb.disabled = false;
                 }
@@ -505,7 +575,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     return;
                 }
                 clearFeedback();
-                input.value = '';
+                resetAnswerFields();
                 nextBtn.classList.remove('show');
                 alreadyCounted = false;
 
@@ -524,6 +594,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     problemIdEl.value = data.problem_id || '';
 
                     renderUIForAnswerType(data.answer_type, data.choices);
+                    setMultiMode(data.multi_answer);
 
                     if (window.MathJax && MathJax.typesetPromise) {
                         MathJax.typesetPromise([qType, qCondition, choicesContainer]);
@@ -538,6 +609,31 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
 
             // ── Проверка ответа ────────────────────────────────────────────
             function localCheck(userVal, correctVal) {
+                // Мульти-ответ: эталон содержит «;» — сравниваем как множества.
+                if (String(correctVal || '').includes(';')) {
+                    const corrParts = String(correctVal).split(';').map(s => s.trim()).filter(Boolean);
+                    const userParts = String(userVal || '').split(';').map(s => s.trim()).filter(Boolean);
+                    if (!userParts.length) return {correct: false, message: null};
+                    if (userParts.length !== corrParts.length) {
+                        return {correct: false, message: 'Проверьте количество корней'};
+                    }
+                    const remaining = corrParts.slice();
+                    for (const up of userParts) {
+                        let matched = -1, firstMsg = null;
+                        for (let i = 0; i < remaining.length; i++) {
+                            const res = localCheckSingle(up, remaining[i]);
+                            if (res.correct) { matched = i; break; }
+                            if (res.message && firstMsg === null) firstMsg = res.message;
+                        }
+                        if (matched === -1) return {correct: false, message: firstMsg};
+                        remaining.splice(matched, 1);
+                    }
+                    return {correct: true, message: null};
+                }
+                return localCheckSingle(userVal, correctVal);
+            }
+
+            function localCheckSingle(userVal, correctVal) {
                 // Возвращает {correct: bool, message: string|null}
                 function parse(s) {
                     s = (s || '').trim().replace(/\s+/g, '');
@@ -574,7 +670,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
             }
 
             async function checkAnswer() {
-                const userAnswer = input.value.trim();
+                const userAnswer = isMultiAnswer ? collectAnswer() : input.value.trim();
                 if (!userAnswer) {
                     feedback.textContent = 'Введите ответ';
                     feedback.className = 'feedback wrong';
@@ -614,19 +710,21 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 if (isCorrect) {
                     feedback.textContent = 'Правильно!';
                     feedback.className = 'feedback correct';
-                    input.disabled = true;
+                    getAnswerInputs().forEach(i => i.disabled = true);
+                    addAnswerBtn.disabled = true;
                     checkBtn.disabled = true;
                     nextBtn.classList.add('show');
                     nextBtn.focus();
                 } else {
                     feedback.textContent = serverMsg || 'Неверно. Попробуйте ещё раз.';
                     feedback.className = 'feedback wrong';
-                    input.select();
+                    if (!isMultiAnswer) input.select();
                 }
             }
             checkBtn.addEventListener('click', checkAnswer);
-            input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
+            // Enter в любом поле ответа (включая динамически добавленные) — делегирование.
+            answerFields.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
                     if (nextBtn.classList.contains('show')) loadNext();
                     else checkAnswer();
                 }
@@ -723,6 +821,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
             if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
         })();
         </script>
+        <script src="{% static 'js/latex_preview.js' %}?v=2"></script>
 
         {% endif %}
 
@@ -735,11 +834,6 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                    style="max-width: 320px;">
                     ← {{ prev_lesson.title }}
                 </a>
-            {% else %}
-                <span class="btn btn-outline-secondary btn-lg disabled flex-grow-1"
-                      style="max-width: 320px;">
-                    ← Это первое
-                </span>
             {% endif %}
 
             <a href="{% url 'course_detail' course.slug %}"
@@ -753,11 +847,6 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                    style="max-width: 320px; text-align: right;">
                     {{ next_lesson.title }} →
                 </a>
-            {% else %}
-                <span class="btn btn-outline-secondary btn-lg disabled flex-grow-1"
-                      style="max-width: 320px; text-align: right;">
-                    Это последнее →
-                </span>
             {% endif %}
         </div>
         {% endif %}

@@ -207,7 +207,7 @@
                 {% endfor %}
             </ol>
             <div class="answer-row">
-                <label>Номер ответа (1–{{ slot.choices|length }}):</label>
+                <label>Ответ:</label>
                 <input type="text" class="answer-input"
                        data-slot="{{ slot.slot }}"
                        data-choice-mode="1"
@@ -223,7 +223,8 @@
             {% else %}
             <div class="answer-row">
                 <label>Ответ:</label>
-                <input type="text" class="answer-input"
+                <input type="text" class="answer-input js-latex-input"
+                       id="ans-slot-{{ slot.slot }}"
                        data-slot="{{ slot.slot }}"
                        value="{{ slot.user_answer }}"
                        {% if slot.is_correct is not None %}disabled{% endif %}>
@@ -334,4 +335,5 @@
     if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();
 })();
 </script>
+<script src="{% static 'js/latex_preview.js' %}?v=2"></script>
 {% endblock %}

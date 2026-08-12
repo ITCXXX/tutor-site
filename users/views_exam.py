@@ -1,7 +1,7 @@
 # users/views_exam.py
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
+from django.http import JsonResponse, Http404
 from django.utils import timezone
 from django.db import IntegrityError
 from decimal import Decimal, InvalidOperation
@@ -9,32 +9,56 @@ from django.views.decorators.http import require_POST
 import json
 import random
 import time
+import string
 from collections import OrderedDict
 from .models import (
     Assignment, GeneratedProblem, ProblemAttempt,
     StudentProgress, Enrollment, TestQuestion, Lesson,
+    ExamVariant, ExamVariantSlot, ExamVariantAnswer, TaskGroup,
 )
+from .answer_check import check_answer
+
+
+def _assignment_access_ok(request, course):
+    """Приватный курс: доступ к задачам только владельцу и записанным ученикам."""
+    u = request.user
+    return u.is_authenticated and (
+        course.owner_id == u.id
+        or Enrollment.objects.filter(
+            course=course, student=u, is_active=True).exists()
+    )
+
+
+def _require_course_access(request, course):
+    """404 для приватного курса, если пользователь не владелец и не записан."""
+    if not course.is_public and not _assignment_access_ok(request, course):
+        raise Http404()
 
 
 def assignment_practice(request, assignment_id):
     """
     Страница для решения задач по прототипу (Assignment).
     Если у задания есть вопросы в БД (без генератора) — DB-режим: все задачи сразу.
-    Доступно всем: анонимные пользователи могут решать, но прогресс не сохраняется.
+    Публичные курсы — доступны всем (аноним решает без сохранения прогресса);
+    приватные — только владельцу и записанным ученикам.
     """
     assignment = get_object_or_404(Assignment, id=assignment_id)
+    course = assignment.lesson.module.course
+    _require_course_access(request, course)
     is_student = request.user.is_authenticated and request.user.role == 'student'
 
-    # Авто-запись на курс — только для залогиненных учеников
-    if is_student and not Enrollment.objects.filter(
-        student=request.user,
-        course=assignment.lesson.module.course,
-        is_active=True
-    ).exists():
-        Enrollment.objects.create(
+    # Авто-запись на курс — только для залогиненных учеников.
+    # get_or_create + реактивация: если запись существует, но неактивна
+    # (препод снял ученика), обычный create() упал бы на unique_together.
+    if is_student:
+        enr, created = Enrollment.objects.get_or_create(
             student=request.user,
-            course=assignment.lesson.module.course
+            course=assignment.lesson.module.course,
+            defaults={'is_active': True},
         )
+        if not created and not enr.is_active:
+            enr.is_active = True
+            enr.save(update_fields=['is_active'])
 
     # ── DB-режим: показываем все вопросы сразу ────────────────────────────
     if assignment.questions.exists() and not assignment.problem_generator:
@@ -74,6 +98,20 @@ def assignment_practice(request, assignment_id):
                     student=request.user,
                     assignment=assignment
                 ).order_by('-created_at').first()
+    elif is_practice:
+        # Аноним/не-ученик: генерируем задачу «на лету», без сохранения в БД,
+        # иначе карточка условия была бы пустой.
+        try:
+            _td = assignment.problem_generator.execute_generator(None)
+            problem = GeneratedProblem(
+                assignment=assignment,
+                task_data=_td,
+                condition_text=format_problem_for_display(_td),
+                correct_answer=str(_td.get('correct_answer', '')),
+                status='new',
+            )
+        except Exception:
+            problem = None
 
     choices = []
     if assignment.answer_type == 'single_choice' and problem and problem.task_data:
@@ -129,19 +167,24 @@ def _db_assignment_view(request, assignment):
 
     questions_data = []
     for q in questions:
-        correct_opt = q.answers.filter(is_correct=True).first()
         is_solved = q.id in solved_problems
+        opts = list(q.answers.order_by('order'))
         questions_data.append({
             'id': q.id,
             'order': q.order,
             'text': q.question_text,
+            'type': q.question_type,
             'image_svg': q.image_svg,
+            'image_url': q.image.url if q.image else '',
+            'choices': [o.text for o in opts] if q.question_type == 'single_choice' else [],
             'solved': is_solved,
             # Для уже решённых показываем правильный ответ (нужен для lock-режима)
             'correct_answer': solved_problems[q.id].correct_answer if is_solved else '',
         })
 
-    solved_count = len(solved_problems)
+    # Считаем решёнными только среди ТЕКУЩИХ вопросов (осиротевший прогресс
+    # удалённых вопросов не должен завышать счётчик >100%).
+    solved_count = sum(1 for q in questions if q.id in solved_problems)
     total_count = len(questions)
     progress_pct = round(solved_count / total_count * 100) if total_count else 0
 
@@ -193,10 +236,16 @@ def _build_lesson_nav(user, assignment):
     nav_items = []
     for a in all_assignments:
         solved, total = db_progress.get(a.id, (0, 0))
+        # Если title — короткая цифровая строка (как в задачнике Поповой),
+        # показываем её вместо локального order'a в параграфе:
+        # тогда у Поповой получается сквозная нумерация через весь задачник.
+        title_clean = (a.title or '').strip()
+        display_num = title_clean if title_clean.isdigit() and len(title_clean) <= 5 else str(a.order)
         nav_items.append({
             'id': a.id,
             'order': a.order,
             'title': a.title,
+            'display_num': display_num,
             'is_current': a.id == assignment.id,
             'is_complete': total > 0 and solved == total,
             'solved': solved,
@@ -215,6 +264,7 @@ def check_db_question_answer(request, assignment_id, question_id):
     """Проверка ответа на конкретный вопрос из БД (AJAX, DB-режим).
     Анонимы получают только результат проверки, без записи в БД."""
     assignment = get_object_or_404(Assignment, id=assignment_id)
+    _require_course_access(request, assignment.lesson.module.course)
     question = get_object_or_404(TestQuestion, id=question_id, assignment=assignment)
 
     data = json.loads(request.body)
@@ -223,16 +273,23 @@ def check_db_question_answer(request, assignment_id, question_id):
     if not user_answer:
         return JsonResponse({'error': 'Ответ не может быть пустым'}, status=400)
 
-    from .answer_check import check_answer
 
-    correct_opt = question.answers.filter(is_correct=True).first()
-    correct_answer = correct_opt.text if correct_opt else '0'
-
-    course = assignment.lesson.module.course
-    allow_fracs = not (course.slug or '').startswith('oge')
-    is_correct, message = check_answer(
-        user_answer, correct_answer, allow_fractions=allow_fracs,
-    )
+    if question.question_type == 'single_choice':
+        # Правильный ответ — 1-based позиция верного варианта среди options (по order):
+        # ровно тот индекс, что шлёт фронт при клике по варианту.
+        opts = list(question.answers.order_by('order'))
+        correct_idx = next((i for i, o in enumerate(opts, 1) if o.is_correct), 0)
+        correct_answer = str(correct_idx)
+        is_correct = (user_answer.strip() == correct_answer)
+        message = ''
+    else:
+        correct_opt = question.answers.filter(is_correct=True).first()
+        correct_answer = correct_opt.text if correct_opt else '0'
+        course = assignment.lesson.module.course
+        allow_fracs = not (course.slug or '').startswith('oge')
+        is_correct, message = check_answer(
+            user_answer, correct_answer, allow_fractions=allow_fracs,
+        )
 
     # Анонимам / не-ученикам — только результат, без записи прогресса.
     is_student = request.user.is_authenticated and request.user.role == 'student'
@@ -291,6 +348,7 @@ def check_db_question_answer(request, assignment_id, question_id):
         status='solved'
     ).count()
     total_count = assignment.questions.count()
+    solved_count = min(solved_count, total_count)  # осиротевший прогресс не завышает счётчик
 
     # Синхронизируем StudentProgress, чтобы экран прогресса
     # (teacher_student_workbook / student_course_progress) видел сданные прототипы.
@@ -321,6 +379,7 @@ def check_db_question_answer(request, assignment_id, question_id):
 def reset_db_assignment(request, assignment_id):
     """Сброс прогресса по прототипу из БД (AJAX). Анонимам — no-op."""
     assignment = get_object_or_404(Assignment, id=assignment_id)
+    _require_course_access(request, assignment.lesson.module.course)
     if request.user.is_authenticated and request.user.role == 'student':
         GeneratedProblem.objects.filter(
             student=request.user,
@@ -337,9 +396,9 @@ def reset_db_assignment(request, assignment_id):
 @require_POST
 def check_problem_answer(request, problem_id):
     """Проверка ответа на задачу (AJAX, режим генератора)."""
-    from .answer_check import check_answer
 
     problem = get_object_or_404(GeneratedProblem, id=problem_id, student=request.user)
+    _require_course_access(request, problem.assignment.lesson.module.course)
 
     data = json.loads(request.body)
     user_answer = data.get('answer', '').strip()
@@ -421,6 +480,7 @@ def check_problem_answer(request, problem_id):
 def generate_new_problem(request, assignment_id):
     """Генерация новой задачи того же типа (AJAX, режим генератора)."""
     assignment = get_object_or_404(Assignment, id=assignment_id)
+    _require_course_access(request, assignment.lesson.module.course)
 
     generators_config = (assignment.problem_generator.config or {}).get('generators', {}) \
         if assignment.problem_generator else {}
@@ -486,7 +546,6 @@ def _task_data_from_db_question(assignment):
 
 
 def generate_new_problem_for_student(student, assignment, selected_generators=None):
-    import time
     if assignment.problem_generator:
         task_data = assignment.problem_generator.execute_generator(student, selected_generators)
     elif assignment.questions.exists():
@@ -566,6 +625,7 @@ def lesson_practice(request, lesson_id):
     """Единая страница практики для урока (генераторный режим)."""
     lesson = get_object_or_404(Lesson, id=lesson_id)
     course = lesson.module.course
+    _require_course_access(request, course)
 
     chosen, generators, active_ids = _pick_random_assignment(lesson, request)
     if chosen is None:
@@ -582,11 +642,15 @@ def lesson_practice(request, lesson_id):
 
     is_student = request.user.is_authenticated and request.user.role == 'student'
 
-    # Авто-запись на курс — только для учеников
-    if is_student and not Enrollment.objects.filter(
-        student=request.user, course=course, is_active=True
-    ).exists():
-        Enrollment.objects.create(student=request.user, course=course)
+    # Авто-запись на курс — только для учеников (get_or_create + реактивация,
+    # иначе create() при существующей неактивной записи упадёт на unique_together).
+    if is_student:
+        enr, created = Enrollment.objects.get_or_create(
+            student=request.user, course=course, defaults={'is_active': True},
+        )
+        if not created and not enr.is_active:
+            enr.is_active = True
+            enr.save(update_fields=['is_active'])
 
     # Создаём GeneratedProblem (только для учеников)
     problem = None
@@ -631,6 +695,7 @@ def lesson_practice(request, lesson_id):
 def lesson_set_active_generators(request, lesson_id):
     """AJAX: сохранить список активных генераторов в сессии."""
     lesson = get_object_or_404(Lesson, id=lesson_id)
+    _require_course_access(request, lesson.module.course)
     try:
         data = json.loads(request.body)
     except (ValueError, json.JSONDecodeError):
@@ -658,7 +723,6 @@ import secrets as _secrets
 
 def _gen_variant_code(length=6):
     """Короткий читаемый код варианта."""
-    import string
     alphabet = ''.join(
         c for c in (string.ascii_lowercase + string.digits) if c not in '01lo'
     )
@@ -681,7 +745,6 @@ def _generate_slot_from_assignment(a, owner):
         correct = str(data.get('correct_answer', ''))
         choices = list(data.get('choices') or [])
     elif a.questions.exists():
-        from .models import TestQuestion
         q = _rnd.choice(list(a.questions.prefetch_related('answers').all()))
         text = q.question_text or ''
         if a.answer_type == 'decimal_input':
@@ -730,9 +793,6 @@ def _build_variant(owner, kind, spec=None):
             }
         }
     """
-    from .models import (
-        ExamVariant, ExamVariantSlot, TaskGroup, Lesson,
-    )
 
     for _ in range(20):
         code = _gen_variant_code()
@@ -786,7 +846,16 @@ def _build_variant(owner, kind, spec=None):
 
     next_slot = 1
     if block_1_5_source:
-        for sq in block_1_5_source.sub_questions.order_by('order'):
+        # Для каждого типа задачи (T1..T5) берём ОДНУ случайную подзадачу.
+        # У одной TaskGroup может быть несколько подзадач одного типа — это варианты.
+        sqs_by_type = {}
+        for sq in block_1_5_source.sub_questions.all():
+            sqs_by_type.setdefault(sq.t_type, []).append(sq)
+        for t in ('T1', 'T2', 'T3', 'T4', 'T5'):
+            pool = sqs_by_type.get(t)
+            if not pool:
+                continue
+            sq = _rnd.choice(pool)
             ExamVariantSlot.objects.create(
                 variant=variant,
                 slot=next_slot,
@@ -828,6 +897,7 @@ def _build_variant(owner, kind, spec=None):
     return variant
 
 
+@login_required
 @require_POST
 def exam_constructor_build(request):
     """POST из формы конструктора на странице курса. Принимает spec и создаёт
@@ -840,7 +910,6 @@ def exam_constructor_build(request):
         task_<N>_count         число задач для задания N (6..19)
         task_<N>_assignments[] id выбранных прототипов задания N
     """
-    from .models import ExamVariant
     POST = request.POST
 
     spec = {
@@ -867,11 +936,27 @@ def exam_constructor_build(request):
     return redirect('exam_variant_detail', code=variant.code)
 
 
+@login_required
 def exam_variant_detail(request, code):
-    """Страница прохождения варианта."""
-    from .models import ExamVariant
+    """Страница прохождения варианта.
+
+    Ответы храним пер-ученик (ExamVariantAnswer), поэтому один вариант по коду
+    независимо решают разные ученики. На слот вешаем ответ текущего пользователя
+    как атрибуты инстанса — шаблон читает slot.user_answer / slot.is_correct.
+    """
     variant = get_object_or_404(ExamVariant, code=code)
     slots = list(variant.slots.order_by('slot'))
+    answers = {
+        a.slot_id: a
+        for a in ExamVariantAnswer.objects.filter(
+            slot__variant=variant, user=request.user,
+        )
+    }
+    for sl in slots:
+        a = answers.get(sl.id)
+        sl.user_answer = a.user_answer if a else ''
+        sl.is_correct = a.is_correct if a else None
+        sl.answered_at = a.answered_at if a else None
     return render(request, 'users/exam_variant.html', {
         'variant': variant,
         'slots': slots,
@@ -879,15 +964,15 @@ def exam_variant_detail(request, code):
     })
 
 
+@login_required
 @require_POST
 def exam_variant_check(request, code, slot):
     """AJAX: проверка ответа в конкретном слоте варианта.
 
     Body: {"answer": "..."}.
     Ответ: {"correct": bool, "correct_answer": "..."}.
+    Сохраняется пер-ученик (ExamVariantAnswer) — без затирания чужих ответов.
     """
-    from .models import ExamVariant, ExamVariantSlot
-    from .answer_check import check_answer
 
     variant = get_object_or_404(ExamVariant, code=code)
     sl = get_object_or_404(ExamVariantSlot, variant=variant, slot=int(slot))
@@ -902,10 +987,10 @@ def exam_variant_check(request, code, slot):
 
     is_correct, _ = check_answer(ua, sl.correct_answer)
 
-    sl.user_answer = ua
-    sl.is_correct = is_correct
-    sl.answered_at = timezone.now()
-    sl.save(update_fields=['user_answer', 'is_correct', 'answered_at'])
+    ExamVariantAnswer.objects.update_or_create(
+        slot=sl, user=request.user,
+        defaults={'user_answer': ua, 'is_correct': is_correct},
+    )
 
     return JsonResponse({
         'correct': bool(is_correct),
@@ -919,6 +1004,7 @@ def exam_variant_check(request, code, slot):
 def lesson_next_problem(request, lesson_id):
     """AJAX: вернуть данные новой задачи (случайный генератор из активных)."""
     lesson = get_object_or_404(Lesson, id=lesson_id)
+    _require_course_access(request, lesson.module.course)
     chosen, generators, active_ids = _pick_random_assignment(lesson, request)
     if chosen is None:
         return JsonResponse({'error': 'no_generators'}, status=400)
@@ -946,4 +1032,5 @@ def lesson_next_problem(request, lesson_id):
         'assignment_title': chosen.title,
         'answer_type': chosen.answer_type,
         'problem_id': problem_id,
+        'multi_answer': bool(task_data.get('multi_answer')),
     })

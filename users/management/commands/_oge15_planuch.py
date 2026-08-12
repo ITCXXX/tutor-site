@@ -74,6 +74,15 @@ def heating_question(table_html, choice="газовое"):
 
 
 def deploy(gid, group_title, context_html, tasks, stdout):
+    """Раскладывает tasks по k TaskGroup'ам, каждая из 5 подзадач T1..T5.
+
+    Если в tasks ровно 5 (по одной на каждый t_type) — создаётся одна группа.
+    Если N = 5·k и сбалансировано (каждый t_type встречается ровно k раз) —
+    создаётся k групп с суффиксом «· вариант i», по одной подзадаче каждого
+    типа в каждой.
+    """
+    from collections import Counter, defaultdict
+
     course = Course.objects.get(slug="oge-maths")
     module, _ = Module.objects.get_or_create(
         course=course, title="Задания 1-5",
@@ -85,28 +94,59 @@ def deploy(gid, group_title, context_html, tasks, stdout):
                   "content": "", "is_free": False},
     )
 
-    existing = TaskGroup.objects.filter(lesson=lesson, fipi_ctx_id=gid).first()
-    if existing:
-        existing.title = group_title
-        existing.context_html = context_html
-        existing.save()
-        existing.sub_questions.all().delete()
-        group = existing
-        stdout.write(f"  Группа {gid} была — пересоздаём подзадачи.")
+    # Группируем подзадачи по t_type и проверяем баланс
+    T_TYPES = ("T1", "T2", "T3", "T4", "T5")
+    by_type = defaultdict(list)
+    for t in tasks:
+        by_type[t["t_type"]].append(t)
+    counts = Counter(t["t_type"] for t in tasks)
+    if set(counts.keys()) != set(T_TYPES) or len(set(counts.values())) != 1:
+        stdout.write(f"  ⚠ Несбалансированные t_type: {dict(counts)} — создаём 1 группу как есть.")
+        k = 1
     else:
-        order = (lesson.task_groups.aggregate(Max("order"))["order__max"] or 0) + 1
+        k = counts[T_TYPES[0]]
+
+    # Удаляем все существующие группы с этим fipi_ctx_id (включая «· вариант N»)
+    existing = TaskGroup.objects.filter(lesson=lesson, fipi_ctx_id=gid)
+    if existing.exists():
+        n = existing.count()
+        existing.delete()
+        stdout.write(f"  Удалено {n} существующих групп с fipi={gid}.")
+
+    base_order = (lesson.task_groups.aggregate(Max("order"))["order__max"] or 0) + 1
+
+    if k == 1:
+        # Одна группа на 5 подзадач (или несбалансированный fallback)
         group = TaskGroup.objects.create(
             lesson=lesson, fipi_ctx_id=gid, title=group_title,
-            context_html=context_html, order=order,
+            context_html=context_html, order=base_order,
         )
-        stdout.write(f"  Создана TaskGroup: {group}")
+        for i, t in enumerate(tasks, 1):
+            GroupSubQuestion.objects.create(
+                group=group, question_html=t["question_html"],
+                correct_answer=t["answer"], t_type=t["t_type"],
+                fipi_task_id=t["tid"], order=i,
+            )
+            stdout.write(f"  [{i}] {t['t_type']} #{t['tid']} -> {t['answer']}")
+        stdout.write(f"\nГотово: TaskGroup '{group.title}' с {len(tasks)} подзадачами.")
+        return group
 
-    for i, t in enumerate(tasks, 1):
-        GroupSubQuestion.objects.create(
-            group=group, question_html=t["question_html"],
-            correct_answer=t["answer"], t_type=t["t_type"],
-            fipi_task_id=t["tid"], order=i,
+    # k вариантов: создаём k групп по 5 подзадач
+    last_group = None
+    for v in range(k):
+        title = f"{group_title} · вариант {v + 1}"
+        group = TaskGroup.objects.create(
+            lesson=lesson, fipi_ctx_id=gid, title=title,
+            context_html=context_html, order=base_order + v,
         )
-        stdout.write(f"  [{i}] {t['t_type']} #{t['tid']} -> {t['answer']}")
-    stdout.write(f"\nГотово: TaskGroup '{group.title}' с {len(tasks)} подзадачами.")
-    return group
+        for ti, ttype in enumerate(T_TYPES, 1):
+            t = by_type[ttype][v]
+            GroupSubQuestion.objects.create(
+                group=group, question_html=t["question_html"],
+                correct_answer=t["answer"], t_type=t["t_type"],
+                fipi_task_id=t["tid"], order=ti,
+            )
+        stdout.write(f"  Создана TaskGroup: {title} (5 подзадач)")
+        last_group = group
+    stdout.write(f"\nГотово: {k} вариантов TaskGroup для fipi={gid}.")
+    return last_group

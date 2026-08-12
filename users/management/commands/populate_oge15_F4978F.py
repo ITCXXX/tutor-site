@@ -3,13 +3,13 @@
 
 from django.core.management.base import BaseCommand
 from users.models import Course, Module, Lesson, TaskGroup, GroupSubQuestion
+from ._oge15_tarif_svg import TARIFF_SVG
 
 
 LESSON_TITLE = "Тарифы"
 GROUP_TITLE = "F4978F · Мобильная связь (Стандартный)"
 FIPI_GROUP_ID = "F4978F"
 FIPI_CTX_ID = "F11B03C0C0F5A4F143C07E4B1019ADF8"
-IMG_PATH = "/media/oge15/oge15_F4978F.png"
 
 
 # ===== КОНТЕКСТ =====
@@ -20,8 +20,7 @@ CONTEXT_HTML = """
 Для удобства точки, соответствующие минутам и гигабайтам, соединены
 сплошными и пунктирными линиями соответственно.</p>
 
-<img src="__IMG_PATH__" alt="График минут и трафика по месяцам 2019 года"
-     style="max-width:560px;display:block;margin:0.8em auto;">
+__SVG__
 
 <p>В течение года абонент пользовался тарифом <b>«Стандартный»</b>,
 абонентская плата по которому составляла <b>350 рублей в месяц</b>.
@@ -48,7 +47,7 @@ CONTEXT_HTML = """
 
 <p>Абонент не пользовался услугами связи в роуминге.
 За весь год абонент отправил <b>110 SMS</b>.</p>
-""".strip().replace("__IMG_PATH__", IMG_PATH)
+""".strip().replace("__SVG__", TARIFF_SVG)
 
 
 # ===== ХЕЛПЕРЫ =====

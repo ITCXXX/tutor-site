@@ -172,6 +172,11 @@ class Course(models.Model):
         verbose_name='Владелец',
         help_text='Для задачников — преподаватель, который ведёт курс. У общих курсов пусто.',
     )
+    is_public = models.BooleanField(
+        'Публичный (в общем каталоге)', default=False,
+        help_text='True — виден всем в каталоге, открытая запись (общие ОГЭ-курсы). '
+                  'False — приватный: только владелец и записанные им ученики.',
+    )
     created_at = models.DateTimeField('Дата создания', auto_now_add=True)
     updated_at = models.DateTimeField('Дата обновления', auto_now=True)
 
@@ -193,8 +198,8 @@ class Course(models.Model):
 
     @property
     def is_owned(self):
-        """Курс с владельцем-преподавателем (manual или homework) — скрыт от публичного каталога."""
-        return self.tracking_mode in (self.TRACKING_MANUAL, self.TRACKING_HOMEWORK)
+        """Приватный курс: скрыт от публичного каталога, привязан к владельцу."""
+        return not self.is_public
 
 class Module(models.Model):
     """Модуль курса (раздел)"""
@@ -320,30 +325,22 @@ class ProblemGenerator(models.Model):
     
     def execute_generator(self, student=None, selected_generators=None):
         """Выполняет генератор и возвращает данные задачи.
-        selected_generators — список ключей под-генераторов (сейчас не используется,
-        оставлен для совместимости со старыми вызовами views_exam)."""
+
+        Код генераторов вынесен из БД в репозиторий (users/generators/g<id>.py)
+        и вызывается по id — БЕЗ exec() кода из БД (пункт 6). Поле python_code
+        сохранено как бэкап/для admin, но больше НЕ исполняется: источник истины
+        для исполнения — файлы users/generators/. Новые генераторы добавлять
+        файлом g<id>.py с функцией generate_task().
+
+        selected_generators оставлен для совместимости со старыми вызовами.
+        """
         if self.generator_type == 'python_function':
+            from .generators import get_generator
             try:
-                import random
-                import math
-                from fractions import Fraction
-
-                # Один namespace на globals и locals — иначе функция,
-                # объявленная в коде, не увидит модули, импортированные в нём же.
-                ns = {
-                    '__builtins__': __builtins__,
-                    'random': random,
-                    'math': math,
-                    'Fraction': Fraction,
-                }
-                exec(self.python_code, ns)
-
-                if 'generate_task' in ns:
-                    return ns['generate_task']()
-                else:
-                    raise ValueError("Генератор должен содержать функцию generate_task()")
+                return get_generator(self.id)()
             except Exception as e:
-                # Возвращаем тестовую задачу в случае ошибки
+                # Тестовая задача, если генератор недоступен/сломан
+                # (например, legacy-генератор без generate_task).
                 return {
                     'error': str(e),
                     'test_data': {
@@ -452,10 +449,14 @@ class TestQuestion(models.Model):
     question_text = models.TextField('Текст вопроса')
     image_svg = models.TextField('SVG иллюстрация', blank=True,
                                  help_text='Встроенный SVG-код для задач с картинкой')
+    image = models.ImageField('Картинка к вопросу', upload_to='prototypes/',
+                              blank=True, null=True,
+                              help_text='Загруженная картинка (приоритетнее image_svg).')
     question_type = models.CharField('Тип вопроса', max_length=20, choices=[
         ('single_choice', 'Один правильный ответ'),
         ('multiple_choice', 'Несколько правильных ответов'),
         ('true_false', 'Верно/Неверно'),
+        ('number', 'Числовой ответ'),
     ], default='single_choice')
     explanation = models.TextField('Объяснение ответа', blank=True,
                                    help_text='Показывается после ответа')
@@ -1060,11 +1061,6 @@ class ExamVariantSlot(models.Model):
         related_name='+', verbose_name='Источник: задание (для 6–19)',
     )
 
-    # Ответ ученика и результат
-    user_answer = models.CharField('Ответ ученика', max_length=255, blank=True)
-    is_correct = models.BooleanField('Верно', null=True, blank=True)
-    answered_at = models.DateTimeField('Время ответа', null=True, blank=True)
-
     class Meta:
         verbose_name = 'Слот варианта'
         verbose_name_plural = 'Слоты вариантов'
@@ -1076,10 +1072,40 @@ class ExamVariantSlot(models.Model):
         return f'{self.variant.code} #{self.slot}'
 
 
+class ExamVariantAnswer(models.Model):
+    """Ответ конкретного ученика на слот варианта.
+
+    Вынесено со слота (ExamVariantSlot), чтобы один вариант (по коду) могли
+    решать несколько учеников, не затирая ответы друг друга.
+    """
+    slot = models.ForeignKey(
+        ExamVariantSlot, on_delete=models.CASCADE, related_name='answers',
+        verbose_name='Слот',
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='exam_variant_answers',
+        verbose_name='Ученик',
+    )
+    user_answer = models.CharField('Ответ ученика', max_length=255, blank=True)
+    is_correct = models.BooleanField('Верно', null=True, blank=True)
+    answered_at = models.DateTimeField('Время ответа', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Ответ по варианту'
+        verbose_name_plural = 'Ответы по варианту'
+        constraints = [
+            models.UniqueConstraint(fields=['slot', 'user'],
+                                    name='uniq_variant_slot_user'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id} · слот {self.slot_id}: {self.user_answer}'
+
+
 class GroupAttempt(models.Model):
     """Попытка ученика по одной подзадаче TaskGroup."""
     student = models.ForeignKey(
-        'StudentProfile',
+        User,
         on_delete=models.CASCADE,
         related_name='group_attempts',
     )

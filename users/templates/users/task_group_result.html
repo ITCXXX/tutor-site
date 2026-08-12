@@ -89,6 +89,20 @@
     align-items: center;
     flex-wrap: wrap;
 }
+
+.tg-variant-nav {
+    margin-top: 1.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .8rem;
+    flex-wrap: wrap;
+}
+.tg-variant-counter {
+    color: var(--c-text-muted);
+    font-size: .9rem;
+    white-space: nowrap;
+}
 </style>
 {% endblock %}
 
@@ -138,6 +152,30 @@
         <a href="{% url 'task_group_practice' group.id %}" class="btn btn-primary">Решить ещё раз</a>
         <a href="{% url 'course_detail' group.lesson.module.course.slug %}" class="btn btn-outline-secondary">К курсу</a>
     </div>
+
+    {% if prev_group or next_group or prev_task or next_task or prev_lesson_group or next_lesson_group %}
+    <div class="tg-variant-nav">
+        {% if prev_group %}
+        <a href="{% url 'task_group_practice' prev_group.id %}" class="btn btn-outline-primary">← Вариант {{ variant_num|add:"-1" }}</a>
+        {% elif prev_task %}
+        <a href="{% url 'task_group_practice' prev_task.id %}" class="btn btn-outline-secondary">← Предыдущее задание</a>
+        {% elif prev_lesson_group %}
+        <a href="{% url 'task_group_practice' prev_lesson_group.id %}" class="btn btn-outline-secondary">← {{ prev_lesson.title }}</a>
+        {% else %}<span></span>{% endif %}
+
+        {% if variant_total > 1 %}
+        <span class="tg-variant-counter">Вариант {{ variant_num }} из {{ variant_total }}</span>
+        {% else %}<span></span>{% endif %}
+
+        {% if next_group %}
+        <a href="{% url 'task_group_practice' next_group.id %}" class="btn btn-primary">Вариант {{ variant_num|add:"1" }} →</a>
+        {% elif next_task %}
+        <a href="{% url 'task_group_practice' next_task.id %}" class="btn btn-primary">Следующее задание →</a>
+        {% elif next_lesson_group %}
+        <a href="{% url 'task_group_practice' next_lesson_group.id %}" class="btn btn-primary">{{ next_lesson.title }} →</a>
+        {% else %}<span></span>{% endif %}
+    </div>
+    {% endif %}
 </div>
 
 <script>

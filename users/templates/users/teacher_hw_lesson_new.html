@@ -185,6 +185,7 @@
             <div id="tasks-container">
                 {% for r in rows %}
                 <div class="task-row{% if r.requires_review %} review-mode{% endif %}" data-idx="{{ forloop.counter0 }}">
+                    <input type="hidden" name="task_id" value="{{ r.task_id }}">
                     <div class="num">{{ forloop.counter }}.</div>
                     <textarea name="task_condition" class="form-control"
                               placeholder="Реши уравнение \(2x + 3 = 11\)">{{ r.condition }}</textarea>
@@ -260,6 +261,7 @@ function addTask() {
     const row = document.createElement('div');
     row.className = 'task-row';
     row.innerHTML = `
+        <input type="hidden" name="task_id" value="">
         <div class="num"></div>
         <textarea name="task_condition" class="form-control" placeholder="Условие задачи"></textarea>
         <input type="text" name="task_answer" class="form-control answer-input" placeholder="Ответ">

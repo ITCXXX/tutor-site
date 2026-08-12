@@ -238,9 +238,12 @@
             <summary>
                 <h2>Мои курсы</h2>
                 <span class="d-flex gap-2 section-action">
+                    <a href="{% url 'teacher_oge_course_new' %}"
+                       onclick="event.stopPropagation()"
+                       class="btn btn-sm btn-primary">+ Свой ОГЭ</a>
                     <a href="{% url 'teacher_hw_course_new' %}"
                        onclick="event.stopPropagation()"
-                       class="btn btn-sm btn-primary">+ Курс с ДЗ</a>
+                       class="btn btn-sm btn-outline-primary">+ Курс с ДЗ</a>
                     <a href="{% url 'teacher_workbook_new' %}"
                        onclick="event.stopPropagation()"
                        class="btn btn-sm btn-outline-primary">+ Задачник</a>
@@ -250,14 +253,10 @@
             <div class="row g-3">
                 {% for c in owned_data %}
                 <div class="col-12 col-lg-6">
-                    <a class="course-card" href="{% url 'teacher_course_progress' c.course.slug %}">
+                    <a class="course-card" href="{% if c.is_oge %}{% url 'teacher_course_edit' c.course.slug %}{% else %}{% url 'teacher_course_progress' c.course.slug %}{% endif %}">
                         <div class="course-title">
                             {{ c.course.title }}
-                            {% if c.is_homework %}
-                            <span class="badge-manual" style="background: var(--c-primary-100); color: var(--c-primary-800);">курс с ДЗ</span>
-                            {% else %}
-                            <span class="badge-manual">задачник</span>
-                            {% endif %}
+                            <span class="badge-manual"{% if c.is_homework %} style="background: var(--c-primary-100); color: var(--c-primary-800);"{% endif %}>{{ c.kind }}</span>
                         </div>
                         <div class="course-meta">
                             {% if c.students_count == 0 %}
@@ -281,7 +280,8 @@
             {% else %}
             <div class="empty-state" style="padding: 1rem;">
                 У вас ещё нет своих курсов.
-                <a href="{% url 'teacher_hw_course_new' %}">Создайте курс с ДЗ</a>
+                <a href="{% url 'teacher_oge_course_new' %}">Создайте свой ОГЭ-курс</a>,
+                <a href="{% url 'teacher_hw_course_new' %}">курс с ДЗ</a>
                 или <a href="{% url 'teacher_workbook_new' %}">задачник</a>.
             </div>
             {% endif %}
@@ -351,7 +351,10 @@
         </details>
 
         <div class="text-center mt-4 mb-5">
-            <a href="{% url 'logout' %}" class="btn btn-outline-secondary">Выйти из системы</a>
+            <form method="post" action="{% url 'logout' %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-secondary">Выйти из системы</button>
+            </form>
         </div>
     </div>
 </section>

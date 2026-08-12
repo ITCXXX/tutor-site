@@ -1,0 +1,178 @@
+{% extends 'users/visitor_base.html' %}
+{% block title %}Доски — Иван Зенченко{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 40px; max-width: 880px;">
+
+    <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+        <h1 class="mb-0">Доски</h1>
+        <form method="post" action="{% url 'board:create' %}" class="d-flex gap-2 flex-wrap">
+            {% csrf_token %}
+            <input type="text" name="title" class="form-control" placeholder="Название (необязательно)" style="min-width: 200px;">
+            <select name="template" class="form-select" style="max-width: 220px;" title="Что положить на новую доску">
+                <option value="blank">Чистый лист</option>
+                <option value="plane">Координатная плоскость</option>
+                <option value="plane2">Две плоскости рядом</option>
+            </select>
+            <button type="submit" class="btn btn-primary text-nowrap">+ Новая доска</button>
+        </form>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="post" action="{% url 'board:join' %}" class="d-flex gap-2 align-items-center">
+                {% csrf_token %}
+                <label class="mb-0 fw-semibold text-nowrap">Войти по коду:</label>
+                <input type="text" name="code" class="form-control" placeholder="например, q7r2zh" style="max-width: 200px;">
+                <button type="submit" class="btn btn-outline-primary">Открыть</button>
+            </form>
+        </div>
+    </div>
+
+    {% if boards %}
+    <p class="text-muted small mb-2">Открыть — клик по доске. Переименовать своё название — двойной клик по нему (или правой кнопкой). Копия и удаление — правой кнопкой мыши.</p>
+    <div class="list-group" id="boards-list">
+        {% for b in boards %}
+        <div class="list-group-item board-row d-flex justify-content-between align-items-center gap-2 flex-wrap"
+             data-code="{{ b.code }}" data-owner="{% if b.owner_id == request.user.id %}1{% else %}0{% endif %}" data-title="{{ b.title }}">
+            <span class="flex-grow-1" style="min-width: 0;">
+                <strong class="bl-title" spellcheck="false">{{ b.title|default:"Без названия" }}</strong>
+                <span class="text-muted ms-2">код: <code>{{ b.code }}</code></span>
+                {% if b.owner_id != request.user.id %}
+                <span class="badge rounded-pill bg-light text-secondary border ms-1" title="Чужая доска">чужая · {{ b.owner.username }}</span>
+                {% endif %}
+            </span>
+            <small class="text-muted text-nowrap">{{ b.updated_at|date:"d.m.Y H:i" }}</small>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-center text-muted py-5">
+        <p class="mb-0">Пока нет ни одной доски. Создайте первую — кнопкой выше.</p>
+    </div>
+    {% endif %}
+
+</div>
+
+<div id="board-ctx" class="board-ctx" hidden>
+    <button data-act="open">Открыть</button>
+    <button data-act="duplicate">Дублировать</button>
+    <button data-act="rename" class="ctx-owner">Переименовать</button>
+    <button data-act="delete" class="ctx-owner danger">Удалить…</button>
+    <button data-act="leave" class="ctx-foreign danger">Выйти…</button>
+</div>
+
+<style>
+    .board-row { cursor: pointer; }
+    .bl-title.editing { outline: 1.5px solid #4d7cfe; border-radius: 5px; padding: 0 5px; background: #fff; cursor: text; }
+    .board-ctx { position: fixed; z-index: 2000; min-width: 168px; background: #fff; border: 1px solid #e3e3e8; border-radius: 9px; box-shadow: 0 10px 30px rgba(0,0,0,.16); padding: 5px; }
+    .board-ctx[hidden] { display: none; }
+    .board-ctx button { display: block; width: 100%; text-align: left; padding: 8px 12px; border: none; background: none; cursor: pointer; border-radius: 6px; font-size: 14px; color: #2b2b33; }
+    .board-ctx button:hover { background: #f2f2f6; }
+    .board-ctx button.danger { color: #d63333; }
+</style>
+
+<script>
+(function () {
+    const list = document.getElementById('boards-list');
+    const ctx = document.getElementById('board-ctx');
+    if (!list || !ctx) return;
+    const csrfEl = document.querySelector('[name=csrfmiddlewaretoken]');
+    const csrf = csrfEl ? csrfEl.value : '';
+    let curRow = null;      // строка, по которой открыли меню
+    let renaming = false;   // идёт ли инлайн-переименование
+
+    function post(url, extra) {
+        const fd = new FormData();
+        fd.append('csrfmiddlewaretoken', csrf);
+        if (extra) for (const k in extra) fd.append(k, extra[k]);
+        return fetch(url, { method: 'POST', body: fd }).then(r => r.json().catch(() => ({ error: 'Ошибка сервера' })));
+    }
+    function hideCtx() { ctx.hidden = true; curRow = null; }
+    function openBoard(row) { location.href = '/board/' + row.dataset.code + '/'; }
+
+    // Инлайн-переименование прямо в названии.
+    function startRename(row) {
+        const t = row.querySelector('.bl-title');
+        const real = row.dataset.title || '';
+        renaming = true;
+        t.textContent = real; // правим реальное название (пусто = пусто, не «Без названия»)
+        t.setAttribute('contenteditable', 'true');
+        t.classList.add('editing');
+        t.focus();
+        const range = document.createRange(); range.selectNodeContents(t);
+        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        let done = false;
+        function finish(save) {
+            if (done) return; done = true; renaming = false;
+            t.setAttribute('contenteditable', 'false'); t.classList.remove('editing');
+            t.removeEventListener('keydown', onKey); t.removeEventListener('blur', onBlur);
+            if (!save) { t.textContent = real || 'Без названия'; return; }
+            const val = (t.textContent || '').trim();
+            post('/board/' + row.dataset.code + '/rename/', { title: val }).then(r => {
+                if (r.ok) { row.dataset.title = r.title; t.textContent = r.title || 'Без названия'; }
+                else { t.textContent = real || 'Без названия'; alert(r.error || 'Не удалось'); }
+            });
+        }
+        function onKey(e) {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        }
+        function onBlur() { finish(true); }
+        t.addEventListener('keydown', onKey);
+        t.addEventListener('blur', onBlur);
+    }
+
+    let openTimer = null;
+    function cancelPendingOpen() { if (openTimer) { clearTimeout(openTimer); openTimer = null; } }
+
+    list.querySelectorAll('.board-row').forEach(row => {
+        const titleEl = row.querySelector('.bl-title');
+        row.addEventListener('click', (e) => {
+            if (renaming || e.target.closest('.bl-title[contenteditable="true"]')) return;
+            // Клик по названию СВОЕЙ доски: двойной клик = переименовать, поэтому
+            // одиночный открываем с задержкой (успеть распознать двойной клик).
+            if (row.dataset.owner === '1' && e.target.closest('.bl-title')) {
+                cancelPendingOpen();
+                openTimer = setTimeout(() => { openTimer = null; openBoard(row); }, 250);
+                return;
+            }
+            openBoard(row);
+        });
+        if (titleEl) titleEl.addEventListener('dblclick', (e) => {
+            if (row.dataset.owner !== '1') return; // чужую доску переименовать нельзя
+            e.preventDefault();
+            cancelPendingOpen();
+            startRename(row);
+        });
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            curRow = row;
+            const owner = row.dataset.owner === '1';
+            ctx.querySelectorAll('.ctx-owner').forEach(b => b.style.display = owner ? '' : 'none');
+            ctx.querySelectorAll('.ctx-foreign').forEach(b => b.style.display = owner ? 'none' : '');
+            ctx.hidden = false;
+            const w = ctx.offsetWidth || 168, h = ctx.offsetHeight || 200;
+            let x = e.clientX, y = e.clientY;
+            if (x + w > window.innerWidth - 8) x = window.innerWidth - w - 8;
+            if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+            ctx.style.left = x + 'px'; ctx.style.top = y + 'px';
+        });
+    });
+
+    ctx.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
+        const row = curRow; if (!row) return; const code = row.dataset.code; const act = btn.dataset.act;
+        hideCtx();
+        if (act === 'open') openBoard(row);
+        else if (act === 'rename') startRename(row);
+        else if (act === 'duplicate') post('/board/' + code + '/duplicate/').then(r => { if (r.ok) location.href = '/board/' + r.code + '/'; else alert(r.error || 'Не удалось'); });
+        else if (act === 'delete') { if (confirm('Удалить доску навсегда? Это действие необратимо.')) post('/board/' + code + '/delete/').then(r => { if (r.ok) location.reload(); else alert(r.error || 'Не удалось'); }); }
+        else if (act === 'leave') { if (confirm('Выйти из доски? Она пропадёт из вашего списка (у владельца останется).')) post('/board/' + code + '/leave/').then(r => { if (r.ok) location.reload(); else alert(r.error || 'Не удалось'); }); }
+    }));
+
+    document.addEventListener('click', (e) => { if (!ctx.hidden && !ctx.contains(e.target)) hideCtx(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !ctx.hidden) hideCtx(); });
+    window.addEventListener('scroll', hideCtx, true);
+})();
+</script>
+{% endblock %}

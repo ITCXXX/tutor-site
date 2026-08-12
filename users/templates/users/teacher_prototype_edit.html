@@ -1,0 +1,186 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.form-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff; border-radius: 12px; padding: 1.25rem 1.75rem; margin-bottom: 1.25rem;
+}
+.form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
+.form-hero .meta { opacity: .9; font-size: .9rem; }
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+.form-card { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: .5rem; padding: 1.5rem; }
+.form-card label { font-weight: 500; font-size: .85rem; color: var(--c-text-soft); }
+.q-row { border: 1px solid var(--c-border); border-radius: .5rem; padding: .85rem; margin-bottom: .85rem; background: var(--c-bg); }
+.q-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; }
+.q-idx { font-weight: 600; font-size: .9rem; color: var(--c-text-soft); }
+.opt-line { display: flex; align-items: center; gap: .5rem; margin-bottom: .35rem; }
+.opt-line .form-check-input { margin-top: 0; flex: 0 0 auto; }
+.img-note { font-size: .8rem; color: var(--c-text-muted); }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 780px;">
+
+        <a href="{% url 'teacher_course_edit' course.slug %}" class="btn-back">← К курсу</a>
+
+        <div class="form-hero">
+            <h1>{{ title }}</h1>
+            <div class="meta">Тема: {{ lesson.title }}. Вопросы: число или выбор из вариантов, автопроверка.</div>
+        </div>
+
+        <form method="post" class="form-card" enctype="multipart/form-data">
+            {% csrf_token %}
+
+            <div class="mb-3">
+                <label class="form-label">Название прототипа *</label>
+                <input type="text" name="title" class="form-control"
+                       value="{{ form_data.title|default:'' }}"
+                       placeholder="Например, Прототип 1" required autofocus>
+            </div>
+
+            <label class="form-label mb-2">Вопросы</label>
+            <div id="q-list">
+                {% for r in rows %}
+                {% with i=forloop.counter0 %}
+                <div class="q-row" data-idx="{{ i }}">
+                    <input type="hidden" name="q{{ i }}_qid" value="{{ r.qid }}">
+                    <div class="q-row-head">
+                        <span class="q-idx"></span>
+                        <button type="button" class="btn btn-sm btn-link text-danger p-0 q-del">удалить</button>
+                    </div>
+
+                    <textarea name="q{{ i }}_text" class="form-control mb-2" rows="2" placeholder="Текст вопроса">{{ r.text }}</textarea>
+
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <label class="mb-0">Тип:</label>
+                        <select name="q{{ i }}_type" class="form-select form-select-sm q-type" style="max-width: 200px;">
+                            <option value="number" {% if r.type == 'number' %}selected{% endif %}>Числовой ответ</option>
+                            <option value="single_choice" {% if r.type == 'single_choice' %}selected{% endif %}>Выбор варианта</option>
+                        </select>
+                    </div>
+
+                    <div class="number-block {% if r.type == 'single_choice' %}d-none{% endif %}">
+                        <input type="text" name="q{{ i }}_answer" class="form-control"
+                               placeholder="Числовой ответ" value="{{ r.answer }}">
+                    </div>
+
+                    <div class="choice-block {% if r.type != 'single_choice' %}d-none{% endif %}">
+                        {% for opt in r.options %}
+                        <div class="opt-line">
+                            <input class="form-check-input" type="radio" name="q{{ i }}_correct"
+                                   value="{{ forloop.counter }}"
+                                   {% if r.correct == forloop.counter|stringformat:'s' %}checked{% endif %}
+                                   title="Правильный">
+                            <input type="text" name="q{{ i }}_opt{{ forloop.counter }}" class="form-control form-control-sm"
+                                   placeholder="Вариант {{ forloop.counter }}" value="{{ opt }}">
+                        </div>
+                        {% endfor %}
+                        <div class="img-note">Отметьте кружком правильный вариант. Пустые варианты не сохранятся.</div>
+                    </div>
+
+                    <div class="mt-2">
+                        <label class="form-label">Картинка (необязательно)</label>
+                        <input type="file" name="q{{ i }}_image" class="form-control form-control-sm" accept="image/*">
+                        <input type="hidden" name="q{{ i }}_existing_image" value="{{ r.existing_image }}">
+                        {% if r.existing_image %}
+                        <div class="img-note mt-1">
+                            <label class="form-check-label">
+                                <input type="checkbox" name="q{{ i }}_image_clear" value="1"> удалить текущую картинку
+                            </label>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endwith %}
+                {% endfor %}
+            </div>
+
+            <button type="button" class="btn btn-sm btn-outline-primary mt-1" id="add-q">+ Вопрос</button>
+
+            <div class="mt-4 d-flex justify-content-between">
+                <a href="{% url 'teacher_course_edit' course.slug %}" class="btn btn-outline-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+            </div>
+        </form>
+
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const list = document.getElementById('q-list');
+    let nextIdx = {{ rows|length }};
+
+    function rowHTML(i) {
+        return ''
+            + '<div class="q-row" data-idx="' + i + '">'
+            + '  <input type="hidden" name="q' + i + '_qid" value="">'
+            + '  <div class="q-row-head"><span class="q-idx"></span>'
+            + '    <button type="button" class="btn btn-sm btn-link text-danger p-0 q-del">удалить</button></div>'
+            + '  <textarea name="q' + i + '_text" class="form-control mb-2" rows="2" placeholder="Текст вопроса"></textarea>'
+            + '  <div class="d-flex align-items-center gap-2 mb-2"><label class="mb-0">Тип:</label>'
+            + '    <select name="q' + i + '_type" class="form-select form-select-sm q-type" style="max-width:200px;">'
+            + '      <option value="number">Числовой ответ</option>'
+            + '      <option value="single_choice">Выбор варианта</option></select></div>'
+            + '  <div class="number-block">'
+            + '    <input type="text" name="q' + i + '_answer" class="form-control" placeholder="Числовой ответ"></div>'
+            + '  <div class="choice-block d-none">'
+            + optionsHTML(i)
+            + '    <div class="img-note">Отметьте кружком правильный вариант. Пустые варианты не сохранятся.</div></div>'
+            + '  <div class="mt-2"><label class="form-label">Картинка (необязательно)</label>'
+            + '    <input type="file" name="q' + i + '_image" class="form-control form-control-sm" accept="image/*">'
+            + '    <input type="hidden" name="q' + i + '_existing_image" value=""></div>'
+            + '</div>';
+    }
+    function optionsHTML(i) {
+        let s = '';
+        for (let j = 1; j <= 4; j++) {
+            s += '<div class="opt-line">'
+                + '<input class="form-check-input" type="radio" name="q' + i + '_correct" value="' + j + '" title="Правильный">'
+                + '<input type="text" name="q' + i + '_opt' + j + '" class="form-control form-control-sm" placeholder="Вариант ' + j + '"></div>';
+        }
+        return s;
+    }
+    function applyType(row) {
+        const type = row.querySelector('.q-type').value;
+        row.querySelector('.number-block').classList.toggle('d-none', type !== 'number');
+        row.querySelector('.choice-block').classList.toggle('d-none', type !== 'single_choice');
+    }
+    function renumber() {
+        list.querySelectorAll('.q-row').forEach((r, i) => {
+            r.querySelector('.q-idx').textContent = 'Вопрос ' + (i + 1);
+        });
+    }
+
+    document.getElementById('add-q').addEventListener('click', () => {
+        list.insertAdjacentHTML('beforeend', rowHTML(nextIdx));
+        nextIdx += 1;
+        renumber();
+    });
+    list.addEventListener('click', (e) => {
+        if (e.target.classList.contains('q-del')) {
+            if (list.querySelectorAll('.q-row').length > 1) {
+                e.target.closest('.q-row').remove();
+                renumber();
+            }
+        }
+    });
+    list.addEventListener('change', (e) => {
+        if (e.target.classList.contains('q-type')) {
+            applyType(e.target.closest('.q-row'));
+        }
+    });
+
+    list.querySelectorAll('.q-row').forEach(applyType);
+    renumber();
+})();
+</script>
+{% endblock %}

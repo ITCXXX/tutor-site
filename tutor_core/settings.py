@@ -21,16 +21,26 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv(
-    "SECRET_KEY",
-    "django-insecure-c5!ba$1homzlg3yci=n@jrntp2x1nould$%_b_zitjg2hi^9y&",
-)
-
 # Переключатель DEBUG через переменную окружения:
 # локально DJANGO_DEBUG обычно не задан → DEBUG = True
 # на сервере зададим DJANGO_DEBUG=False → DEBUG = False
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# Ключ берётся ТОЛЬКО из окружения. Публичного fallback-ключа для прода нет:
+# при DEBUG=False и незаданном SECRET_KEY сайт не запустится (защита от
+# использования предсказуемого ключа на проде).
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    if DEBUG:
+        # Только для локальной разработки — на прод не попадёт (там DEBUG=False).
+        SECRET_KEY = "django-insecure-dev-only-do-not-use-in-production"
+    else:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            "SECRET_KEY не задан в окружении. Задайте переменную SECRET_KEY "
+            "(обязательна при DEBUG=False)."
+        )
 
 # DJANGO_ALLOWED_HOSTS — список через запятую, например:
 #   "zenchenkoim.ru,www.zenchenkoim.ru"
@@ -45,9 +55,18 @@ ALLOWED_HOSTS = [
 _csrf_env = os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "")
 CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_env.split(",") if o.strip()]
 
+# Куда отправлять неавторизованных со страниц «только для своих».
+# Без этого @login_required вёл на несуществующий /accounts/login/ → 404.
+# По просьбе — на главную (там форма входа).
+LOGIN_URL = "login"
+
 # Application definition
 
 INSTALLED_APPS = [
+    # daphne должен идти ПЕРВЫМ: он подменяет runserver на ASGI-вариант,
+    # чтобы WebSocket-соединения досок работали и в локальной разработке.
+    "daphne",
+
     # django-unfold должен идти ДО django.contrib.admin
     "unfold",
     "unfold.contrib.filters",
@@ -63,10 +82,12 @@ INSTALLED_APPS = [
 
     # Сторонние приложения
     "rest_framework",
+    "channels",
 
     # Ваши приложения
     "users",
     "games",
+    "board",
 ]
 
 MIDDLEWARE = [
@@ -107,6 +128,30 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "tutor_core.wsgi.application"
 
+# ASGI + Channels — нужны для WebSocket-досок (раздел /board/).
+# Обычный HTTP по-прежнему может обслуживаться gunicorn/wsgi, но для
+# WebSocket на проде запускаем ASGI-сервер (daphne/uvicorn) — см. deploy/.
+ASGI_APPLICATION = "tutor_core.asgi.application"
+
+# CHANNEL_LAYERS — «общая шина», через которую сервер рассылает события
+# доски всем участникам комнаты.
+#   • Локально (разработка) — InMemory: ничего ставить не нужно, всё в памяти
+#     одного процесса. Минус: работает только при одном процессе (нам хватает).
+#   • На проде — Redis (несколько воркеров видят общие комнаты). Включается,
+#     когда задана переменная окружения REDIS_URL.
+_redis_url = os.getenv("REDIS_URL", "").strip()
+if _redis_url:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [_redis_url]},
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
+    }
+
 # Database
 # Пока SQLite; при переходе на PostgreSQL на хостинге
 # заменим этот блок на чтение DATABASE_URL.
@@ -140,10 +185,33 @@ if _postgres_config and not DEBUG:
 else:
     # Fallback: SQLite. Используется в локальной разработке
     # и как safety net, если DATABASE_URL невалиден.
+    #
+    # Укрепление против «database is locked» (совместная доска пишет часто):
+    #   • journal_mode=WAL   — чтение не блокирует запись и наоборот; много читателей
+    #                          + один писатель работают параллельно (не по очереди).
+    #   • busy_timeout / timeout=20с — писатель ЖДЁТ освобождения до 20 секунд,
+    #                          а не падает с ошибкой сразу.
+    #   • transaction_mode=IMMEDIATE — блокировку на запись берём в начале транзакции,
+    #                          чтобы busy_timeout реально помогал (иначе два писателя
+    #                          «встречаются» на апгрейде и один падает мгновенно).
+    #   • synchronous=NORMAL — безопасно вместе с WAL, заметно быстрее записи.
+    # Полноценную многопользовательскую нагрузку это не заменяет — на деплое
+    # переходим на PostgreSQL (см. блок DATABASE_URL выше), но локально снимает
+    # почти все случайные блокировки.
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {
+                "timeout": 20,
+                "transaction_mode": "IMMEDIATE",
+                "init_command": (
+                    "PRAGMA journal_mode=WAL;"
+                    "PRAGMA synchronous=NORMAL;"
+                    "PRAGMA busy_timeout=20000;"
+                    "PRAGMA temp_store=MEMORY;"
+                ),
+            },
         }
     }
 

@@ -12,9 +12,25 @@
 
 from django.db.models import Max
 from users.models import Course, Module, Lesson, TaskGroup, GroupSubQuestion
+from ._oge15_dorogi_svg import DOROGI_SVG
 
 
 LESSON_TITLE = "Дороги (4-точечный план)"
+
+
+def _plan_markup(plan_img):
+    """Возвращает встроенный SVG-план группы (gid берётся из пути картинки).
+    Если SVG для группы нет — откатываемся на старую картинку."""
+    gid = None
+    if "oge15_" in plan_img:
+        gid = plan_img.split("oge15_")[1].split(".")[0]
+    svg = DOROGI_SVG.get(gid)
+    if svg:
+        return svg
+    return (
+        f'<img src="{plan_img}" alt="План населённых пунктов" '
+        f'style="max-width:520px;display:block;margin:0.8em 0;">'
+    )
 
 
 def build_context_html(story, plan_img, speed_road, speed_path, cell_km):
@@ -41,10 +57,7 @@ def build_context_html(story, plan_img, speed_road, speed_path, cell_km):
         f"<p>{s['road_kind'].capitalize()} и тропинка образуют с шоссе "
         f"прямоугольные треугольники.</p>"
     )
-    img = (
-        f'<img src="{plan_img}" alt="План населённых пунктов" '
-        f'style="max-width:520px;display:block;margin:0.8em 0;">'
-    )
+    img = _plan_markup(plan_img)
     finale = (
         f"<p>По шоссе {s['hero']} с дедушкой едут со скоростью "
         f"<b>{speed_road} км/ч</b>, а по {s['road_kind_loc']} и тропинке — "

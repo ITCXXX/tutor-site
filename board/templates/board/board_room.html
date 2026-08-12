@@ -1,0 +1,1669 @@
+{% extends 'users/visitor_base.html' %}
+{% load static %}
+{% block title %}{{ board.title|default:"Доска" }} — Иван Зенченко{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Холст занимает весь экран ниже навбара. */
+    #board-stage {
+        position: fixed;
+        top: 56px; left: 0; right: 0; bottom: 0;
+        background: #fbfbfd;
+        overflow: hidden;
+        cursor: crosshair;
+        touch-action: none;
+    }
+    #board-version {
+        position: fixed; left: 8px; bottom: 6px; z-index: 60;
+        font: 11px/1.2 ui-monospace, Menlo, Consolas, monospace; color: #9a9aa4;
+        background: rgba(255,255,255,.72); padding: 2px 7px; border-radius: 6px;
+        pointer-events: none; user-select: none;
+    }
+
+    /* Плавающая панель инструментов слева. */
+    #board-toolbar {
+        position: fixed;
+        top: 108px; left: 16px;
+        z-index: 30;
+        display: flex; flex-direction: column; gap: 6px;
+        background: #fff;
+        border: 1px solid #e3e3e8;
+        border-radius: 12px;
+        padding: 8px;
+        box-shadow: 0 6px 24px rgba(0,0,0,.08);
+        max-height: calc(100vh - 128px);
+        overflow-y: auto; overflow-x: hidden;
+        scrollbar-width: thin;
+    }
+    #board-toolbar::-webkit-scrollbar { width: 6px; }
+    #board-toolbar::-webkit-scrollbar-thumb { background: #d9d9e0; border-radius: 3px; }
+    #board-toolbar .tool {
+        width: 40px; height: 40px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: #f4f4f7;
+        color: #3a3a42;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer;
+        transition: all .12s;
+    }
+    #board-toolbar .tool svg { width: 21px; height: 21px; display: block; }
+    #board-toolbar .tool:hover { background: #ebebf0; }
+    #board-toolbar .tool.active {
+        background: #e7efff; border-color: #4d7cfe; color: #2b5bd7;
+    }
+    #board-toolbar hr { margin: 4px 2px; border-color: #ececf0; }
+    #board-toolbar .tool-dragging { opacity: .35; }
+    #board-toolbar [draggable="true"] { cursor: grab; }
+    #board-toolbar [draggable="true"]:active { cursor: grabbing; }
+
+    /* Кнопки-группы с выпадающим подменю (математика, материалы). */
+    #board-toolbar .tool-group { position: relative; }
+    #board-toolbar .tool-group .grp-icon { display: flex; align-items: center; justify-content: center; }
+    #board-toolbar .tool-group .grp-caret {
+        position: absolute; right: 3px; bottom: 3px;
+        width: 0; height: 0;
+        border-left: 4px solid transparent;
+        border-bottom: 4px solid currentColor;
+        opacity: .4;
+    }
+    .tool-flyout {
+        position: fixed; /* фиксировано — иначе обрезается overflow панели */
+        display: none;
+        grid-template-columns: repeat(4, 40px);
+        gap: 6px;
+        background: #fff;
+        border: 1px solid #e3e3e8;
+        border-radius: 12px;
+        padding: 8px;
+        box-shadow: 0 8px 28px rgba(0,0,0,.12);
+        z-index: 45;
+    }
+    .tool-flyout.open { display: grid; }
+    /* Вертикальный флайаут (рисование) — колонка инструментов. */
+    .tool-flyout--col.open { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+    .tool-flyout--col #draw-cfg { align-self: stretch; }
+    /* Флайаут с подписанными разделами (математика) — колонка секций. */
+    .tool-flyout--sections.open { display: flex; flex-direction: column; gap: 4px; max-height: calc(100vh - 80px); overflow-y: auto; }
+    .flyout-section { display: flex; flex-direction: column; gap: 5px; }
+    .flyout-section + .flyout-section { border-top: 1px solid #f0f0f3; padding-top: 5px; }
+    .flyout-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #9a9aa4; padding: 1px 2px 0; }
+    .flyout-grid { display: grid; grid-template-columns: repeat(5, 40px); gap: 6px; }
+    #macro-create { width: 100%; border: 1px dashed #b8c6f0; background: #f4f7ff; color: #2b5bd7; border-radius: 8px; padding: 6px; cursor: pointer; font-size: 13px; margin-bottom: 6px; }
+    #macro-create:hover { background: #e7efff; }
+    #macro-list { display: flex; flex-direction: column; gap: 4px; }
+    .macro-tool { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 5px 8px; border: 1px solid #e3e3e8; border-radius: 7px; cursor: pointer; font-size: 13px; background: #f7f7fa; }
+    .macro-tool:hover { background: #eef3ff; border-color: #4d7cfe; }
+    .macro-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .macro-del { border: none; background: transparent; color: #b0b0ba; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+    .macro-del:hover { color: #e7505a; }
+    .macro-empty { font-size: 12px; color: #b0b0ba; padding: 4px; }
+    #ctx-menu {
+        position: fixed; z-index: 60; min-width: 180px; background: #fff;
+        border: 1px solid #e3e3e8; border-radius: 10px; padding: 5px; box-shadow: 0 10px 30px rgba(0,0,0,.16);
+    }
+    .ctx-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; border: none; background: transparent; cursor: pointer; padding: 6px 10px; border-radius: 7px; font-size: 13px; color: #2b2b33; }
+    .ctx-item:hover { background: #eef3ff; }
+    .ctx-item.danger { color: #e7505a; }
+    .ctx-item.danger:hover { background: #fdecec; }
+    .ctx-key { color: #b0b0ba; font-size: 11px; }
+    .ctx-align { display: flex; gap: 2px; padding: 2px 6px 4px; }
+    .ctx-al { flex: 1; border: 1px solid #e3e3e8; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 4px 0; font-size: 15px; line-height: 1; color: #3a3a42; }
+    .ctx-al:hover { background: #eef3ff; border-color: #4d7cfe; }
+    .ctx-arrange .ctx-al { font-size: 12px; }
+    .ctx-gap { display: flex; align-items: center; gap: 6px; padding: 0 6px 4px; font-size: 12px; color: #6b6b76; }
+    .ctx-gap input { width: 56px; border: 1px solid #e3e3e8; border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+    .ctx-sep { height: 1px; background: #ececf0; margin: 4px 6px; }
+    .wgt-sticky, .wgt-card { min-width: 172px; box-shadow: 0 5px 16px rgba(0,0,0,.18); border: none; }
+    .wgt-sticky .wgt-bar, .wgt-card .wgt-bar { background: transparent; border-bottom: none; height: 18px; padding: 0 4px; }
+    .wgt-sticky .wgt-body, .wgt-card .wgt-body { padding: 0 8px 8px; }
+    .stk-colors { display: flex; gap: 5px; margin-bottom: 5px; }
+    .stk-c { width: 14px; height: 14px; border-radius: 50%; cursor: pointer; border: 1px solid rgba(0,0,0,.15); }
+    .stk-c.on { outline: 2px solid #4d7cfe; outline-offset: 1px; }
+    .stk-text { width: 100%; min-height: 100px; border: none; background: transparent; resize: vertical; outline: none; font-size: 14px; font-family: inherit; color: #2b2b33; }
+    .wgt-card { min-width: 190px; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0 4px; }
+    .card-label { font-size: 11px; font-weight: 700; color: #5a5a63; text-transform: uppercase; letter-spacing: .03em; }
+    .card-flip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(0,0,0,.18); background: rgba(255,255,255,.65); border-radius: 6px; padding: 2px 7px; font-size: 11px; cursor: pointer; color: #2b2b33; }
+    .card-flip:hover { background: rgba(255,255,255,.95); }
+    .card-flip svg { display: block; }
+    .card-text { min-height: 76px; }
+    .tool-flyout .tool { width: 40px; height: 40px; border: 1px solid transparent; border-radius: 8px; background: #f4f4f7; color: #3a3a42; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .12s; }
+    .tool-flyout .tool svg { width: 21px; height: 21px; display: block; }
+    .tool-flyout .tool:hover { background: #ebebf0; }
+    .tool-flyout .tool.active { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+
+    /* Выбор цвета и толщины. */
+    #board-style { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+    #board-style input[type=color] {
+        width: 36px; height: 36px; border: none; background: none; cursor: pointer; padding: 0;
+    }
+    #board-style input[type=range] { width: 40px; }
+    #color-btn {
+        width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
+        border: 1px solid #d5d5dc; background: #1f2937; padding: 0;
+        box-shadow: inset 0 0 0 2px #fff;
+    }
+    /* Палитра цветов (поповер справа от панели). */
+    #color-palette {
+        position: fixed; z-index: 46;
+        width: 214px; padding: 12px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px;
+        box-shadow: 0 8px 28px rgba(0,0,0,.14);
+        font-family: sans-serif;
+    }
+    #color-palette.cp-hidden { display: none; }
+    #color-palette .cp-scope { font-size: 12px; color: #6b6b76; margin-bottom: 8px; }
+    #color-palette .cp-label { font-size: 11px; color: #9a9aa4; margin: 10px 0 6px; }
+    .cp-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+    .cp-sw {
+        width: 20px; height: 20px; border-radius: 5px; cursor: pointer;
+        border: 1px solid rgba(0,0,0,.14); box-sizing: border-box; transition: transform .08s;
+    }
+    .cp-sw:hover { transform: scale(1.15); }
+    .cp-sw.cp-sel { outline: 2px solid #4d7cfe; outline-offset: 1px; }
+    #color-palette .cp-custom-empty { font-size: 11px; color: #c2c2ca; grid-column: 1 / -1; }
+    #color-palette .cp-add, #color-palette .cp-all {
+        display: block; width: 100%; margin-top: 10px; padding: 7px 10px;
+        border: 1px solid #e3e3e8; border-radius: 8px; background: #f7f7fa;
+        color: #3a3a42; font-size: 12px; cursor: pointer;
+    }
+    #color-palette .cp-add:hover, #color-palette .cp-all:hover { background: #ececf0; }
+    #color-palette #cp-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+    /* Кнопка настроек справа сверху + панель настроек точки. */
+    #settings-btn {
+        position: fixed; top: 108px; right: 16px; z-index: 30;
+        width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
+        background: #fff; border: 1px solid #e3e3e8; color: #3a3a42;
+        box-shadow: 0 4px 14px rgba(0,0,0,.08);
+        display: flex; align-items: center; justify-content: center;
+    }
+    #settings-btn:hover { background: #f2f2f6; }
+    #settings-btn svg { width: 20px; height: 20px; }
+    .settings-panel {
+        position: fixed; top: 108px; right: 66px; z-index: 47;
+        width: 250px; padding: 14px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.16); font-family: sans-serif;
+    }
+    .settings-panel.ps-hidden { display: none; }
+    /* Горизонтальная всплывающая панель линии/стрелки: летит у объекта. */
+    .conn-panel.conn-panel {
+        position: fixed; top: auto; right: auto; z-index: 47; padding: 6px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.16); font-family: sans-serif;
+    }
+    .conn-panel.ps-hidden { display: none; }
+    .conn-panel .cn-bar { display: flex; gap: 6px; align-items: center; }
+    .conn-panel .cn-tool {
+        width: 40px; height: 34px; padding: 0; cursor: pointer;
+        border: 1px solid #e3e3e8; border-radius: 8px; background: #f7f7fa; color: #3a3a42;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .conn-panel .cn-tool:hover { background: #ececf0; }
+    .conn-panel .cn-tool.cn-open { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    .conn-panel .cn-dot { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,.22); box-sizing: border-box; }
+    .conn-panel .cn-ic { width: 20px; height: 20px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; }
+    .conn-panel .cn-capbtn { width: 48px; }
+    .conn-panel .cn-capsvg { width: 34px; height: 16px; stroke: currentColor; stroke-width: 1.7; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .conn-panel .cn-none { font-size: 11px; color: #6b6b76; }
+    .conn-panel .cn-pop {
+        position: absolute; top: 46px; left: 6px; padding: 10px; z-index: 2;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.16);
+    }
+    .conn-panel .cn-pop.ps-hidden { display: none; }
+    .conn-panel #cn-type-pop { width: 236px; }
+    .conn-panel .cp-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+    .conn-panel .cn-seg { display: flex; gap: 4px; margin-bottom: 8px; }
+    .conn-panel .cn-seg button {
+        flex: 1; padding: 6px 6px; font-size: 12px; white-space: nowrap; cursor: pointer;
+        border: 1px solid #e3e3e8; border-radius: 7px; background: #f7f7fa; color: #3a3a42;
+    }
+    .conn-panel .cn-seg button.cn-on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    .conn-panel .cn-flat { width: 100%; padding: 7px; font-size: 12px; cursor: pointer; border: 1px solid #e3e3e8; border-radius: 8px; background: #f7f7fa; color: #3a3a42; margin-bottom: 8px; }
+    .conn-panel .cn-flat:hover { background: #ececf0; }
+    .conn-panel .cn-wrow { display: flex; align-items: center; gap: 8px; }
+    .conn-panel .cn-wlbl { font-size: 12px; color: #6b6b76; flex: none; }
+    .conn-panel .cn-range { flex: 1; min-width: 80px; }
+    .conn-panel .cn-num { width: 44px; padding: 4px 6px; font-size: 12px; text-align: center; border: 1px solid #e3e3e8; border-radius: 6px; }
+    .conn-panel .cn-caps { display: grid; grid-template-columns: repeat(3, 54px); gap: 6px; }
+    .conn-panel .cn-caps button {
+        width: 54px; height: 34px; cursor: pointer; padding: 0;
+        border: 1px solid #e3e3e8; border-radius: 7px; background: #f7f7fa;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .conn-panel .cn-caps button:hover { background: #ececf0; }
+    .conn-panel .cn-caps button.cn-on { background: #e7efff; border-color: #4d7cfe; }
+    #shape-panel .sp-opval { display: flex; align-items: center; justify-content: center; }
+    #shape-panel .cp-sw.cp-nofill { position: relative; background: #fff !important; border-color: #d9d9e0; }
+    #shape-panel .cp-sw.cp-nofill::after { content: ''; position: absolute; left: 1px; right: 1px; top: 50%; height: 2px; background: #ef4444; transform: translateY(-1px) rotate(-45deg); }
+    .settings-panel .ps-head { font-size: 13px; font-weight: 600; color: #2b2b33; margin-bottom: 12px; }
+    .settings-panel .ps-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .settings-panel .ps-lbl { font-size: 12px; color: #6b6b76; width: 56px; flex: none; }
+    .settings-panel .ps-seg { display: flex; gap: 4px; flex: 1; }
+    .settings-panel .ps-seg button {
+        flex: 1; padding: 5px 4px; font-size: 12px; cursor: pointer;
+        border: 1px solid #e3e3e8; border-radius: 7px; background: #f7f7fa; color: #3a3a42;
+    }
+    .settings-panel .ps-seg button.ps-on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    .settings-panel .ps-shapes { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; }
+    .settings-panel .ps-shapes button {
+        width: 30px; height: 30px; cursor: pointer; padding: 0;
+        border: 1px solid #e3e3e8; border-radius: 7px; background: #f7f7fa;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .settings-panel .ps-shapes button.ps-on { background: #e7efff; border-color: #4d7cfe; }
+    .settings-panel .ps-shapes svg { width: 18px; height: 18px; display: block; }
+    .settings-panel .ps-check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #3a3a42; margin-bottom: 10px; cursor: pointer; }
+    .settings-panel .ps-input { flex: 1; padding: 5px 8px; font-size: 13px; border: 1px solid #e3e3e8; border-radius: 7px; }
+    .settings-panel .ps-bind { margin-top: 4px; }
+    .settings-panel .ps-bind button {
+        width: 100%; padding: 8px; font-size: 12px; cursor: pointer;
+        border: 1px solid #e3e3e8; border-radius: 8px; background: #f7f7fa; color: #3a3a42;
+    }
+    .settings-panel .ps-bind button:hover { background: #ececf0; }
+    .settings-panel .ps-bind .ps-note { font-size: 11px; color: #9a9aa4; padding: 4px 0; }
+    .settings-panel .ps-range { flex: 1; min-width: 0; }
+    .settings-panel .ps-num { width: 46px; flex: none; padding: 4px 6px; font-size: 12px; border: 1px solid #e3e3e8; border-radius: 6px; text-align: center; }
+    /* Выпадающее меню кнопки настроек. */
+    #settings-menu {
+        position: fixed; z-index: 48;
+        min-width: 210px; padding: 6px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0,0,0,.16); font-family: sans-serif;
+    }
+    #settings-menu.sm-hidden { display: none; }
+    #settings-menu button {
+        display: block; width: 100%; text-align: left; padding: 9px 12px;
+        border: none; background: none; border-radius: 7px; cursor: pointer;
+        font-size: 13px; color: #3a3a42;
+    }
+    #settings-menu button:hover:not([disabled]) { background: #f2f2f6; }
+    #settings-menu button[disabled] { color: #c2c2ca; cursor: default; }
+
+    /* Верхняя плашка: код доски + статус связи + участники. */
+    #board-topbar {
+        position: fixed;
+        top: 64px; right: 16px;
+        z-index: 30;
+        display: flex; align-items: center; gap: 12px;
+        background: #fff;
+        border: 1px solid #e3e3e8;
+        border-radius: 999px;
+        padding: 6px 14px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.07);
+        font-size: 14px;
+    }
+    #board-topbar .dot { width: 9px; height: 9px; border-radius: 50%; background: #c0c0c8; }
+    #board-topbar .dot.online { background: #2ec07c; }
+    #board-topbar code { font-size: 14px; }
+    #copy-code { cursor: pointer; border: none; background: #f0f0f4; border-radius: 6px; padding: 2px 8px; }
+    #import-btn { cursor: pointer; border: none; background: #4d7cfe; color: #fff; border-radius: 6px; padding: 3px 10px; font-size: 13px; }
+    #import-btn:hover { background: #3b6af0; }
+    #reveal-hidden, #hide-selected { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+    #reveal-hidden:hover, #hide-selected:hover { background: #e4e8f5; }
+    #reveal-hidden.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    #present-btn, #follow-btn, #viewonly-btn, #access-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+    #present-btn:hover, #follow-btn:hover, #viewonly-btn:hover, #access-btn:hover { background: #e4e8f5; }
+    #present-btn.on, #follow-btn.on, #viewonly-btn.on, #access-btn.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    #bg-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+    #bg-btn:hover { background: #e4e8f5; }
+    #bg-btn.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    /* Название доски + меню (три точки), слева сверху над инструментами. */
+    #board-head { position: fixed; top: 64px; left: 16px; z-index: 31; display: flex; align-items: center; gap: 4px; background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 4px 6px 4px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.07); max-width: 260px; }
+    #board-title { font-weight: 600; font-size: 14px; color: #2b2b33; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #board-title.editing { outline: 1.5px solid #4d7cfe; border-radius: 5px; padding: 0 5px; background: #fff; overflow: visible; cursor: text; }
+    #conn-banner {
+        position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 3000; display: none;
+        background: #d63333; color: #fff; font-size: 13px; font-weight: 600; padding: 6px 16px;
+        border-radius: 20px; box-shadow: 0 6px 20px rgba(214,51,51,.35);
+    }
+    #board-menu-btn { border: none; background: transparent; color: #6b6b76; cursor: pointer; border-radius: 7px; padding: 3px; display: flex; }
+    #board-menu-btn svg { width: 18px; height: 18px; }
+    #board-menu-btn:hover { background: #eef1f7; color: #2b2b33; }
+    #board-menu-btn.on { background: #e7efff; color: #2b5bd7; }
+    #board-menu { position: fixed; top: 104px; left: 16px; z-index: 60; width: 250px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    #board-menu[hidden] { display: none; }
+    .bm-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #9a9aa4; margin: 2px 0 6px; }
+    .bm-label { font-size: 12px; color: #6b6b76; margin: 8px 0 4px; }
+    .bm-toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; cursor: pointer; color: #2b2b33; }
+    .bm-toggle input { accent-color: #4d7cfe; width: 15px; height: 15px; }
+    .bm-sep { height: 1px; background: #ececf0; margin: 10px -12px; }
+    .bm-item { display: block; width: 100%; text-align: left; border: none; background: transparent; color: #2b2b33; border-radius: 7px; padding: 7px 8px; font-size: 13px; cursor: pointer; }
+    .bm-item:hover { background: #eef1f7; }
+    .bm-item.danger { color: #d63030; }
+    .bm-item.danger:hover { background: #fdecec; }
+    #history-panel { position: fixed; top: 104px; left: 280px; z-index: 60; width: 260px; max-height: 60vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    #history-panel[hidden] { display: none; }
+    .bm-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: #2b2b33; margin-bottom: 6px; }
+    .bm-head button { border: none; background: transparent; font-size: 18px; line-height: 1; color: #9a9aa4; cursor: pointer; }
+    #history-list { flex: 1; overflow-y: auto; margin-bottom: 6px; }
+    .hist-row { padding: 5px 6px; border-radius: 6px; color: #3a3a42; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .hist-row[data-focus] { cursor: pointer; }
+    .hist-row[data-focus]:hover { background: #eef1f7; }
+    .hist-row.gone { opacity: .5; }
+    .hist-row .hist-i { color: #a0a0aa; font-variant-numeric: tabular-nums; font-size: 11px; }
+    .hist-restore { border: 1px solid #cfd3dc; background: #fff; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; color: #2b5bd7; white-space: nowrap; }
+    .hist-restore:hover { background: #eef3ff; border-color: #4d7cfe; }
+    #bg-panel { position: fixed; top: 44px; right: 12px; z-index: 60; width: 260px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 12px; font-size: 13px; }
+    #fe-bg { display: flex; gap: 6px; margin: 0 0 8px; }
+    #fe-bg button { flex: 1; border: 1px solid #d3d6de; background: #fff; color: #55555f; border-radius: 6px; padding: 3px 0; font-size: 12px; cursor: pointer; }
+    #fe-bg button:hover { background: #eef1f7; }
+    #fe-bg button.on { background: #4d7cfe; border-color: #4d7cfe; color: #fff; }
+    #fe-bgcolor, #fe-gridcolor { display: flex; align-items: center; gap: 5px; margin: 0 0 8px; flex-wrap: wrap; }
+    .bgc-lbl { font-size: 11px; color: #8a8a94; margin-right: 2px; }
+    #bg-color { display: flex; gap: 6px; flex-wrap: wrap; }
+    .bgdot { width: 20px; height: 20px; border-radius: 50%; border: 1px solid #cfd3dc; cursor: pointer; padding: 0; }
+    .bgdot:hover { transform: scale(1.12); }
+    .bgdot.on { box-shadow: 0 0 0 2px #4d7cfe; border-color: #4d7cfe; }
+    .bgpick { width: 22px; height: 22px; padding: 0; border: 1px solid #cfd3dc; border-radius: 50%; cursor: pointer; background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red); }
+    .bgpick.on { box-shadow: 0 0 0 2px #4d7cfe; border-color: #4d7cfe; }
+    .bgpick::-webkit-color-swatch-wrapper { padding: 0; }
+    .bgpick::-webkit-color-swatch { border: none; border-radius: 50%; opacity: 0; }
+    .bgpick::-moz-color-swatch { border: none; border-radius: 50%; opacity: 0; }
+    #role-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #eef0f4; color: #55555f; }
+    #role-badge.viewer { background: #fff2d6; color: #9a6b12; }
+    #access-panel { position: fixed; top: 44px; right: 12px; z-index: 60; width: 260px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 12px; font-size: 13px; }
+    #access-panel .ap-title { font-weight: 600; color: #2b2b33; margin: 4px 0 6px; }
+    #access-panel .ap-hint { font-size: 11px; color: #8a8a94; margin: 4px 0 10px; }
+    .ap-seg { display: inline-flex; border: 1px solid #d3d6de; border-radius: 7px; overflow: hidden; }
+    .ap-seg button { border: none; background: #fff; color: #3a3a42; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+    .ap-seg button + button { border-left: 1px solid #d3d6de; }
+    .ap-seg button.on { background: #4d7cfe; color: #fff; }
+    /* Сегмент фона (4 кнопки) во всю ширину меню — иначе «Линейка» вылезает. */
+    #bg-seg { display: flex; width: 100%; }
+    #bg-seg button { flex: 1; padding: 4px 2px; text-align: center; }
+    .ap-person { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px solid #f0f0f3; }
+    .ap-person .ap-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ap-people .ap-empty { color: #9a9aa2; font-size: 12px; padding: 6px 0; }
+    .fe-eye { border: none; background: transparent; color: #b0b0ba; cursor: pointer; padding: 0 3px; display: inline-flex; align-items: center; }
+    .fe-eye:hover { color: #4d7cfe; }
+    .fe-eye.off { color: #c9ccd6; }
+    .fe-eye.off:hover { color: #6b6b76; }
+    #board-topbar .tb-sep { width: 1px; height: 16px; background: #e3e3e8; }
+    #pdf-controls {
+        position: fixed; z-index: 44; display: flex; align-items: center; gap: 6px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 5px 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 13px;
+    }
+    #pdf-controls[hidden] { display: none; }
+    #pdf-controls button { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 3px 9px; font-size: 13px; }
+    #pdf-controls button:hover { background: #eceff7; }
+    #pdf-controls #pdf-extract { color: #1f6feb; font-weight: 600; }
+    #pdf-page-info { min-width: 46px; text-align: center; color: #6b6b76; font-variant-numeric: tabular-nums; }
+    #pdf-controls .tb-sep { width: 1px; height: 16px; background: #e3e3e8; }
+    #eraser-panel {
+        position: fixed; top: 62px; left: 66px; z-index: 44; display: flex; align-items: center; gap: 8px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 6px 10px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 13px;
+    }
+    #eraser-panel[hidden] { display: none; }
+    #eraser-panel .er-lbl { color: #6b6b76; }
+    #eraser-panel input[type=range] { width: 120px; accent-color: #4d7cfe; }
+    #eraser-size-val { min-width: 22px; text-align: right; color: #2b2b33; font-variant-numeric: tabular-nums; }
+    .eraser-ring { position: absolute; border: 1.5px solid #ff5a5a; background: rgba(255,90,90,.10); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 27; }
+    /* Настройка карандаша/маркера/ластика: вертикальные кружки-пресеты в меню рисования, под лассо;
+       по клику на кружок справа всплывает панель #dp-pop (толщина/цвет/прозрачность или радиус). */
+    #draw-cfg { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+    #draw-cfg[hidden] { display: none; }
+    .dp-divider { height: 1px; width: 100%; background: #ececf0; margin: 2px 0; }
+    .dp-presets { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .dp-preset {
+        width: 40px; height: 40px; border-radius: 50%; border: 1px solid #e3e3e8; background: #f7f7fa; cursor: pointer;
+        display: flex; align-items: center; justify-content: center; padding: 0; overflow: hidden; flex: none;
+    }
+    .dp-preset:hover { background: #ececf0; }
+    .dp-preset.on { border-color: #4d7cfe; box-shadow: 0 0 0 2px rgba(77,124,254,.28); }
+    .dp-preset .dp-dot { border-radius: 50%; display: block; }
+    .dp-preset .dp-ring { border-radius: 50%; border: 2px dashed #ff5a5a; box-sizing: border-box; display: block; }
+    #dp-pop {
+        position: fixed; z-index: 46; display: flex; flex-direction: column; gap: 10px; width: 200px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.16);
+    }
+    #dp-pop[hidden] { display: none; }
+    .dp-row { display: flex; align-items: center; gap: 8px; }
+    .dp-lbl { font-size: 12px; color: #6b6b76; white-space: nowrap; }
+    #dp-pop input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: #4d7cfe; }
+    .dp-val { min-width: 34px; text-align: right; font-size: 12px; color: #2b2b33; font-variant-numeric: tabular-nums; }
+    .dp-colors { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .dp-colors .dp-sw { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 1px solid rgba(0,0,0,.12); box-sizing: border-box; }
+    .dp-colors .dp-sw.on { box-shadow: 0 0 0 2px #4d7cfe; border-color: #4d7cfe; }
+    .dp-colors .dp-add {
+        width: 22px; height: 22px; border-radius: 50%; border: 1px dashed #b9b9c4; background: #fff; cursor: pointer;
+        color: #6b6b76; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0;
+    }
+    .dp-colors .dp-add:hover { background: #f2f2f6; }
+    #dp-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+    /* Редакторы формул и текста. */
+    #latex-editor {
+        position: fixed; z-index: 40;
+        width: 340px;
+        background: #fff;
+        border: 1px solid #e3e3e8;
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 8px 30px rgba(0,0,0,.12);
+    }
+    #latex-editor[hidden], #text-editor[hidden] { display: none; }
+    #le-preview, #te-preview {
+        min-height: 44px;
+        display: flex; align-items: center; justify-content: center;
+        background: #fbfbfd; border: 1px solid #eee; border-radius: 8px;
+        padding: 6px; margin-bottom: 8px; overflow-x: auto;
+        color: #6b6b76; font-size: 13px;
+    }
+    #te-preview { justify-content: flex-start; text-align: left; white-space: pre-wrap; }
+    #le-input, #te-input {
+        width: 100%;
+        font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px;
+        border: 1px solid #d9d9e0; border-radius: 8px; padding: 8px;
+    }
+    #te-input { resize: vertical; font-family: inherit; }
+    #le-input:focus, #te-input:focus { outline: none; border-color: #4d7cfe; }
+
+    /* Редактор текста с формулами — отдельное окно с предпросмотром (не «на месте»). */
+    #te-panel {
+        position: fixed; z-index: 41; width: 540px; max-width: calc(100vw - 24px); padding: 10px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.18);
+    }
+    #te-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 8px; }
+    #te-bar select, #te-bar #te-size {
+        height: 30px; border: 1px solid #e3e3e8; border-radius: 7px; background: #fff;
+        color: #3a3a42; font-size: 13px; padding: 0 6px; box-sizing: border-box;
+    }
+    #te-bar #te-size { width: 52px; text-align: center; }
+    #te-bar select { max-width: 130px; }
+    .te-b {
+        min-width: 30px; height: 30px; padding: 0 6px; cursor: pointer;
+        border: 1px solid #e3e3e8; border-radius: 7px; background: #f7f7fa; color: #3a3a42;
+        display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
+    }
+    .te-b:hover { background: #ececf0; }
+    .te-b.te-on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    .te-b svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .te-b .te-a { font-weight: 700; line-height: 1; padding: 0 2px; }
+    .te-b .te-cbar { display: block; width: 14px; height: 3px; border-radius: 2px; background: #1f2937; margin-left: 3px; }
+    .te-sep { width: 1px; height: 20px; background: #e3e3e8; margin: 0 3px; flex: none; }
+    .te-grow { flex: 1 1 8px; }
+    #te-bar #te-cancel, #te-bar #te-insert {
+        height: 30px; padding: 0 12px; cursor: pointer; font-size: 13px; border-radius: 7px; border: 1px solid #e3e3e8;
+    }
+    #te-bar #te-cancel { background: #f7f7fa; color: #3a3a42; }
+    #te-bar #te-insert { background: #4d7cfe; color: #fff; border-color: #4d7cfe; }
+    /* #te-edit — поле ввода внутри окна (в обычном потоке, не поверх доски). */
+    #te-edit {
+        min-height: 64px; max-height: 240px; overflow: auto;
+        padding: 8px 10px; border: 1px solid #d9d9e0; border-radius: 8px;
+        line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;
+        box-sizing: border-box; font-size: 16px;
+    }
+    #te-edit:focus { outline: none; border-color: #4d7cfe; }
+    #te-edit:empty:before { content: attr(data-placeholder); color: #b0b0ba; }
+    #te-edit ul, #te-edit ol { margin: .2em 0; padding-left: 1.5em; }
+    #te-edit a, #te-edit .lnk { color: #1f6feb; text-decoration: underline; }
+    #te-preview-wrap { margin-top: 10px; }
+    #te-preview-label { font-size: 11px; color: #9a9aa4; text-transform: uppercase; letter-spacing: .04em; margin: 0 2px 4px; }
+    #te-preview { display: block; min-height: 46px; line-height: 1.4; margin-bottom: 0; color: #1f2937; font-size: 16px; }
+    #te-preview ul, #te-preview ol { margin: .2em 0; padding-left: 1.5em; }
+    #te-preview a, #te-preview .lnk { color: #1f6feb; text-decoration: underline; }
+    .te-hint { font-size: 11px; color: #9a9aa4; margin-top: 8px; }
+    .te-pop { position: absolute; margin-top: 4px; padding: 10px; z-index: 3;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.16); }
+    .te-pop.ps-hidden { display: none; }
+    .te-pop .cp-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+    .te-pop .cp-none { grid-column: 1 / -1; font-size: 12px; color: #6b6b76; cursor: pointer; padding: 4px; border: 1px solid #e3e3e8; border-radius: 7px; text-align: center; }
+    .te-pop .cp-none:hover { background: #f2f2f6; }
+
+    /* Плавающая панель форматирования для обычного текстового окна (.tbox). */
+    #tbox-bar {
+        position: fixed; z-index: 48; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 6px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.16);
+    }
+    #tbox-bar.ps-hidden { display: none; }
+    #tbox-bar select, #tbox-bar #tb-size {
+        height: 30px; border: 1px solid #e3e3e8; border-radius: 7px; background: #fff;
+        color: #3a3a42; font-size: 13px; padding: 0 6px; box-sizing: border-box;
+    }
+    #tbox-bar #tb-size { width: 52px; text-align: center; }
+    #tbox-bar select { max-width: 130px; }
+    #tbox-bar .te-pop { top: calc(100% + 2px); left: 6px; }
+
+    /* Контекстный редактор функций у окна. */
+    #func-editor {
+        position: fixed; z-index: 42; width: 240px;
+        display: flex; flex-direction: column;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px;
+        padding: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.14);
+    }
+    #func-editor[hidden] { display: none; }
+    .fe-title { font-size: 11px; color: #9a9aa4; margin: 0 2px 6px; text-transform: uppercase; letter-spacing: .04em; flex: none; }
+    #fe-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    .fe-row { flex: none; }
+    .fe-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #b0b0ba; margin: 6px 2px 1px; }
+    .fe-obj { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .fe-obj .fe-oname { font-style: italic; color: #2b2b33; min-width: 20px; }
+    .fe-obj .fe-odesc { flex: 1; color: #6b6b76; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fe-coord { width: 46px; border: 1px solid #d9d9e0; border-radius: 5px; padding: 1px 4px; font-size: 12px; }
+    .fe-coord:disabled { background: #f4f4f7; color: #9a9aa4; }
+    .fe-pbounds { display: flex; align-items: center; gap: 4px; margin: 1px 0 3px 16px; }
+    .fe-pbounds input { width: 44px; border: 1px solid #e3e3e8; border-radius: 5px; padding: 1px 4px; font-size: 11px; }
+    .fe-pbounds span { color: #b0b0ba; font-size: 11px; }
+    .fe-subrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 5px 16px; font-size: 12px; color: #6b6b76; }
+    .fe-cond { display: flex; align-items: center; gap: 5px; margin: -1px 0 5px 16px; }
+    .fe-condlbl { font-size: 10px; color: #b0b0ba; white-space: nowrap; }
+    .fe-condinput { flex: 1; min-width: 0; border: 1px solid transparent; border-radius: 5px; padding: 1px 5px; font-size: 11px; font-family: ui-monospace, Consolas, monospace; color: #8a8a94; background: transparent; }
+    .fe-condinput:hover { border-color: #e3e3e8; }
+    .fe-condinput:focus { outline: none; border-color: #4d7cfe; background: #fff; color: #2b2b33; }
+    .fe-condinput.set { color: #2b5bd7; font-weight: 600; }
+    .fe-subrow .fe-coord { width: 46px; }
+    .fe-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .fe-sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+    .fe-expr { flex: 1; font-family: ui-monospace, Consolas, monospace; color: #2b2b33; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fe-nm { color: #2b2b33; flex: none; font-weight: 600; }
+    .fe-editexpr { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 13px; color: #2b2b33; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 1px 4px; }
+    .fe-editexpr:hover { border-color: #e3e3e8; }
+    .fe-editexpr:focus { outline: none; border-color: #4d7cfe; background: #fff; }
+    .fe-editexpr.invalid { border-color: #e7505a; background: #fff4f4; }
+    .fe-del { border: none; background: transparent; color: #b0b0ba; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+    .fe-del:hover { color: #e7505a; }
+    .fe-empty { font-size: 12px; color: #b0b0ba; padding: 2px; }
+    .fe-param { display: flex; align-items: center; gap: 6px; margin: 1px 0 5px 16px; font-size: 12px; }
+    .fe-pname { font-style: italic; color: #2b2b33; min-width: 24px; }
+    .fe-prange { flex: 1; min-width: 0; accent-color: #4d7cfe; }
+    .fe-pval { font-variant-numeric: tabular-nums; min-width: 30px; text-align: right; color: #2b2b33; }
+    .fe-rsense { margin-left: auto; border: 1px solid #cfd3dc; background: #fff; border-radius: 5px; padding: 1px 8px; font-size: 11px; cursor: pointer; color: #2b2b33; }
+    .fe-rsense:hover { background: #eef1f7; }
+    .fe-row { display: flex; gap: 6px; }
+    #fe-input {
+        flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+        border: 1px solid #d9d9e0; border-radius: 7px; padding: 6px 8px;
+    }
+    #fe-input:focus { outline: none; border-color: #4d7cfe; }
+    #fe-add {
+        flex: none; width: 30px; border: none; background: #4d7cfe; color: #fff;
+        border-radius: 7px; cursor: pointer; font-size: 18px; line-height: 1;
+    }
+    #fe-add:hover { background: #3b6af0; }
+    .le-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+    .le-hint { color: #9a9aa4; font-size: 12px; margin-top: 6px; }
+
+    /* Раскадровка окна — лента кадров под матокном. */
+    #storyboard {
+        position: fixed; z-index: 38; display: flex; align-items: center; gap: 8px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 12px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.10); padding: 6px 8px; max-width: 620px;
+    }
+    #storyboard[hidden] { display: none; }
+    #sb-cap {
+        flex: none; width: 34px; height: 34px; border: none; background: #4d7cfe; color: #fff;
+        border-radius: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    #sb-cap:hover { background: #3b6af0; }
+    #sb-cap svg { width: 20px; height: 20px; }
+    #sb-strip { display: flex; gap: 6px; overflow-x: auto; padding: 2px; max-width: 560px; }
+    #sb-strip:empty::after { content: 'Кадров пока нет — нажми камеру'; color: #b0b0ba; font-size: 12px; padding: 8px 4px; white-space: nowrap; }
+    .sb-frame { flex: none; width: 96px; cursor: grab; position: relative; }
+    .sb-frame:active { cursor: grabbing; }
+    .sb-frame.sb-dragging { opacity: .4; }
+    .sb-frame img { width: 96px; height: 66px; object-fit: cover; border: 1.5px solid #d9d9e0; border-radius: 6px; background: #fff; display: block; }
+    .sb-frame:hover img { border-color: #4d7cfe; }
+    .sb-frame .sb-num { position: absolute; top: 3px; left: 3px; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; line-height: 1; padding: 2px 5px; border-radius: 4px; }
+    .sb-frame .sb-del { position: absolute; top: 2px; right: 2px; border: none; background: rgba(255,255,255,.85); color: #9a9aa4; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1; padding: 1px 4px; display: none; }
+    .sb-frame:hover .sb-del { display: block; }
+    .sb-frame .sb-del:hover { color: #e7505a; }
+    .sb-frame .sb-cap { font-size: 11px; color: #6b6b76; margin-top: 2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Предпросмотр кадра — картинка поверх окна. */
+    #sb-preview { position: fixed; z-index: 45; }
+    #sb-preview[hidden] { display: none; }
+    #sb-pv-img { display: block; width: 100%; height: 100%; border: 2px solid #4d7cfe; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,.2); background: #fff; }
+    #sb-pv-bar {
+        position: absolute; top: -44px; left: 0; right: 0; display: flex; align-items: center; gap: 6px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 5px 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.10); font-size: 13px;
+    }
+    #sb-pv-bar button { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 3px 8px; font-size: 13px; }
+    #sb-pv-bar button:hover { background: #eceff7; }
+    #sb-pv-idx { min-width: 44px; text-align: center; color: #6b6b76; }
+    #sb-pv-cap { flex: 1; min-width: 60px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 3px 6px; font-size: 13px; }
+    #sb-pv-restore { color: #1f6feb; font-weight: 600; }
+    #sb-pv-close { margin-left: 2px; }
+
+    /* Контрол масштаба (правый нижний угол). */
+    #zoom-control {
+        position: fixed; right: 16px; bottom: 16px; z-index: 30;
+        display: flex; align-items: center; gap: 2px;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.08); padding: 3px;
+    }
+    #zoom-control button {
+        width: 30px; height: 30px; padding: 0; border: none; background: transparent;
+        border-radius: 7px; cursor: pointer; color: #3a3a42;
+        display: flex; align-items: center; justify-content: center;
+    }
+    #zoom-control button:hover { background: #f0f0f4; }
+    #zoom-control button svg { width: 16px; height: 16px; display: block; }
+    #zoom-percent {
+        width: 54px; text-align: center; border: none; background: transparent;
+        font-size: 13px; color: #3a3a42; padding: 5px 2px; border-radius: 6px;
+    }
+    #zoom-percent:hover { background: #f5f5f8; }
+    #zoom-percent:focus { outline: none; background: #eef3ff; }
+
+    /* Слой виджетов (таблица/канбан/таймер/колесо). */
+    #widget-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 23; overflow: hidden; }
+    /* На время протяжки рамки выделения DOM-объекты «прозрачны» для мыши. */
+    #widget-layer.marquee-thru, #widget-layer.marquee-thru * { pointer-events: none !important; }
+    /* Обычный текст — живой HTML-элемент на доске (без картинки/рамок). */
+    .tbox { position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: auto; }
+    .tbox-edit {
+        min-width: 26px; min-height: 1.2em; padding: 3px 5px; box-sizing: border-box;
+        white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; line-height: 1.35;
+        outline: none; border: none; cursor: default; caret-color: #1f2937;
+    }
+    .tbox.editing .tbox-edit { cursor: text; outline: 1px solid rgba(77,124,254,.55); }
+    /* Рамка выделения для DOM-объектов (текст/виджеты) — трансформер их не оборачивает. */
+    .tbox.wsel, .mtext.wsel, .wgt.wsel { outline: 2px solid #4d7cfe; outline-offset: 1px; border-radius: 4px; }
+    .tbox:not(.editing):hover .tbox-edit { outline: 1px dashed rgba(77,124,254,.4); }
+    .tbox-edit:empty:before { content: attr(data-ph); color: #b0b0ba; }
+    .tbox-edit ul, .tbox-edit ol { margin: .2em 0; padding-left: 1.4em; }
+    /* Латех-текст — живой HTML с формулами (MathJax), без Konva/картинки/рамок. Правка — в окне. */
+    .mtext { position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: auto; cursor: default; }
+    .mtext-body {
+        min-width: 12px; min-height: 1.1em; padding: 3px 6px; box-sizing: border-box;
+        white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; line-height: 1.35; max-width: 720px;
+    }
+    .mtext:hover { outline: 1px dashed rgba(77,124,254,.4); }
+    .mtext.moving { cursor: grabbing; }
+    .mtext-body ul, .mtext-body ol { margin: .2em 0; padding-left: 1.4em; }
+    .mtext-body a, .mtext-body .lnk { color: #1f6feb; text-decoration: underline; }
+    .mtext-del {
+        position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; border-radius: 50%;
+        border: 1px solid #e3e3e8; background: #fff; color: #6b6b76; cursor: pointer; font-size: 14px; line-height: 1;
+        display: none; align-items: center; justify-content: center; padding: 0; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+    }
+    .mtext:hover .mtext-del { display: flex; }
+    /* Текст внутри фигуры — DOM-оверлей поверх Konva-фигуры (масштаб через transform). */
+    .shape-text {
+        position: absolute; top: 0; left: 0; transform-origin: top left; box-sizing: border-box;
+        display: flex; align-items: center; justify-content: center; overflow: hidden; pointer-events: none; padding: 4px 6px;
+    }
+    .shape-text-in {
+        width: 100% !important; max-width: 100% !important; text-align: center;
+        white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; line-height: 1.3; outline: none;
+    }
+    .shape-text.editing { pointer-events: auto; }
+    .shape-text.editing .shape-text-in { cursor: text; }
+    .shape-text-in a, .shape-text-in .lnk { color: #1f6feb; text-decoration: underline; pointer-events: auto; }
+    .shape-text-in ul, .shape-text-in ol { margin: .2em 0; padding-left: 1.4em; text-align: left; }
+    .wgt {
+        position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: auto;
+        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; overflow: hidden;
+        box-shadow: 0 6px 24px rgba(0,0,0,.14); min-width: 180px;
+    }
+    .wgt-bar { height: 26px; background: #f4f4f7; border-bottom: 1px solid #e3e3e8; display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 10px; cursor: move; user-select: none; font-size: 12px; color: #3a3a42; }
+    .wgt-del { border: none; background: transparent; color: #9a9aa4; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; }
+    .wgt-del:hover { color: #e7505a; }
+    .wgt-body { padding: 8px; font-size: 13px; }
+    .wgt-actions { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+    .wgt-actions button, .kb-add { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+    .wgt-actions button:hover, .kb-add:hover { background: #eee; }
+    .wgt-slider .wgt-body { min-width: 180px; }
+    .sld-top { display: flex; align-items: center; gap: 6px; font-size: 15px; margin-bottom: 6px; }
+    .sld-name { width: 34px; text-align: center; border: 1px solid #d9d9e0; border-radius: 5px; padding: 2px 3px; font-style: italic; font-size: 14px; }
+    .sld-val { font-variant-numeric: tabular-nums; font-weight: 600; }
+    .sld-range { width: 100%; margin: 2px 0; accent-color: #4d7cfe; }
+    .sld-bounds { display: flex; justify-content: space-between; gap: 6px; margin-top: 4px; }
+    .sld-bounds input { width: 60px; border: 1px solid #d9d9e0; border-radius: 5px; padding: 2px 4px; font-size: 12px; }
+    .wgt-table { border-collapse: collapse; }
+    .wgt-table td { border: 1px solid #d9d9e0; min-width: 54px; height: 26px; padding: 2px 6px; outline: none; }
+    .wgt-table td:focus { background: #eef3ff; }
+    .kb-cols { display: flex; gap: 8px; }
+    .kb-col { width: 130px; background: #f6f6f9; border-radius: 8px; padding: 6px; }
+    .kb-coltitle { font-weight: 600; font-size: 12px; margin-bottom: 6px; outline: none; }
+    .kb-card { background: #fff; border: 1px solid #e3e3e8; border-radius: 6px; padding: 4px 6px; margin-bottom: 5px; display: flex; align-items: flex-start; gap: 4px; font-size: 12px; }
+    .kb-card span { flex: 1; outline: none; }
+    .kb-cardel, .kb-mv { border: none; background: transparent; color: #b0b0ba; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+    .kb-mv:hover { color: #4d7cfe; }
+    .kb-mv:disabled { color: #e3e3e8; cursor: default; }
+    .kb-cardel:hover { color: #e7505a; }
+    .kb-add { width: 100%; margin-top: 2px; }
+    .tm-disp { font-size: 34px; font-variant-numeric: tabular-nums; text-align: center; color: #2b2b33; }
+    .wh-canvas { display: block; margin: 0 auto; }
+    .wh-result { text-align: center; font-weight: 600; min-height: 18px; margin-top: 4px; }
+    .wh-opts { width: 100%; margin-top: 6px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 4px 6px; font-size: 12px; resize: vertical; }
+
+    /* Слой аплетов ГеоГебры (DOM поверх холста). */
+    #ggb-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 22; overflow: hidden; }
+    .ggb-item {
+        position: absolute; top: 0; left: 0; transform-origin: top left;
+        pointer-events: auto; background: #fff; border-radius: 8px; overflow: hidden;
+        box-shadow: 0 6px 24px rgba(0,0,0,.16); border: 1px solid #e3e3e8;
+    }
+    .ggb-bar {
+        height: 28px; background: #f4f4f7; border-bottom: 1px solid #e3e3e8;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0 6px 0 10px; cursor: move; user-select: none;
+        font-size: 12px; color: #3a3a42;
+    }
+    .ggb-del {
+        border: none; background: transparent; cursor: pointer; color: #9a9aa4;
+        display: flex; align-items: center; padding: 3px; border-radius: 5px;
+    }
+    .ggb-del:hover { background: #ececf1; color: #e7505a; }
+
+    /* Слой для чужих курсоров. */
+    #cursor-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 25; overflow: hidden; }
+    .remote-cursor {
+        position: absolute; transform: translate(-2px, -2px);
+        font-size: 12px; white-space: nowrap;
+        transition: top .08s linear, left .08s linear;
+    }
+    .remote-cursor .arrow { line-height: 0; display: block; }
+    .remote-cursor .name {
+        display: inline-block; margin-top: -2px; margin-left: 10px;
+        padding: 1px 6px; border-radius: 6px; color: #fff; font-weight: 600;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="board-stage"></div>
+<div id="board-version" title="Версия клиента доски"></div>
+<div id="ggb-layer"></div>
+<div id="widget-layer"></div>
+<div id="cursor-layer"></div>
+
+<style>
+    #frame-exit-btn { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 60; display: inline-flex; align-items: center; gap: 6px; background: #2b2b33; color: #fff; border: none; border-radius: 20px; padding: 7px 14px; font-size: 13px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.22); }
+    #frame-exit-btn[hidden] { display: none; }
+    #frame-exit-btn:hover { background: #3a3a44; }
+    #frame-exit-btn svg { display: block; }
+</style>
+<button id="frame-exit-btn" hidden title="Выйти из окна — вернуть управление доске и показать окно целиком">
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9 4 4M9 5v4H5"/><path d="M15 15l5 5M19 15h-4v4"/></svg>
+    Выйти из окна
+</button>
+<div id="zoom-control">
+    <button id="zoom-out" title="Уменьшить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+    <input id="zoom-percent" type="text" value="100%" title="Масштаб — впишите свой % и нажмите Enter">
+    <button id="zoom-in" title="Увеличить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+</div>
+
+<div id="board-toolbar">
+    <div class="tool tool-group active" data-group="draw" title="Рисование: карандаш, маркер, лазер, ластики, лассо">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/><path d="M14 6l3 3"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout tool-flyout--col" data-flyout="draw">
+            <div class="tool active" data-tool="pen" title="Карандаш (P)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/><path d="M14 6l3 3"/></svg>
+            </div>
+            <div class="tool" data-tool="marker" title="Маркер (выделитель)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17l3 3 11-11-3-3z" fill="currentColor" fill-opacity=".25"/><path d="M5 17l-1 4 4-1"/><path d="M15 5l4 4"/></svg>
+            </div>
+            <div class="tool" data-tool="laser" title="Лазер: гаснущий след (не сохраняется, виден участникам)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" opacity=".7"/></svg>
+            </div>
+            <div class="tool" data-tool="eraser_full" title="Ластик: стирает мазок карандаша/маркера целиком">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h12"/><path d="M15.5 4.5l4 4a2 2 0 0 1 0 2.8L11 20H7l-3-3a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0z"/><path d="M9 9l6 6"/></svg>
+            </div>
+            <div class="tool" data-tool="eraser_fine" title="Точный ластик: стирает часть мазка (радиус настраивается)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h12"/><path d="M15.5 4.5l4 4a2 2 0 0 1 0 2.8L11 20H7l-3-3a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0z"/><circle cx="9" cy="15" r="1.4" fill="currentColor" stroke="none"/></svg>
+            </div>
+            <div class="tool" data-tool="lasso" title="Лассо: обведите объекты произвольным контуром, чтобы выделить">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11c0-4 4-6 8-6s8 2 8 6-4 6-8 6c-2 0-3 .5-3 2a2 2 0 1 1-2-2" stroke-dasharray="3 3"/></svg>
+            </div>
+            <div id="draw-cfg" hidden>
+                <div class="dp-divider"></div>
+                <div class="dp-presets" id="dp-presets"></div>
+            </div>
+        </div>
+    </div>
+    <div class="tool tool-group" data-group="lines" title="Линии: линия, стрелка, разделитель">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="5" y1="19" x2="19" y2="5"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout tool-flyout--col" data-flyout="lines">
+            <div class="tool" data-tool="line" title="Линия (L)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="5" y1="19" x2="19" y2="5"/></svg>
+            </div>
+            <div class="tool" data-tool="arrow" title="Стрелка (прямая, кривая, уступ)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19L19 5"/><path d="M11 5h8v8"/></svg>
+            </div>
+            <div class="tool" data-tool="divider" title="Разделитель: строго горизонтальная или вертикальная линия (толщина и цвет)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12" stroke-width="2.6"/><line x1="6" y1="6" x2="18" y2="6" opacity=".4"/><line x1="6" y1="18" x2="18" y2="18" opacity=".4"/></svg>
+            </div>
+        </div>
+    </div>
+    <div class="tool tool-group" data-group="text" title="Текст: обычный или с формулами">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14"/><path d="M12 5v14"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout tool-flyout--col" data-flyout="text">
+            <div class="tool" data-tool="text_plain" title="Обычный текст (T) — как в Miro, без формул">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14"/><path d="M12 5v14"/></svg>
+            </div>
+            <div class="tool" data-tool="text" title="Текст с формулами — внутри $…$ формулы (LaTeX)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9"/><path d="M8.5 6v12"/><path d="M13.5 10l6 8M19.5 10l-6 8" stroke-width="1.3"/></svg>
+            </div>
+        </div>
+    </div>
+    <div class="tool tool-group" data-group="shapes" title="Фигуры (прямоугольник, эллипс, треугольник, звезда, цилиндр, выноска…)">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="4" width="9" height="7" rx="1"/><path d="M17 4l4 7h-8z"/><circle cx="8" cy="17" r="3.5"/><path d="M14 14h7v6h-7z"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout tool-flyout--sections" data-flyout="shapes">
+            <div class="flyout-section">
+                <div class="flyout-label">Основные</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="rect" title="Прямоугольник (R)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="6" width="16" height="12" rx="1"/></svg>
+                    </div>
+                    <div class="tool" data-tool="ellipse" title="Эллипс (O)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><ellipse cx="12" cy="12" rx="9" ry="6.5"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_rrect" title="Скруглённый прямоугольник">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="6" width="16" height="12" rx="4"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Геометрические</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="sh_tri" title="Треугольник">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 4L21 20H3z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_rtri" title="Прямоугольный треугольник">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 4v16h15z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_para" title="Параллелограмм">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M8 6h13l-5 12H3z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_trap" title="Трапеция">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M8 6h8l4 12H4z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_rhomb" title="Ромб">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 4l8 8-8 8-8-8z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_penta" title="Пятиугольник">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l9 6.5-3.4 10.5H6.4L3 9.5z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_hexa" title="Шестиугольник">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_star" title="Звезда">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3l2.6 5.9 6.4.6-4.8 4.3 1.4 6.3L12 17l-5.6 3.4 1.4-6.3L3 9.5l6.4-.6z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Схемные</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="sh_cyl" title="Цилиндр (база данных)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 6v12a7 3 0 0 0 14 0V6"/><ellipse cx="12" cy="6" rx="7" ry="3"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_cloud" title="Облако">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.4-8 5 5 0 0 1 9.6-1 3.5 3.5 0 0 1 1 6.9z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_cross" title="Крест / плюс">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6z"/></svg>
+                    </div>
+                    <div class="tool" data-tool="sh_barrow" title="Блок-стрелка">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 9h10V5l8 7-8 7v-4H3z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Выноски</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="sh_callout" title="Речевое облако (выноска)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M4 5h16v10H10l-4 4v-4H4z"/></svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="tool tool-group" data-group="math" title="Математика и геометрия (точки, окружности, прямые, углы, окно)">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="4.6" r="1.5"/><path d="M11 5.6L5 20"/><path d="M13 5.6L19 20"/><path d="M8.4 14.5a6 6 0 0 0 7.2 0"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout tool-flyout--sections" data-flyout="math">
+            <div class="flyout-section">
+                <div class="flyout-label">Точки</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="point" title="Точка (с привязкой к окружности/точкам/сетке)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="midpoint" title="Середина / центр масс: кликай точки, Enter — построить (Esc — отмена)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="5" cy="18" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2.4" fill="none"/><line x1="5" y1="18" x2="19" y2="6" stroke-dasharray="2 2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="ratio" title="Деление отрезка в отношении: две точки A,B, затем m:n или число t">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><line x1="4" y1="18" x2="20" y2="6"/><circle cx="4" cy="18" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="13.5" r="2.2" fill="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="isect" title="Точка пересечения: кликнуть по двум фигурам (прямым/окружностям)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="18"/><line x1="4" y1="18" x2="20" y2="6"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Прямые и отрезки</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="segment" title="Отрезок по двум точкам">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><line x1="5" y1="19" x2="19" y2="5"/><circle cx="5" cy="19" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="5" r="2" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="ray" title="Луч (из точки через точку)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="4" y1="20" x2="22" y2="2"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="vector" title="Вектор AB (стрелка от точки к точке, следует за ними)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19L18 6"/><path d="M11 6h7v7"/><circle cx="5" cy="19" r="2" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="gline" title="Прямая по двум точкам (бесконечная)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="2" y1="22" x2="22" y2="2"/><circle cx="8" cy="16" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="8" r="2" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="perp" title="Перпендикуляр: прямая, затем точка">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="3" y1="18" x2="21" y2="18"/><line x1="12" y1="18" x2="12" y2="3"/><path d="M12 14h3v4" stroke-width="1.2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="parallel" title="Параллель: прямая, затем точка">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+                    </div>
+                    <div class="tool" data-tool="perpbis" title="Серединный перпендикуляр (по двум точкам)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="4" y1="16" x2="20" y2="16"/><line x1="12" y1="4" x2="12" y2="22"/><circle cx="4" cy="16" r="1.8" fill="currentColor" stroke="none"/><circle cx="20" cy="16" r="1.8" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Окружности</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="circ_cp" title="Окружность: центр + точка (радиус = расстояние)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="12" r="7"/><circle cx="11" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.8" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="circ_cr" title="Окружность: центр + радиус (число)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><line x1="12" y1="12" x2="19" y2="12"/></svg>
+                    </div>
+                    <div class="tool" data-tool="circ_3" title="Окружность по трём точкам">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="4.5" r="1.8" fill="currentColor" stroke="none"/><circle cx="18.5" cy="15" r="1.8" fill="currentColor" stroke="none"/><circle cx="5.5" cy="15" r="1.8" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="semi" title="Полуокружность на диаметре (две точки)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 16a8 8 0 0 1 16 0"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="4" cy="16" r="1.8" fill="currentColor" stroke="none"/><circle cx="20" cy="16" r="1.8" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="compass" title="Циркуль: радиус = расстояние между двумя точками, центр — третья точка">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="4" r="1.4"/><path d="M11.4 5.3L6 20"/><path d="M12.6 5.3L18 20"/><path d="M8 15a6 6 0 0 0 8 0"/></svg>
+                    </div>
+                    <div class="tool" data-tool="conic" title="Коника по 5 точкам (эллипс/парабола/гипербола — в матокне)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><ellipse cx="12" cy="12" rx="9" ry="5.5" transform="rotate(-22 12 12)"/><circle cx="5" cy="13.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="10.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="9" cy="6.5" r="1.3" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Многоугольники</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="polygon" title="Многоугольник: кликай вершины, замкни по первой точке или Enter (Esc — отмена)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l8 6-3 10H7L4 9z" fill="currentColor" fill-opacity=".12"/></svg>
+                    </div>
+                    <div class="tool" data-tool="regpoly_center" title="Правильный n-угольник: центр + вершина (спросит число сторон)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 4l7 5-2.7 8.5H7.7L5 9z" fill="currentColor" fill-opacity=".10"/><circle cx="12" cy="11.5" r="1.3" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="regpoly_edge" title="Правильный n-угольник: две соседние вершины против часовой (спросит число сторон)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 4l7 5-2.7 8.5H7.7L5 9z" fill="currentColor" fill-opacity=".10"/><circle cx="7.7" cy="17.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="16.3" cy="17.5" r="1.6" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Углы</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="bisector" title="Биссектриса угла (3 точки: A, вершина, C)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 20L20 8"/><path d="M4 20L20 16"/><path d="M4 20L21 12" stroke-dasharray="2 2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="angle" title="Угол с градусами (3 точки). Ровно 90° — покажет знак прямого угла">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 20L20 20"/><path d="M4 20L17 7"/><path d="M11 20a7 7 0 0 0-2-5" stroke-width="1.2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="angle_deg" title="Угол заданной меры: точка-сторона A, вершина V, ввод градусов → строит вторую сторону (A′ = поворот A вокруг V, против часовой)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 20h16"/><path d="M4 20L16 8"/><path d="M4 20a11 11 0 0 1 3.2-6.7" stroke-width="1.3"/><circle cx="12.5" cy="13.2" r="1" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="mark_right" title="Знак прямого угла: A, вершина, B (повторный клик снимает; годится для стереометрии)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16h14"/><path d="M6 14h6M12 14v6"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Измерения</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="measure_len" title="Измерить длину: две точки (в окне — в единицах плоскости, значение живёт при перетаскивании)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="9" width="18" height="6" rx="1"/><path d="M7 9v2.6M11 9v3.4M15 9v2.6M19 9v3.4" stroke-width="1.2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="measure_area" title="Измерить площадь: клик внутрь многоугольника">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M5 6l9-2 6 7-4 9-9-1z"/><path d="M8 9l6 6M8 13l4 3" stroke-width="1"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Преобразования</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="csym" title="Центральная симметрия: выдели объект → кликни центр">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="6" cy="7" r="2"/><circle cx="18" cy="17" r="2" fill="currentColor" fill-opacity=".25"/><line x1="7.6" y1="8.2" x2="16.4" y2="15.8" stroke-dasharray="2 2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="asym" title="Осевая симметрия: выдели объект → кликни ось (прямую)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="3 2"/><path d="M9 8L5 12l4 4z" fill="currentColor" stroke="none"/><path d="M15 8l4 4-4 4z" fill="currentColor" fill-opacity=".25"/></svg>
+                    </div>
+                    <div class="tool" data-tool="rot" title="Поворот: выдели объект → кликни центр → введи угол">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 12a6 6 0 1 1 2 4.5"/><path d="M8 12l-2 4-3-1.5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="trans" title="Параллельный перенос: выдели объект → кликни начало и конец вектора">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h13"/><path d="M12 7l5 5-5 5"/></svg>
+                    </div>
+                    <div class="tool" data-tool="homo" title="Гомотетия: выдели объект → кликни центр → введи коэффициент">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="19" r="1.4" fill="currentColor" stroke="none"/><path d="M5 19L19 5"/><rect x="7" y="13" width="4" height="4"/><rect x="13" y="5" width="6" height="6" fill="currentColor" fill-opacity=".2"/></svg>
+                    </div>
+                    <div class="tool" data-tool="spiral" title="Поворотная гомотетия: центр + угол + коэффициент">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 12c0-2 2-3 3-1s-1 5-4 5-6-4-4-8 8-5 11-1"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Функции и формулы</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="graph" title="Функции и кривые: кликните по окну, затем введите формулу (y = k*x^2) ИЛИ уравнение с двумя переменными (x^2+y^2=9, y^2=x). Незнакомые буквы станут ползунками-параметрами">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20c4 0 5-14 9-14s5 8 9 8"/></svg>
+                    </div>
+                    <div class="tool" data-tool="latex" title="Формула LaTeX (F)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h2l2.4 6 3.6-13h9"/></svg>
+                    </div>
+                    <div class="tool" data-tool="ftangent" title="Касательная к графику: кликните по кривой в нужной точке — построится касательная и её наклон k">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18c3 0 6-12 12-12"/><path d="M2 20l18-9"/><circle cx="11" cy="11" r="1.6" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="farea" title="Площадь под графиком: кликните по кривой дважды (левая и правая границы) — область закрасится и покажет интеграл S">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20c4 0 6-12 10-12s4 6 8 6"/><path d="M7 20V15M11 20V11M15 20V13" opacity="0.55"/><path d="M3 20h18"/></svg>
+                    </div>
+                    <div class="tool" data-tool="fintersect" title="Пересечение графиков: кликните по двум кривым — отметятся точки их пересечения">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5c6 0 12 14 18 14"/><path d="M3 19c6 0 12-14 18-14"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/></svg>
+                    </div>
+                    <div class="tool" data-tool="region" title="Неравенство (область): кликните по графику — закрасится y ≥ f(x). Переключить «выше/ниже» можно в панели «Алгебра окна»">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16c5 0 6-9 10-9s3 5 8 5"/><path d="M3 20h4M6 17v3M9 16v4M12 14v6M15 15v5M18 16v4" opacity="0.55"/></svg>
+                    </div>
+                    <div class="tool" data-tool="regionsys" title="Система неравенств: кликайте по нескольким графикам, затем Enter — закрасится общая область (где выполнены все условия)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7c6 0 8 10 18 4"/><path d="M3 17c6 0 8-10 18-4"/><path d="M8 11.5l3 2.2 3-1.4 3 1" opacity="0.5"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
+                <div class="flyout-label">Плоскость</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="frame" title="Математическое окно (свои оси, зум колесом, панорама перетаскиванием; бесконечные объекты обрезаются границей)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 12h18M12 4v16"/></svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="tool tool-group" data-group="materials" title="Дополнительные материалы (таблица, канбан, таймер, колесо)">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/><rect x="3" y="14" width="7" height="7" rx="1.4"/><rect x="14" y="14" width="7" height="7" rx="1.4"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout" data-flyout="materials">
+            <div class="tool" data-tool="table" title="Таблица">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/></svg>
+            </div>
+            <div class="tool" data-tool="kanban" title="Канбан-доска">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="9.5" y="4" width="5" height="11" rx="1"/><rect x="16" y="4" width="5" height="13" rx="1"/></svg>
+            </div>
+            <div class="tool" data-tool="timer" title="Таймер">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="13" r="8"/><path d="M12 13V9"/><path d="M9 2h6"/></svg>
+            </div>
+            <div class="tool" data-tool="wheel" title="Колесо случайного выбора">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
+            </div>
+            <div class="tool" data-tool="slider" title="Ползунок-параметр (a, k, …): используйте его букву в формуле графика, двигайте — график перестраивается">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 8h18M3 16h18"/><circle cx="9" cy="8" r="2.6" fill="currentColor" stroke="none"/><circle cx="15" cy="16" r="2.6" fill="currentColor" stroke="none"/></svg>
+            </div>
+            <div class="tool" data-tool="sticky" title="Стикер — цветная заметка">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M5 4h14v10l-5 5H5z"/><path d="M19 14h-5v5"/></svg>
+            </div>
+            <div class="tool" data-tool="card" title="Карточка — двусторонняя (вопрос/ответ), переворачивается">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="6" width="14" height="12" rx="1.5"/><path d="M8 10.5l-2 2 2 2" transform="translate(11 0)"/><path d="M7 9h6M7 12h4"/></svg>
+            </div>
+        </div>
+    </div>
+    <div class="tool tool-group" data-group="macros" title="Мои инструменты (свои построения-макросы)">
+        <span class="grp-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l3-3 3 3-3 3z"/><path d="M17 7l-9 9-4 1 1-4 9-9"/></svg></span>
+        <span class="grp-caret"></span>
+        <div class="tool-flyout" data-flyout="macros" style="grid-template-columns: 1fr; min-width: 190px;">
+            <button id="macro-create">+ Создать инструмент</button>
+            <div id="macro-list"></div>
+        </div>
+    </div>
+    <div class="tool" data-tool="select" title="Выделение / перемещение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift — добавить, Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3l7 17 2.5-6.5L20 11z"/></svg>
+    </div>
+    <hr>
+    <div class="tool" data-action="undo" title="Шаг назад (Ctrl+Z)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7L4 12l5 5"/><path d="M4 12h11a5 5 0 0 1 0 10h-1"/></svg>
+    </div>
+    <div class="tool" data-action="redo" title="Шаг вперёд (Ctrl+Shift+Z)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7l5 5-5 5"/><path d="M20 12H9a5 5 0 0 0 0 10h1"/></svg>
+    </div>
+    <hr>
+    <div id="board-style">
+        <button id="color-btn" title="Цвет — палитра (выделено — перекрасить, иначе цвет по умолчанию)"></button>
+        <input type="range" id="stroke-width" min="1" max="24" value="3" title="Толщина">
+    </div>
+    <div id="color-palette" class="cp-hidden">
+        <div class="cp-scope" id="cp-scope">Цвет по умолчанию</div>
+        <div class="cp-grid" id="cp-base"></div>
+        <div class="cp-label">Свои цвета</div>
+        <div class="cp-grid" id="cp-custom"></div>
+        <button class="cp-add" id="cp-add">+ добавить свой</button>
+        <button class="cp-all" id="cp-all">Применить ко всем точкам</button>
+        <input type="color" id="cp-native" value="#3b82f6">
+    </div>
+    <hr>
+    <div class="tool" data-action="clear" title="Очистить всё">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 12h10l1-12"/></svg>
+    </div>
+</div>
+
+<div id="board-topbar">
+    <span class="dot" id="conn-dot" title="Связь"></span>
+    <span>Код: <code>{{ board.code }}</code></span>
+    <button id="copy-code" title="Скопировать ссылку">копировать</button>
+    <span class="tb-sep"></span>
+    <button id="import-btn" title="Импорт картинки или PDF (PDF можно листать и извлекать страницы)">Импорт</button>
+    <button id="hide-selected" title="Скрыть выделенные объекты (то же — клавиша H). Вернуть — кнопкой «Скрытые»">Скрыть</button>
+    <button id="reveal-hidden" title="Показать скрытые объекты (полупрозрачно), чтобы вернуть их. H — скрыть выделенное, Shift+H — этот режим">Скрытые</button>
+    <span class="tb-sep"></span>
+    <button id="present-btn" title="Вести: транслировать свой вид (панораму/зум) участникам">Вести</button>
+    <button id="follow-btn" title="Следовать: подстраивать вид под ведущего">Следовать</button>
+    <button id="viewonly-btn" title="Только просмотр: заблокировать правки у себя (чтобы не задеть чертёж)">Просмотр</button>
+    <span class="tb-sep"></span>
+    <button id="access-btn" title="Доступ: роль по ссылке и роли участников" hidden>Доступ</button>
+    <span id="role-badge" hidden></span>
+    <span id="peers" class="text-muted"></span>
+</div>
+<div id="board-head">
+    <span id="board-title" data-title="{{ board.title }}" title="{{ board.title|default:'Доска' }}">{{ board.title|default:'Доска' }}</span>
+    <button id="board-menu-btn" title="Настройки доски" aria-label="Настройки доски">
+        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+    </button>
+</div>
+<div id="board-menu" hidden>
+    <div class="bm-sec">Вид</div>
+    <div class="bm-label">Фон — рисунок</div>
+    <div class="ap-seg" id="bg-seg">
+        <button data-bg="blank">Пусто</button>
+        <button data-bg="grid">Клетка</button>
+        <button data-bg="dots">Точки</button>
+        <button data-bg="lines">Линейка</button>
+    </div>
+    <div class="bm-label">Фон — цвет полотна</div>
+    <div id="bg-color">
+        <button class="bgdot" data-color="" style="background:#fbfbfd" title="По умолчанию"></button>
+        <button class="bgdot" data-color="#fff7e6" style="background:#fff7e6" title="Кремовый"></button>
+        <button class="bgdot" data-color="#eaf3ff" style="background:#eaf3ff" title="Голубой"></button>
+        <button class="bgdot" data-color="#eafaef" style="background:#eafaef" title="Зелёный"></button>
+        <button class="bgdot" data-color="#fdeef3" style="background:#fdeef3" title="Розовый"></button>
+        <button class="bgdot" data-color="#1f2a33" style="background:#1f2a33" title="Тёмный"></button>
+        <button class="bgdot" data-color="#eff0f4" style="background:#eff0f4" title="Серый"></button>
+        <input type="color" id="bg-color-custom" class="bgpick" title="Свой цвет" value="#ffffff">
+    </div>
+    <div class="bm-label">Фон — цвет рисунка</div>
+    <div id="bg-grid-color">
+        <button class="bgdot" data-color="" style="background:#e2e2ea" title="По умолчанию"></button>
+        <button class="bgdot" data-color="#c7c7d2" style="background:#c7c7d2" title="Серый"></button>
+        <button class="bgdot" data-color="#bcd3f0" style="background:#bcd3f0" title="Голубой"></button>
+        <button class="bgdot" data-color="#cbe6cf" style="background:#cbe6cf" title="Зелёный"></button>
+        <button class="bgdot" data-color="#f0cdd8" style="background:#f0cdd8" title="Розовый"></button>
+        <input type="color" id="bg-grid-color-custom" class="bgpick" title="Свой цвет" value="#c7c7d2">
+    </div>
+    <label class="bm-toggle"><input type="checkbox" id="cursors-toggle" checked> Курсоры участников</label>
+    <label class="bm-toggle"><input type="checkbox" id="guides-toggle" checked> Направляющие (выравнивание)</label>
+    <div class="bm-sep"></div>
+    <button class="bm-item" id="export-pdf-btn">Экспорт в PDF…</button>
+    <button class="bm-item" id="history-btn">История доски…</button>
+    <button class="bm-item danger" id="clear-board-btn">Очистить доску…</button>
+    <div class="bm-sep"></div>
+    <div class="bm-sec">Доска</div>
+    {% if is_owner %}
+    <button class="bm-item" id="rename-board-btn">Переименовать…</button>
+    <button class="bm-item" id="password-board-btn">Пароль доски…</button>
+    <button class="bm-item" id="dup-board-btn">Дублировать доску</button>
+    <button class="bm-item danger" id="delete-board-btn">Удалить доску…</button>
+    {% else %}
+    <button class="bm-item" id="dup-board-btn">Дублировать доску</button>
+    <button class="bm-item danger" id="leave-board-btn">Выйти из доски…</button>
+    {% endif %}
+</div>
+<div id="history-panel" hidden>
+    <div class="bm-head"><span>История правок</span><button id="history-close" title="Закрыть">×</button></div>
+    <div id="history-list"></div>
+    <div class="ap-hint">Последние действия всех участников (сохраняется). Клик по добавлению — показать объект; у удалённого — «Восстановить».</div>
+</div>
+<div id="access-panel" hidden>
+    <div class="ap-title">Все, кто по ссылке</div>
+    <div class="ap-seg" id="ap-default">
+        <button data-role="editor">Редактор</button>
+        <button data-role="viewer">Наблюдатель</button>
+    </div>
+    <div class="ap-hint">Роль по умолчанию для каждого, кому не назначена личная.</div>
+    <div class="ap-title">Участники сейчас</div>
+    <div id="ap-people"></div>
+</div>
+<style>
+    #board-pw-dialog, #pdf-export-dialog { position: fixed; inset: 0; z-index: 3000; background: rgba(20,20,28,.35); display: flex; align-items: center; justify-content: center; }
+    #board-pw-dialog[hidden], #pdf-export-dialog[hidden] { display: none; }
+    .pdf-modes { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 12px; }
+    .pdf-mode { text-align: left; border: 1px solid #d9d9e0; background: #fff; border-radius: 9px; padding: 9px 11px; cursor: pointer; display: block; }
+    .pdf-mode:hover { background: #f5f7ff; border-color: #4d7cfe; }
+    .pdf-mode b { display: block; font-size: 13px; color: #2b2b33; }
+    .pdf-mode span { display: block; font-size: 11px; color: #9a9aa4; margin-top: 2px; }
+    .bpw-card { width: 340px; max-width: 92vw; background: #fff; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,.25); padding: 18px; }
+    .bpw-head { font-size: 16px; font-weight: 600; color: #2b2b33; margin-bottom: 8px; }
+    .bpw-state { font-size: 13px; color: #6b6b76; margin-bottom: 10px; }
+    .bpw-card input { width: 100%; border: 1px solid #d9d9e0; border-radius: 8px; padding: 8px 10px; font-size: 14px; box-sizing: border-box; }
+    .bpw-card input:focus { outline: none; border-color: #4d7cfe; }
+    .bpw-hint { font-size: 12px; color: #9a9aa4; margin: 8px 0 12px; }
+    .bpw-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    .bpw-btn { border: 1px solid #cfd3dc; background: #fff; color: #2b2b33; border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+    .bpw-btn:hover { background: #f2f2f6; }
+    .bpw-btn.primary { background: #4d7cfe; border-color: #4d7cfe; color: #fff; }
+    .bpw-btn.primary:hover { background: #3b6af0; }
+    .bpw-btn.danger { color: #d63333; border-color: #ecc7cc; }
+    .bpw-btn.danger:hover { background: #fdeef0; }
+</style>
+<div id="pdf-export-dialog" hidden>
+    <div class="bpw-card">
+        <div class="bpw-head">Экспорт в PDF</div>
+        <div class="bpw-hint" style="margin:0 0 8px">Как разложить доску по страницам:</div>
+        <div class="pdf-modes">
+            <button class="pdf-mode" data-mode="whole"><b>Вся доска — страницами A4</b><span>крупно, по текущему масштабу; большая доска разобьётся на несколько страниц</span></button>
+            <button class="pdf-mode" data-mode="frames"><b>Каждое матокно — своя страница</b><span>по одной странице на координатное окно</span></button>
+            <button class="pdf-mode" data-mode="selection"><b>Только выделенное</b><span>одна страница из выбранных объектов</span></button>
+        </div>
+        <div class="bpw-actions"><button id="pdf-x-cancel" class="bpw-btn">Отмена</button></div>
+    </div>
+</div>
+<div id="board-pw-dialog" hidden>
+    <div class="bpw-card">
+        <div class="bpw-head">Пароль доски</div>
+        <div class="bpw-state" id="bpw-state">Пароль не задан.</div>
+        <input type="text" id="bpw-input" placeholder="Новый пароль" autocomplete="off" spellcheck="false">
+        <div class="bpw-hint">Пустое поле + «Сохранить» — снять пароль. Пароль спрашивают только у новых участников; кто уже в доске — останется.</div>
+        <div class="bpw-actions">
+            <button id="bpw-cancel" class="bpw-btn">Отмена</button>
+            <button id="bpw-clear" class="bpw-btn danger">Снять пароль</button>
+            <button id="bpw-save" class="bpw-btn primary">Сохранить</button>
+        </div>
+    </div>
+</div>
+<input type="file" id="import-input" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,application/pdf" multiple hidden>
+<div id="pdf-controls" hidden>
+    <button id="pdf-prev" title="Предыдущая страница">‹</button>
+    <span id="pdf-page-info">1 / 1</span>
+    <button id="pdf-next" title="Следующая страница">›</button>
+    <span class="tb-sep"></span>
+    <button id="pdf-extract" title="Извлечь текущую страницу как картинку">Извлечь страницу</button>
+    <button id="pdf-extract-all" title="Извлечь все страницы">Все</button>
+</div>
+
+<div id="eraser-panel" hidden>
+    <span class="er-lbl">Радиус ластика</span>
+    <input type="range" id="eraser-size" min="5" max="80" step="1" value="13">
+    <span id="eraser-size-val">13</span>
+</div>
+
+<div id="dp-pop" hidden>
+    <div class="dp-row" id="dp-thick-row">
+        <span class="dp-lbl" id="dp-thick-lbl">Толщина</span>
+        <input type="range" id="dp-thick" min="1" max="24" value="4">
+        <span class="dp-val" id="dp-thick-val">4</span>
+    </div>
+    <div class="dp-row" id="dp-opacity-row">
+        <span class="dp-lbl">Прозрачность</span>
+        <input type="range" id="dp-opacity" min="10" max="100" value="40">
+        <span class="dp-val" id="dp-opacity-val">40%</span>
+    </div>
+    <div class="dp-colors" id="dp-colors"></div>
+    <input type="color" id="dp-native" value="#3b82f6">
+</div>
+
+<button id="settings-btn" title="Настройки">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+</button>
+<div id="settings-menu" class="sm-hidden">
+    <button data-target="point">Настройка точки</button>
+    <button data-target="segment">Настройка отрезка</button>
+    <button data-target="line">Настройка прямой</button>
+    <button data-target="angle">Настройка угла</button>
+    <button data-target="circle">Настройка окружности</button>
+    <button data-target="polygon">Настройка многоугольника</button>
+</div>
+
+<div id="point-settings" class="settings-panel ps-hidden">
+    <div class="ps-head" id="ps-head">Настройки точки</div>
+    <label class="ps-check" id="ps-onlynew-row"><input type="checkbox" id="ps-onlynew"> Применять только к новым</label>
+    <div class="ps-row"><span class="ps-lbl">Размер</span>
+        <input type="range" id="ps-size-range" class="ps-range" min="1" max="100">
+        <input type="number" id="ps-size-num" class="ps-num" min="1" max="100">
+    </div>
+    <div class="ps-row"><span class="ps-lbl">Форма</span><div class="ps-shapes" id="ps-shape"></div></div>
+    <div class="ps-row"><span class="ps-lbl">Подпись</span><div class="ps-seg" id="ps-labelmode">
+        <button data-mode="name">имя</button><button data-mode="coords">коорд.</button><button data-mode="both">оба</button>
+    </div></div>
+    <div class="ps-row"><span class="ps-lbl">Разм. подписи</span>
+        <input type="range" id="ps-labelsize-range" class="ps-range" min="1" max="100">
+        <input type="number" id="ps-labelsize-num" class="ps-num" min="1" max="100">
+    </div>
+    <label class="ps-check"><input type="checkbox" id="ps-labelhide"> Скрыть подпись</label>
+    <div class="ps-row" id="ps-rename-row"><span class="ps-lbl">Имя</span><input type="text" id="ps-rename" class="ps-input" maxlength="12" placeholder="A"></div>
+    <label class="ps-check"><input type="checkbox" id="ps-lock"> Закрепить (нельзя двигать)</label>
+    <label class="ps-check"><input type="checkbox" id="ps-snap"> Привязка к сетке</label>
+    <div class="ps-bind" id="ps-bind"></div>
+</div>
+
+<div id="figure-settings" class="settings-panel ps-hidden">
+    <div class="ps-head" id="fs-head">Настройки прямой</div>
+    <label class="ps-check" id="fs-onlynew-row"><input type="checkbox" id="fs-onlynew"> Применять только к новым</label>
+    <div class="ps-row"><span class="ps-lbl">Цвет</span><div class="cp-grid" id="fs-colors"></div></div>
+    <div class="ps-row"><span class="ps-lbl">Толщина</span>
+        <input type="range" id="fs-width-range" class="ps-range" min="1" max="16">
+        <input type="number" id="fs-width-num" class="ps-num" min="1" max="16">
+    </div>
+    <div class="ps-row"><span class="ps-lbl">Стиль</span><div class="ps-seg" id="fs-style">
+        <button data-style="solid">сплошная</button><button data-style="dashed">пунктир</button><button data-style="dotted">точки</button>
+    </div></div>
+    <div class="ps-row" id="fs-chevrons-row"><span class="ps-lbl">Шевроны</span><div class="ps-seg" id="fs-chevrons">
+        <button data-n="0">нет</button><button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button>
+    </div></div>
+    <div class="ps-row" id="fs-ticks-row"><span class="ps-lbl">Засечки равенства</span><div class="ps-seg" id="fs-ticks">
+        <button data-n="0">нет</button><button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button>
+    </div></div>
+    <label class="ps-check" id="fs-length-row"><input type="checkbox" id="fs-length"> Показывать длину</label>
+    <div class="ps-row" id="fs-opacity-row"><span class="ps-lbl">Прозрачность</span>
+        <input type="range" id="fs-opacity-range" class="ps-range" min="0" max="100">
+        <input type="number" id="fs-opacity-num" class="ps-num" min="0" max="100">
+    </div>
+    <div class="ps-row" id="fs-arcs-row"><span class="ps-lbl">Дуги</span><div class="ps-seg" id="fs-arcs">
+        <button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button>
+    </div></div>
+    <label class="ps-check" id="fs-degree-row"><input type="checkbox" id="fs-degree"> Показывать градусы</label>
+</div>
+
+<!-- Всплывающая горизонтальная панель у выделенной линии/стрелки. -->
+<div id="conn-panel" class="conn-panel ps-hidden">
+    <div class="cn-bar">
+        <button type="button" class="cn-tool" id="cn-color-btn" title="Цвет"><span class="cn-dot" id="cn-color-dot"></span></button>
+        <button type="button" class="cn-tool" id="cn-type-btn" title="Тип и толщина">
+            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M3 18 C 8 5, 16 5, 21 18"/></svg>
+        </button>
+        <button type="button" class="cn-tool cn-capbtn" id="cn-start-btn" title="Начало"></button>
+        <button type="button" class="cn-tool cn-capbtn" id="cn-end-btn" title="Конец"></button>
+    </div>
+    <div class="cn-pop ps-hidden" id="cn-color-pop"><div class="cp-grid" id="cn-colors"></div></div>
+    <div class="cn-pop ps-hidden" id="cn-type-pop">
+        <div class="cn-seg" id="cn-shape">
+            <button data-shape="curve">кривая</button><button data-shape="elbow">уступ</button>
+        </div>
+        <button type="button" id="cn-straighten" class="cn-flat">Выпрямить</button>
+        <div class="cn-wrow"><span class="cn-wlbl">Толщина</span>
+            <input type="range" id="cn-width-range" class="cn-range" min="1" max="24">
+            <input type="number" id="cn-width-num" class="cn-num" min="1" max="24">
+        </div>
+    </div>
+    <div class="cn-pop ps-hidden cn-cappop" id="cn-start-pop"></div>
+    <div class="cn-pop ps-hidden cn-cappop" id="cn-end-pop"></div>
+</div>
+
+<!-- Всплывающая горизонтальная панель у выделённой фигуры (прямоугольник/эллипс/фигура). -->
+<div id="shape-panel" class="conn-panel ps-hidden">
+    <div class="cn-bar">
+        <button type="button" class="cn-tool" id="sp-border-btn" title="Граница: цвет и толщина">
+            <svg viewBox="0 0 24 24" class="cn-ic"><rect x="4" y="4" width="16" height="16" rx="2.5"/></svg>
+        </button>
+        <button type="button" class="cn-tool" id="sp-fill-btn" title="Заливка: цвет и прозрачность">
+            <svg viewBox="0 0 24 24" class="cn-ic"><rect x="4" y="4" width="16" height="16" rx="2.5" fill="currentColor" fill-opacity=".28" stroke="none"/><rect x="4" y="4" width="16" height="16" rx="2.5"/></svg>
+            <span class="cn-dot" id="sp-fill-dot"></span>
+        </button>
+        <button type="button" class="cn-tool" id="sp-text-btn" title="Текст внутри фигуры (или двойной клик по фигуре)">
+            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M5 6h14"/><path d="M12 6v12"/></svg>
+        </button>
+    </div>
+    <div class="cn-pop ps-hidden" id="sp-border-pop">
+        <div class="cp-grid" id="sp-border-colors"></div>
+        <div class="cn-wrow"><span class="cn-wlbl">Толщина</span>
+            <input type="range" id="sp-border-range" class="cn-range" min="0" max="24">
+            <input type="number" id="sp-border-num" class="cn-num" min="0" max="24">
+        </div>
+    </div>
+    <div class="cn-pop ps-hidden" id="sp-fill-pop">
+        <div class="cp-grid" id="sp-fill-colors"></div>
+        <div class="cn-wrow"><span class="cn-wlbl">Прозрачность</span>
+            <input type="range" id="sp-fill-opacity" class="cn-range" min="0" max="100">
+            <span class="cn-num sp-opval" id="sp-fill-opacity-val">20%</span>
+        </div>
+    </div>
+</div>
+
+<div id="latex-editor" hidden>
+    <div id="le-preview"></div>
+    <input type="text" id="le-input" placeholder="\frac{a}{b},  x^{2},  \int_0^1 x\,dx">
+    <div class="le-actions">
+        <button id="le-cancel" class="btn btn-sm btn-outline-secondary">Отмена</button>
+        <button id="le-insert" class="btn btn-sm btn-primary">Вставить</button>
+    </div>
+    <div class="le-hint">Enter — вставить, Esc — отмена</div>
+</div>
+
+<div id="text-editor" hidden>
+    <div id="te-panel">
+    <div id="te-bar">
+        <select id="te-font" title="Шрифт"></select>
+        <input id="te-size" type="number" min="8" max="200" title="Размер (кегль)">
+        <span class="te-sep"></span>
+        <button type="button" class="te-b" data-cmd="bold" title="Жирный"><b>Ж</b></button>
+        <button type="button" class="te-b" data-cmd="italic" title="Курсив"><i>К</i></button>
+        <button type="button" class="te-b" data-cmd="underline" title="Подчёркнутый"><span style="text-decoration:underline">Ч</span></button>
+        <button type="button" class="te-b" data-cmd="strikeThrough" title="Зачёркнутый"><span style="text-decoration:line-through">З</span></button>
+        <span class="te-sep"></span>
+        <button type="button" class="te-b" id="te-color-btn" title="Цвет текста"><span class="te-a">A</span><span class="te-cbar" id="te-color-dot"></span></button>
+        <button type="button" class="te-b" id="te-hilite-btn" title="Фон за текстом"><span class="te-a" style="background:#ffe08a">A</span></button>
+        <span class="te-sep"></span>
+        <button type="button" class="te-b" data-cmd="justifyLeft" title="По левому краю"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h14"/></svg></button>
+        <button type="button" class="te-b" data-cmd="justifyCenter" title="По центру"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M5 18h14"/></svg></button>
+        <button type="button" class="te-b" data-cmd="justifyRight" title="По правому краю"><svg viewBox="0 0 24 24"><path d="M4 6h16M10 12h10M6 18h14"/></svg></button>
+        <span class="te-sep"></span>
+        <button type="button" class="te-b" data-cmd="insertUnorderedList" title="Маркированный список"><svg viewBox="0 0 24 24"><circle cx="5" cy="7" r="1.4" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="5" cy="17" r="1.4" fill="currentColor" stroke="none"/><path d="M9 7h11M9 12h11M9 17h11"/></svg></button>
+        <button type="button" class="te-b" data-cmd="insertOrderedList" title="Нумерованный список"><svg viewBox="0 0 24 24"><path d="M9 7h11M9 12h11M9 17h11"/><text x="2.5" y="9" font-size="7" fill="currentColor" stroke="none">1</text><text x="2.5" y="14.5" font-size="7" fill="currentColor" stroke="none">2</text><text x="2.5" y="20" font-size="7" fill="currentColor" stroke="none">3</text></svg></button>
+        <span class="te-sep"></span>
+        <button type="button" class="te-b" id="te-boxbg-btn" title="Фон окна"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9h16" opacity=".5"/></svg></button>
+        <span class="te-grow"></span>
+        <button type="button" id="te-cancel" title="Отмена (Esc)">Отмена</button>
+        <button type="button" id="te-insert" title="Готово (Ctrl+Enter)">Готово</button>
+    </div>
+    <div id="te-edit" contenteditable="true" spellcheck="false" data-placeholder="Текст. Формулы — внутри $…$"></div>
+    <div id="te-preview-wrap">
+        <div id="te-preview-label">Предпросмотр</div>
+        <div id="te-preview"></div>
+    </div>
+    <div class="te-hint">Формулы — внутри $…$. Ссылки распознаются. Ctrl+Enter — готово, Esc — отмена</div>
+    <div class="te-pop ps-hidden" id="te-color-pop"><div class="cp-grid" id="te-color-grid"></div></div>
+    <div class="te-pop ps-hidden" id="te-hilite-pop"><div class="cp-grid" id="te-hilite-grid"></div></div>
+    <div class="te-pop ps-hidden" id="te-boxbg-pop"><div class="cp-grid" id="te-boxbg-grid"></div></div>
+    </div>
+</div>
+
+<div id="tbox-bar" class="ps-hidden">
+    <select id="tb-font" title="Шрифт"></select>
+    <input id="tb-size" type="number" min="8" max="200" title="Размер (кегль)">
+    <span class="te-sep"></span>
+    <button type="button" class="te-b" data-cmd="bold" title="Жирный"><b>Ж</b></button>
+    <button type="button" class="te-b" data-cmd="italic" title="Курсив"><i>К</i></button>
+    <button type="button" class="te-b" data-cmd="underline" title="Подчёркнутый"><span style="text-decoration:underline">Ч</span></button>
+    <button type="button" class="te-b" data-cmd="strikeThrough" title="Зачёркнутый"><span style="text-decoration:line-through">З</span></button>
+    <span class="te-sep"></span>
+    <button type="button" class="te-b" id="tb-color-btn" title="Цвет текста"><span class="te-a">A</span><span class="te-cbar" id="tb-color-dot"></span></button>
+    <button type="button" class="te-b" id="tb-hilite-btn" title="Фон за текстом"><span class="te-a" style="background:#ffe08a">A</span></button>
+    <span class="te-sep"></span>
+    <button type="button" class="te-b" data-cmd="justifyLeft" title="По левому краю"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h14"/></svg></button>
+    <button type="button" class="te-b" data-cmd="justifyCenter" title="По центру"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M5 18h14"/></svg></button>
+    <button type="button" class="te-b" data-cmd="justifyRight" title="По правому краю"><svg viewBox="0 0 24 24"><path d="M4 6h16M10 12h10M6 18h14"/></svg></button>
+    <span class="te-sep"></span>
+    <button type="button" class="te-b" data-cmd="insertUnorderedList" title="Маркированный список"><svg viewBox="0 0 24 24"><circle cx="5" cy="7" r="1.4" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="5" cy="17" r="1.4" fill="currentColor" stroke="none"/><path d="M9 7h11M9 12h11M9 17h11"/></svg></button>
+    <button type="button" class="te-b" data-cmd="insertOrderedList" title="Нумерованный список"><svg viewBox="0 0 24 24"><path d="M9 7h11M9 12h11M9 17h11"/><text x="2.5" y="9" font-size="7" fill="currentColor" stroke="none">1</text><text x="2.5" y="14.5" font-size="7" fill="currentColor" stroke="none">2</text><text x="2.5" y="20" font-size="7" fill="currentColor" stroke="none">3</text></svg></button>
+    <span class="te-sep"></span>
+    <button type="button" class="te-b" id="tb-boxbg-btn" title="Фон окна"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9h16" opacity=".5"/></svg></button>
+    <div class="te-pop ps-hidden" id="tb-color-pop"><div class="cp-grid" id="tb-color-grid"></div></div>
+    <div class="te-pop ps-hidden" id="tb-hilite-pop"><div class="cp-grid" id="tb-hilite-grid"></div></div>
+    <div class="te-pop ps-hidden" id="tb-boxbg-pop"><div class="cp-grid" id="tb-boxbg-grid"></div></div>
+</div>
+
+<div id="func-editor" hidden>
+    <div class="fe-title">Алгебра окна</div>
+    <div id="fe-bg">
+        <button data-bg="grid" title="Сетка (клетка)">Сетка</button>
+        <button data-bg="axes" title="Оси и подписи делений">Оси</button>
+        <button data-bg="dots" title="Точки вместо линий сетки">Точки</button>
+    </div>
+    <div id="fe-bgcolor">
+        <span class="bgc-lbl">Цвет</span>
+        <button class="bgdot" data-color="#ffffff" style="background:#ffffff" title="Белый"></button>
+        <button class="bgdot" data-color="#fff7e6" style="background:#fff7e6" title="Кремовый"></button>
+        <button class="bgdot" data-color="#eaf3ff" style="background:#eaf3ff" title="Голубой"></button>
+        <button class="bgdot" data-color="#eafaef" style="background:#eafaef" title="Зелёный"></button>
+        <button class="bgdot" data-color="#fdeef3" style="background:#fdeef3" title="Розовый"></button>
+        <button class="bgdot" data-color="#fdf7e3" style="background:#fdf7e3" title="Жёлтый"></button>
+        <button class="bgdot" data-color="#eff0f4" style="background:#eff0f4" title="Серый"></button>
+        <input type="color" id="fe-bgcolor-custom" class="bgpick" title="Свой цвет" value="#ffffff">
+    </div>
+    <div id="fe-gridcolor">
+        <span class="bgc-lbl">Рисунок</span>
+        <button class="bgdot" data-color="" style="background:#e4e6ee" title="По умолчанию"></button>
+        <button class="bgdot" data-color="#c7c7d2" style="background:#c7c7d2" title="Серый"></button>
+        <button class="bgdot" data-color="#bcd3f0" style="background:#bcd3f0" title="Голубой"></button>
+        <button class="bgdot" data-color="#cbe6cf" style="background:#cbe6cf" title="Зелёный"></button>
+        <button class="bgdot" data-color="#f0cdd8" style="background:#f0cdd8" title="Розовый"></button>
+        <input type="color" id="fe-gridcolor-custom" class="bgpick" title="Свой цвет" value="#c7c7d2">
+    </div>
+    <div id="fe-list"></div>
+    <div class="fe-row">
+        <input type="text" id="fe-input" placeholder="y=x^2   ·   A=(2;3)   ·   Line(A,B)" autocomplete="off" title="Формулы: y=x^2 · x^2+y^2=9 · c: x^2+y^2=9&#10;Точки: A=(2;3) · (2;3) · Point(2;3)&#10;Построения: Line(A,B) · Segment(A,B) · Ray(A,B) · Vector(A,B)&#10;Circle(A,B) или Circle(A,3) · Midpoint(A,B) · Polygon(A,B,C)&#10;Семейство точек: Sequence((k; k^2), k, -3, 3, 1)&#10;(имена команд можно по-русски: Прямая, Окружность, Середина, Семейство…)">
+        <button id="fe-add" title="Добавить">+</button>
+    </div>
+</div>
+
+<div id="storyboard" hidden>
+    <button id="sb-cap" title="Снять кадр (зафиксировать текущее состояние окна)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.2"/></svg>
+    </button>
+    <div id="sb-strip"></div>
+</div>
+
+<div id="sb-preview" hidden>
+    <div id="sb-pv-bar">
+        <button id="sb-pv-prev" title="Предыдущий кадр">‹</button>
+        <span id="sb-pv-idx">1 / 1</span>
+        <button id="sb-pv-next" title="Следующий кадр">›</button>
+        <input type="text" id="sb-pv-cap" placeholder="подпись кадра" maxlength="60">
+        <button id="sb-pv-restore" title="Загрузить этот кадр в окно">Вернуть</button>
+        <button id="sb-pv-update" title="Перезаписать кадр текущим состоянием окна">Обновить</button>
+        <button id="sb-pv-close" title="Закрыть просмотр">×</button>
+    </div>
+    <img id="sb-pv-img" alt="кадр">
+</div>
+
+{{ board.code|json_script:"board-code" }}
+<script>
+window.BOARD_CONFIG = {
+    code: JSON.parse(document.getElementById('board-code').textContent),
+    wsScheme: (location.protocol === 'https:') ? 'wss' : 'ws',
+};
+</script>
+{% endblock %}
+
+{% block extra_js %}
+<!-- Konva: движок холста (vanilla, через CDN jsdelivr — зеркало npm). -->
+<script src="https://cdn.jsdelivr.net/npm/konva@9.3.16/konva.min.js"></script>
+<!-- pdf.js: просмотр и извлечение страниц PDF. -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="{% static 'board/board.js' %}?v=20260614z55"></script>
+<script>
+(function () {
+    const code = "{{ board.code }}";
+    function csrf() { const m = document.cookie.match(/csrftoken=([^;]+)/); return m ? m[1] : ''; }
+    function post(url, extra) {
+        const fd = new FormData(); fd.append('csrfmiddlewaretoken', csrf());
+        if (extra) for (const k in extra) fd.append(k, extra[k]);
+        return fetch(url, { method: 'POST', body: fd }).then(r => r.json().catch(() => ({ error: 'Ошибка сервера' })));
+    }
+    function closeMenu() { const m = document.getElementById('board-menu'); if (m) m.hidden = true; }
+    // Инлайн-переименование прямо в заголовке доски (без всплывающего окна).
+    function startTitleEdit() {
+        const el = document.getElementById('board-title'); if (!el) return;
+        closeMenu();
+        const real = (el.dataset.title != null) ? el.dataset.title : el.textContent.trim();
+        el.textContent = real;
+        el.setAttribute('contenteditable', 'true'); el.classList.add('editing'); el.focus();
+        const range = document.createRange(); range.selectNodeContents(el);
+        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        let done = false;
+        function finish(save) {
+            if (done) return; done = true;
+            el.setAttribute('contenteditable', 'false'); el.classList.remove('editing');
+            el.removeEventListener('keydown', onKey); el.removeEventListener('blur', onBlur);
+            if (!save) { el.textContent = real || 'Доска'; return; }
+            const val = (el.textContent || '').trim();
+            post('/board/' + code + '/rename/', { title: val }).then(r => {
+                if (r.ok) { el.dataset.title = r.title; el.textContent = r.title || 'Доска'; }
+                else { el.textContent = real || 'Доска'; alert(r.error || 'Не удалось'); }
+            });
+        }
+        function onKey(e) { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); finish(false); } }
+        function onBlur() { finish(true); }
+        el.addEventListener('keydown', onKey); el.addEventListener('blur', onBlur);
+    }
+    const rb = document.getElementById('rename-board-btn');
+    if (rb) rb.addEventListener('click', startTitleEdit);
+    { const ttl = document.getElementById('board-title'); if (ttl && {{ is_owner|yesno:"true,false" }}) { ttl.title = 'Двойной клик — переименовать'; ttl.addEventListener('dblclick', startTitleEdit); } }
+    const db = document.getElementById('dup-board-btn');
+    if (db) db.addEventListener('click', () => {
+        db.disabled = true;
+        post('/board/' + code + '/duplicate/').then(r => { db.disabled = false; if (r.ok) window.open('/board/' + r.code + '/', '_blank'); else alert(r.error || 'Не удалось'); });
+    });
+    const xb = document.getElementById('delete-board-btn');
+    if (xb) xb.addEventListener('click', () => {
+        if (!confirm('Удалить доску навсегда? Это действие необратимо.')) return;
+        post('/board/' + code + '/delete/').then(r => { if (r.ok) location.href = '/board/'; else alert(r.error || 'Не удалось'); });
+    });
+    const lb = document.getElementById('leave-board-btn');
+    if (lb) lb.addEventListener('click', () => {
+        if (!confirm('Выйти из доски? Она пропадёт из вашего списка (у владельца останется).')) return;
+        post('/board/' + code + '/leave/').then(r => { if (r.ok) location.href = '/board/'; else alert(r.error || 'Не удалось'); });
+    });
+
+    // Пароль доски (владелец): открыть диалог, задать/сменить/снять.
+    let pwEnabled = {{ password_enabled|yesno:"true,false" }};
+    const pwDlg = document.getElementById('board-pw-dialog');
+    const pwState = document.getElementById('bpw-state');
+    const pwInput = document.getElementById('bpw-input');
+    function pwRefreshState() { if (pwState) pwState.textContent = pwEnabled ? 'Пароль установлен. Введите новый, чтобы сменить, или снимите.' : 'Пароль не задан — доска открыта по ссылке.'; }
+    function openPwDialog() { closeMenu(); if (!pwDlg) return; pwInput.value = ''; pwRefreshState(); pwDlg.hidden = false; setTimeout(() => { try { pwInput.focus(); } catch (e) {} }, 30); }
+    function closePwDialog() { if (pwDlg) pwDlg.hidden = true; }
+    function savePw(raw) {
+        post('/board/' + code + '/password/', { password: raw }).then(r => {
+            if (r.ok) { pwEnabled = !!r.enabled; closePwDialog(); }
+            else alert(r.error || 'Не удалось');
+        });
+    }
+    const pwb = document.getElementById('password-board-btn');
+    if (pwb) pwb.addEventListener('click', openPwDialog);
+    const pwCancel = document.getElementById('bpw-cancel');
+    if (pwCancel) pwCancel.addEventListener('click', closePwDialog);
+    const pwClear = document.getElementById('bpw-clear');
+    if (pwClear) pwClear.addEventListener('click', () => savePw(''));
+    const pwSave = document.getElementById('bpw-save');
+    if (pwSave) pwSave.addEventListener('click', () => savePw((pwInput.value || '').trim()));
+    if (pwDlg) {
+        pwDlg.addEventListener('click', (e) => { if (e.target === pwDlg) closePwDialog(); });
+        pwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); savePw((pwInput.value || '').trim()); } else if (e.key === 'Escape') { e.preventDefault(); closePwDialog(); } });
+    }
+})();
+</script>
+{% endblock %}

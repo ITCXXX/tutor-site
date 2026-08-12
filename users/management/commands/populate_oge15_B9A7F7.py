@@ -4,12 +4,12 @@
 from django.core.management.base import BaseCommand
 from django.db.models import Max
 from users.models import Course, Module, Lesson, TaskGroup, GroupSubQuestion
+from ._oge15_bumaga_svg import BUMAGA_SVG
 
 
 GID = "B9A7F7"
 TITLE = "B9A7F7 · Форматы листов бумаги (A0–A6)"
 LESSON_TITLE = "Форматы листов бумаги"
-IMG_PATH = "/media/oge15/oge15_B9A7F7.png"
 
 
 CONTEXT_HTML = (
@@ -19,8 +19,7 @@ CONTEXT_HTML = (
     "меньшей стороне, получатся два одинаковых листа формата А1. "
     "Если лист А1 разрезать пополам таким же образом, получатся два листа "
     "формата А2 и т. д.</p>"
-    f'<img src="{IMG_PATH}" alt="Форматы листов бумаги А0–А5" '
-    f'style="max-width:340px;display:block;margin:0.8em 0;">'
+    + BUMAGA_SVG +
     "<p>Отношение большей стороны к меньшей стороне листа каждого формата "
     "одно и то же, поэтому листы всех форматов подобны. Это нужно, чтобы "
     "пропорции текста и его расположение на листе сохранялись при изменении "

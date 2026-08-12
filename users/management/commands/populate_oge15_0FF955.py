@@ -4,12 +4,12 @@
 from django.core.management.base import BaseCommand
 from django.db.models import Max
 from users.models import Course, Module, Lesson, TaskGroup, GroupSubQuestion
+from ._oge15_shiny import TIRE_SVG
 
 
 LESSON_TITLE = "Шины"
 GROUP_TITLE = "0FF955 · Размеры шин 225/55 R16"
 FIPI_CTX_ID = "0FF955"
-IMG_PATH = "/media/oge15/oge15_47E80B.png"
 
 
 CONTEXT_HTML = ("""
@@ -25,11 +25,10 @@ CONTEXT_HTML = ("""
 <p>За буквой <b>R</b> следует диаметр диска <i>d</i> в дюймах (в одном дюйме
 25,4 мм). Общий диаметр колеса <i>D</i> можно найти, зная диаметр диска
 и высоту боковины.</p>
-<img src="__IMG__" alt="Шины: маркировка и размеры"
-     style="max-width:560px;display:block;margin:0.8em 0;">
+__SVG__
 <p>Завод производит легковые автомобили определённой модели и устанавливает
 на них колёса с шинами <b>225/55 R16</b>.</p>
-""").strip().replace("__IMG__", IMG_PATH)
+""").strip().replace("__SVG__", TIRE_SVG)
 
 
 T1_TABLE_HTML = """

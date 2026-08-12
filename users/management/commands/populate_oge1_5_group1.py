@@ -3,13 +3,13 @@
 
 from django.core.management.base import BaseCommand
 from users.models import Course, Module, Lesson, TaskGroup, GroupSubQuestion
+from ._oge15_dorogi2_svg import DOROGI2_SVG
 
 
 LESSON_TITLE = "Сложные дороги"
 GROUP_TITLE = "B64540 · Антоновка → Богданово"
 FIPI_GROUP_ID = "B64540"
 FIPI_CTX_ID = "0420D8E1695786E54006DFC4A57D76CB"
-IMG_PATH = "/media/oge15/slozhnye_dorogi_ctx.png"
 
 
 CONTEXT_HTML = """
@@ -29,14 +29,13 @@ CONTEXT_HTML = """
 по просёлочной дороге мимо конюшни от Егорки до <b>Жилино</b> и по шоссе
 от Жилино до Богданово.</p>
 <p>Шоссе и просёлочные дороги образуют прямоугольные треугольники.</p>
-<img src="__IMG_PATH__" alt="План сельской местности"
-     style="max-width:480px;display:block;margin:0.8em auto;">
+__PLAN__
 <p>По шоссе Таня с дедушкой едут со скоростью 50 км/ч, а по просёлочным
 дорогам — со скоростью 30 км/ч. Расстояние от Антоновки до Доломино равно
 12 км, от Доломино до Егорки — 4 км, от Егорки до Ванютино — 12 км,
 от Горюново до Ванютино — 15 км, от Ванютино до Жилино — 9 км, а от
 Жилино до Богданово — 12 км.</p>
-""".strip().replace("__IMG_PATH__", IMG_PATH)
+""".strip().replace("__PLAN__", DOROGI2_SVG)
 
 
 def _t1_table(villages):

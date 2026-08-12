@@ -6,6 +6,7 @@ from django.conf.urls.static import static
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('games/', include('games.urls', namespace='games')),
+    path('board/', include('board.urls', namespace='board')),
     path('', include('users.urls')),  # Подключаем ВСЕ маршруты из приложения users
 ]
 

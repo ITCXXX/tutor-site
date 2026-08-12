@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>План дачного участка — макеты v3 (плитка)</title>
+<style>
+  body {
+    font-family: Cambria, Georgia, serif;
+    background: #f5f5f5;
+    color: #1f1f1f;
+    padding: 30px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3rem; margin: 1.8rem 0 1.2rem; }
+  h2 { font-size: 1rem; margin: 0 0 .8rem; }
+  .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: .5rem;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    margin-bottom: 22px;
+    text-align: center;
+  }
+  .card p { color: #6b7280; font-size: .9rem; margin-top: .7rem; }
+  svg { display: block; margin: 0 auto; background: #fff; max-width: 100%; height: auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+  }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Плитка — 4 варианта (дорожка 2×4 клетки)</h1>
+<div class="grid">
+  <div class="card">
+    <h2>А — светло-серая квадратная (15→13 пикс, зазор 2)</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180" width="240" height="180" id="tile1"></svg>
+    <p>Половина клетки = 15 пикс. Плитка 13×13, зазор 2 пикс. Заливка #b8b8b8.</p>
+  </div>
+  <div class="card">
+    <h2>Б — тёмно-серая квадратная (более контрастно)</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180" width="240" height="180" id="tile2"></svg>
+    <p>Та же геометрия, заливка #6b6b6b. Контрастнее на белом фоне.</p>
+  </div>
+  <div class="card">
+    <h2>В — чёрная квадратная</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180" width="240" height="180" id="tile3"></svg>
+    <p>Заливка #1a1a1a. Максимальный контраст.</p>
+  </div>
+  <div class="card">
+    <h2>Г — кирпичная вразбежку (0.5 × 1 клетки, шахматно)</h2>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180" width="240" height="180" id="tile4"></svg>
+    <p>Прямоугольная плитка размером 1 × 0.5 клетки (28×13 пикс), уложена «вразбежку» в шахматном порядке. Заливка #888.</p>
+  </div>
+</div>
+
+<h1>Сборный пример (вариант Б — тёмно-серая квадратная)</h1>
+<div class="card">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 320" width="380" height="320" id="composite"></svg>
+  <p>Дорожка из плитки от ворот к дому, ширина 2 клетки.</p>
+</div>
+
+<script>
+const CELL = 30;
+const OFFSET = 10;
+
+function el(tag, attrs = {}, text) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function drawGrid(svgId, cols, rows) {
+  const svg = document.getElementById(svgId);
+  for (let i = 0; i <= cols; i++) {
+    svg.appendChild(el('line', {
+      x1: OFFSET + i * CELL, y1: OFFSET,
+      x2: OFFSET + i * CELL, y2: OFFSET + rows * CELL,
+      stroke: '#d0d0d0', 'stroke-width': 0.7,
+    }));
+  }
+  for (let i = 0; i <= rows; i++) {
+    svg.appendChild(el('line', {
+      x1: OFFSET,                 y1: OFFSET + i * CELL,
+      x2: OFFSET + cols * CELL,   y2: OFFSET + i * CELL,
+      stroke: '#d0d0d0', 'stroke-width': 0.7,
+    }));
+  }
+  return svg;
+}
+
+function px(c) { return OFFSET + c * CELL; }
+function py(c) { return OFFSET + c * CELL; }
+
+// =================================================
+//   Раскладка плитки внутри прямоугольной зоны (cx,cy) cols×rows
+//   pattern: 'square' (0.5×0.5) | 'brick' (1×0.5 шахматно)
+// =================================================
+function layTiles(svg, cx, cy, cols, rows, color, pattern = 'square', gap = 2) {
+  if (pattern === 'square') {
+    const tileSize = CELL / 2;                   // 15
+    const draw = tileSize - gap;                 // 13
+    for (let i = 0; i < cols * 2; i++) {
+      for (let j = 0; j < rows * 2; j++) {
+        svg.appendChild(el('rect', {
+          x: px(cx) + i * tileSize + gap / 2,
+          y: py(cy) + j * tileSize + gap / 2,
+          width: draw, height: draw,
+          fill: color,
+        }));
+      }
+    }
+  } else if (pattern === 'brick') {
+    const rowH = CELL / 2;                       // 15
+    const tileW = CELL;                          // 30 (полная клетка)
+    const drawH = rowH - gap;                    // 13
+    const drawW = tileW - gap;                   // 28
+    for (let j = 0; j < rows * 2; j++) {
+      // Сдвиг каждого второго ряда на половину плитки
+      const offset = (j % 2) * (tileW / 2);
+      for (let i = -1; i <= cols; i++) {
+        const xStart = px(cx) + i * tileW + offset + gap / 2;
+        const xEnd = xStart + drawW;
+        const xMin = px(cx);
+        const xMax = px(cx + cols);
+        // Клипуем по границам дорожки
+        const x1 = Math.max(xStart, xMin);
+        const x2 = Math.min(xEnd, xMax);
+        if (x2 - x1 < 2) continue;
+        svg.appendChild(el('rect', {
+          x: x1,
+          y: py(cy) + j * rowH + gap / 2,
+          width: x2 - x1, height: drawH,
+          fill: color,
+        }));
+      }
+    }
+  }
+}
+
+// =================================================
+//   Образцы плитки на пустых дорожках
+// =================================================
+function showcase(svgId, color, pattern) {
+  const svg = drawGrid(svgId, 7, 5);   // 7×5 клеток фона
+  // Дорожка 4×2 в центре (x=1.5..5.5, y=1.5..3.5)
+  layTiles(svg, 1.5, 1.5, 4, 2, color, pattern);
+}
+
+showcase('tile1', '#b8b8b8', 'square');
+showcase('tile2', '#6b6b6b', 'square');
+showcase('tile3', '#1a1a1a', 'square');
+showcase('tile4', '#888888', 'brick');
+
+// =================================================
+//   Сборный пример
+// =================================================
+(function() {
+  const COLS = 12, ROWS = 10;
+  const W = COLS * CELL, H = ROWS * CELL;
+  const svg = document.getElementById('composite');
+  // Сетка
+  for (let i = 0; i <= COLS; i++) {
+    svg.appendChild(el('line', {
+      x1: OFFSET + i * CELL, y1: OFFSET,
+      x2: OFFSET + i * CELL, y2: OFFSET + H,
+      stroke: '#d0d0d0', 'stroke-width': 0.7,
+    }));
+  }
+  for (let i = 0; i <= ROWS; i++) {
+    svg.appendChild(el('line', {
+      x1: OFFSET,        y1: OFFSET + i * CELL,
+      x2: OFFSET + W,    y2: OFFSET + i * CELL,
+      stroke: '#d0d0d0', 'stroke-width': 0.7,
+    }));
+  }
+  // Забор
+  function L(x1, y1, x2, y2, w = 3) {
+    svg.appendChild(el('line', {x1: px(x1), y1: py(y1), x2: px(x2), y2: py(y2),
+      stroke: '#000', 'stroke-width': w}));
+  }
+  L(0, 0, COLS, 0);
+  L(0, 0, 0, ROWS);
+  L(COLS, 0, COLS, ROWS);
+  L(0, ROWS, 5, ROWS);
+  L(7, ROWS, COLS, ROWS);
+  // Ворота
+  L(5, ROWS, 5.5, ROWS - 1, 1.8);
+  L(7, ROWS, 6.5, ROWS - 1, 1.8);
+
+  // Дом Г-образный
+  const housePath = `M ${px(2)},${py(1)}
+                     L ${px(6)},${py(1)}
+                     L ${px(6)},${py(4)}
+                     L ${px(4)},${py(4)}
+                     L ${px(4)},${py(3)}
+                     L ${px(2)},${py(3)}
+                     Z`;
+  svg.appendChild(el('path', {
+    d: housePath, fill: '#888', stroke: '#000', 'stroke-width': 2.5,
+    'stroke-linejoin': 'miter',
+  }));
+
+  // Дорожка из плитки от ворот (x=5..7, y=9) к дому (x=5..7, y=4)
+  layTiles(svg, 5, 4, 2, 5, '#6b6b6b', 'square');
+})();
+</script>
+
+</body>
+</html>

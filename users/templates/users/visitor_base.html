@@ -113,8 +113,10 @@
                     <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Главная</a></li>
                     <li class="nav-item"><a class="nav-link" href="{% url 'courses_list' %}">Курсы</a></li>
                     <li class="nav-item"><a class="nav-link" href="{% url 'materials_list' %}">Материалы</a></li>
-                    
+
                     {% if user.is_authenticated %}
+                        <li class="nav-item"><a class="nav-link" href="{% url 'board:list' %}">Доска</a></li>
+
                         {% if user.role == 'student' %}
                         <li class="nav-item">
                             <a class="nav-link" href="{% url 'student_dashboard' %}">Личный кабинет</a>
