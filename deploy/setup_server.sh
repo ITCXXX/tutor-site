@@ -106,6 +106,7 @@ fi
 
 echo "=== 8/9. systemd + nginx конфиги ==="
 cp "${APP_DIR}/deploy/tutor.service.example" /etc/systemd/system/tutor.service
+cp "${APP_DIR}/deploy/tutor-ws.service.example" /etc/systemd/system/tutor-ws.service
 cp "${APP_DIR}/deploy/nginx.conf.example" /etc/nginx/sites-available/tutor
 ln -sf /etc/nginx/sites-available/tutor /etc/nginx/sites-enabled/tutor
 rm -f /etc/nginx/sites-enabled/default
@@ -139,7 +140,7 @@ echo "  1. Проверь /opt/tutor/.env (особенно ALLOWED_HOSTS и DAT
 echo "  2. cd /opt/tutor && sudo -u tutor venv/bin/python manage.py migrate"
 echo "  3. sudo -u tutor venv/bin/python manage.py collectstatic --noinput"
 echo "  4. sudo -u tutor venv/bin/python manage.py createsuperuser"
-echo "  5. systemctl enable --now tutor"
+echo "  5. systemctl enable --now tutor tutor-ws   # gunicorn (HTTP) + daphne (доска)"
 echo "  6. (после того как DNS A-запись на Reg.ru уже распространилась)"
 echo "     certbot --nginx -d zenchenkoim.ru -d www.zenchenkoim.ru"
 echo "  7. После проверки https подними DJANGO_HSTS_SECONDS=31536000 в .env"

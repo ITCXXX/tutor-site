@@ -1,0 +1,43 @@
+# ============================================================================
+# systemd unit для WebSocket-части tutor_site (daphne / ASGI).
+# Обслуживает ТОЛЬКО /ws/ (совместная доска, раздел board). Обычный HTTP —
+# на gunicorn (tutor.service). nginx роутит /ws/ сюда, на 127.0.0.1:8001.
+#   Положить в /etc/systemd/system/tutor-ws.service, затем:
+#     systemctl daemon-reload
+#     systemctl enable --now tutor-ws
+#     systemctl status tutor-ws
+#     journalctl -u tutor-ws -f
+# ============================================================================
+
+[Unit]
+Description=Tutor site WebSocket (daphne ASGI)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=tutor
+Group=tutor
+WorkingDirectory=/opt/tutor
+EnvironmentFile=/opt/tutor/.env
+
+# daphne слушает loopback-порт 8001; nginx проксирует на него запросы /ws/.
+# Запускаем полное ASGI-приложение (tutor_core.asgi): http+websocket роутер,
+# но реально сюда приходит только WebSocket-трафик (так настроен nginx).
+ExecStart=/opt/tutor/venv/bin/daphne \
+    -b 127.0.0.1 \
+    -p 8001 \
+    --access-log - \
+    tutor_core.asgi:application
+
+Restart=on-failure
+RestartSec=3
+
+# Лимиты безопасности — как у gunicorn-юнита.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tutor/media /opt/tutor/staticfiles
+
+[Install]
+WantedBy=multi-user.target

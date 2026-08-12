@@ -177,13 +177,15 @@ cd /opt/tutor
 sudo -u tutor venv/bin/python manage.py createsuperuser
 # (логин/email/пароль — придумать)
 
-# Запускаем gunicorn через systemd
-systemctl enable --now tutor
-systemctl status tutor
-# Если красно — смотри: journalctl -u tutor -n 50
+# Запускаем gunicorn (HTTP) и daphne (WebSocket доски) через systemd
+systemctl enable --now tutor tutor-ws
+systemctl status tutor tutor-ws
+# Если красно — смотри: journalctl -u tutor -n 50   (для доски: journalctl -u tutor-ws -n 50)
 ```
 
 После этого сайт уже работает по http (без SSL): открыть `http://<IP>` в браузере.
+Совместная доска (`/board/`) обслуживается через `tutor-ws` (daphne) — nginx роутит
+`/ws/` на него; после https доска пойдёт по `wss://`.
 
 ---
 
@@ -241,7 +243,7 @@ sudo -u tutor git pull
 sudo -u tutor venv/bin/pip install -r requirements.txt   # если новые зависимости
 sudo -u tutor venv/bin/python manage.py migrate          # если новые миграции
 sudo -u tutor venv/bin/python manage.py collectstatic --noinput
-systemctl restart tutor
+systemctl restart tutor tutor-ws
 ```
 
 (Можно запихнуть это в скрипт `deploy/update.sh` — позже сделаю, если будет нужно.)
@@ -286,3 +288,4 @@ du -sh /opt/tutor /var/lib/postgresql
 | `DisallowedHost` | проверить `DJANGO_ALLOWED_HOSTS` в `.env` |
 | `relation "..." does not exist` | забыл `migrate` |
 | Статика без стилей | забыл `collectstatic` |
+| Доска не подключается (WebSocket) | `systemctl status tutor-ws`, `journalctl -u tutor-ws -n 50`; проверь `location /ws/` в nginx и что `certbot` перенёс его в https-блок |
