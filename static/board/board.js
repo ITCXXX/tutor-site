@@ -1437,7 +1437,10 @@
   // на зону, уже закрашенную ИМЕННО ЭТИМ цветом, снимает заливку. Отдельного
   // шага «сначала выдели, потом закрась» нет — так меньше действий и не бывает
   // непонятного состояния «что сейчас выделено».
-  let vennBrush = VENN_FILLS[3];             // цвет по умолчанию
+  // Кисть изначально ПУСТАЯ: пока цвет не выбран, нажатия по зонам ничего не
+  // красят — только выбирают зону для подписи. Порядок всегда один:
+  // сначала цвет, потом зоны.
+  let vennBrush = '';
   let vennSel = { id: null, key: null };     // последняя нажатая зона — для подписи
 
   // Названия зон. Для трёх кругов важно писать «без C»: иначе «A и B» читается
@@ -1445,11 +1448,11 @@
   function vennZoneName(d, k) {
     if (k === 'U') return 'вне кругов';
     const three = (d.sets !== 2);
-    const map2 = { A: 'только A', B: 'только B', AB: 'A и B' };
+    const map2 = { A: 'A, без B', B: 'B, без A', AB: 'A и B' };
     const map3 = {
-      A: 'только A', B: 'только B', C: 'только C',
+      A: 'A, без B и C', B: 'B, без A и C', C: 'C, без A и B',
       AB: 'A и B, без C', AC: 'A и C, без B', BC: 'B и C, без A',
-      ABC: 'все три',
+      ABC: 'A, B и C',
     };
     return (three ? map3 : map2)[k] || k;
   }
@@ -1525,7 +1528,7 @@
       + '<div class="vn-row">'
       + '<span class="vn-lbl">Цвет</span>'
       + '<span class="vn-fills" id="vn-fills"></span>'
-      + '<span class="vn-lbl vn-tip">нажимайте на зоны; тем же цветом — снять</span>'
+      + '<span class="vn-lbl vn-tip"></span>'
       + '</div>'
       + '<div class="vn-row">'
       + '<span class="vn-lbl" id="vn-what">зона</span>'
@@ -1597,6 +1600,10 @@
     bar.querySelectorAll('#vn-sets button').forEach((b) => b.classList.toggle('on', +b.dataset.n === (d.sets || 3)));
     bar.querySelector('#vn-universe').checked = (d.universe !== false);
     bar.querySelectorAll('.vn-sw').forEach((b) => b.classList.toggle('on', (b.dataset.c || '') === vennBrush));
+    const tip = bar.querySelector('.vn-tip');
+    if (tip) tip.textContent = vennBrush
+      ? 'нажимайте на зоны; тем же цветом — снять'
+      : 'выберите цвет, затем нажимайте на зоны';
     const one = vennSel.key;
     bar.querySelector('#vn-what').textContent = one ? vennZoneName(d, one) : 'зона';
     const inp = bar.querySelector('#vn-text');
@@ -5795,8 +5802,16 @@
     // Клик по диаграмме Венна выбирает ОБЛАСТЬ внутри неё (Ctrl — несколько),
     // а не только сам объект: заливать и подписывать надо именно области.
     if (rel && rel.type === 'venn' && !isAddKey(e.evt)) {
-      const wp = stage.getRelativePointerPosition();
-      if (wp) vennPickRegion(rel, wp.x, wp.y);
+      // Первый клик по невыделенной диаграмме только ВЫБИРАЕТ её — тогда
+      // появляется палитра. Красить начинаем со второго клика, когда цвет уже
+      // выбран. Иначе палитры ещё нет на экране, а зона уже закрашена.
+      if (selected.has(rel.id)) {
+        const wp = stage.getRelativePointerPosition();
+        if (wp) vennPickRegion(rel, wp.x, wp.y);
+      } else {
+        vennSel = { id: rel.id, key: null };
+        showVennBar(rel);
+      }
     } else if (vennSel.id && (!rel || rel.type !== 'venn')) {
       clearVennSel();
     }
