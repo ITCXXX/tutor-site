@@ -119,6 +119,7 @@
     stage.height(stageEl.clientHeight);
     redrawGrid();
     repositionCursors();
+    if (typeof renderAnchors === 'function') renderAnchors();
   }
   window.addEventListener('resize', syncStageSize);
   // ResizeObserver срабатывает сразу, как только #board-stage получает реальный
@@ -678,6 +679,9 @@
     applyElVisibility(el); // учесть флаг data.hidden
     if (el.type === 'point' && el.data.trace) ensureTrace(el); // включить след, если помечен
     if (el.type === 'rect' || el.type === 'ellipse' || el.type === 'shape') syncShapeText(el); // текст внутри фигуры
+    // Объект мог сдвинуть или изменить ДРУГОЙ участник — якоря у выделенного
+    // должны переехать и в этом случае (а ещё при отмене и повторе действия).
+    if (typeof renderAnchors === 'function' && selected.has(el.id)) renderAnchors();
     layer.batchDraw();
   }
 
@@ -3034,6 +3038,9 @@
     });
     if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
     if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
+    // У текста, стикеров и таблиц угловых ручек нет, значит через
+    // positionHandles их якоря не обновятся — двигаем здесь.
+    if (typeof renderAnchors === 'function') renderAnchors();
   }
   function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '', embed: 'Страница', poll: 'Голосование', screen: 'Экран' }[el.type] || ''; }
   function syncWidget(it) { send({ action: 'element_update', element: it.el }); }
@@ -6346,6 +6353,13 @@
     });
   }
 
+  // Якоря — такой же наложенный слой, что и угловые ручки размера, и обновляться
+  // должны в тех же случаях. Раньше их двигали в трёх местах из четырнадцати,
+  // поэтому при изменении размера объекта они оставались на старом месте.
+  // Связываем напрямую: где двигаются ручки — там же двигаются и якоря. Новые
+  // места, откуда позовут positionHandles, подхватятся сами.
+  function positionHandles() { positionHandlesCore(); renderAnchors(); }
+
   // Куда целимся: объект под курсором и его ближайшая сторона.
   function anchorTargetAt(wx, wy, excludeId) {
     let best = null;
@@ -6735,7 +6749,7 @@
       + (extra ? '  ' + extra : '');
   }
 
-  function positionHandles() {
+  function positionHandlesCore() {
     const ids = Array.from(selected);
     const el = ids.length === 1 ? elements.get(ids[0]) : null;
     // Линия/стрелка — ручки концов + контроль (вместо рамки-ресайза).
