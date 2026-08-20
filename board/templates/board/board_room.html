@@ -560,6 +560,24 @@
     }
     .vn-preset:hover { background: #eef3ff; border-color: #4d7cfe; color: #2b5bd7; }
 
+
+    /* Режим перемещения доски. Синей подсветки у кнопки нет (её просили гасить),
+       поэтому режим виден по курсору-руке и отдельному виду самой кнопки —
+       иначе непонятно, почему клики перестали выделять. */
+    body.board-pan #board-stage,
+    body.board-pan #widget-layer,
+    body.board-pan #ggb-layer { cursor: grab; }
+    body.board-pan.panning #board-stage,
+    body.board-pan.panning #widget-layer,
+    body.board-pan.panning #ggb-layer { cursor: grabbing; }
+    body.board-pan #widget-layer .wgt,
+    body.board-pan #widget-layer .tbox,
+    body.board-pan #widget-layer .mtext { cursor: grab; }
+    #board-toolbar .tool.panning {
+        background: #eef1f7; border-color: #b9c0cf; color: #5a5f6b;
+        box-shadow: inset 0 0 0 1px #fff;
+    }
+
     /* Верхняя плашка: код доски + статус связи + участники. */
     #board-topbar {
         position: fixed;
@@ -1457,7 +1475,7 @@
             <div id="macro-list"></div>
         </div>
     </div>
-    <div class="tool" data-tool="select" title="Выделение / перемещение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift или Ctrl — добавить, Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
+    <div class="tool" data-tool="select" title="Выделение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift или Ctrl — добавить, ПОВТОРНЫЙ клик по этой кнопке — режим перемещения доски (тяните мышью или пальцем; Esc — выйти), Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3l7 17 2.5-6.5L20 11z"/></svg>
     </div>
     <hr>

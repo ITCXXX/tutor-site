@@ -5644,7 +5644,7 @@
     touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     if (penDown) return;                       // ладонь при письме пером — молчим
     if (gesture) { startGesture(); return; }   // добавился ещё палец — пересчитать опору
-    if (penMode() || touchPts.size >= 2) startGesture();
+    if (penMode() || panMode || touchPts.size >= 2) startGesture();
   }, true);
 
   stageEl.addEventListener('pointermove', (ev) => {
@@ -5694,7 +5694,7 @@
   // ДО того как Konva сдвинет узел. Это и устраняет рассинхрон группового
   // перетаскивания (стартовые позиции точны), и убирает двойную обработку.
   stage.on('mousedown touchstart', (e) => {
-    if (touchBlocked(e)) return;   // палец ведёт доску / идёт щипок — не выделяем
+    if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не выделяем
     if (tool !== 'select') return;
     // Клик по ручке/рамке трансформера — отдать Konva (ресайз), не обрабатывать.
     if (e.target && (e.target === tr || (e.target.getParent && e.target.getParent() === tr))) return;
@@ -5832,7 +5832,7 @@
     }
   });
   stage.on('mousedown touchstart', (e) => {
-    if (touchBlocked(e)) return;   // палец ведёт доску / идёт щипок — не рисуем
+    if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не рисуем
     if (tool === 'select') return; // в режиме выделения сцена сама панорамит
     if (tool === 'latex') { openLatexEditor(); return; }
     if (tool === 'graph') { if (e.evt) e.evt.preventDefault(); handleGraphPick(worldPoint()); return; }
@@ -6251,7 +6251,7 @@
     if (!anchorLayerEl) return;
     // Признак — само выделение, а не активный инструмент: по объекту можно
     // щёлкнуть и с карандашом в руках, и якоря должны появиться.
-    if (viewOnly || selected.size !== 1) { hideAnchors(); return; }
+    if (viewOnly || panMode || selected.size !== 1) { hideAnchors(); return; }
     const id = Array.from(selected)[0];
     const el = elements.get(id);
     if (!hasAnchors(el) || (el.data && el.data.locked)) { hideAnchors(); return; }
@@ -6368,6 +6368,80 @@
   document.addEventListener('pointermove', (e) => { if (anchorDrag && e.pointerId === anchorDrag.pid) moveAnchorDrag(e); }, true);
   document.addEventListener('pointerup', (e) => { if (anchorDrag && e.pointerId === anchorDrag.pid) endAnchorDrag(); }, true);
   document.addEventListener('pointercancel', () => { if (anchorDrag) { removeNode(anchorDrag.el.id); anchorDrag = null; document.body.classList.remove('anchor-dragging'); highlightAnchorTarget(null); } }, true);
+
+  // ── Режим перемещения доски ────────────────────────────────────────────
+  // Мышью доску подвинуть было нельзя вовсе: панорама жила только на стрелках
+  // и колесе, а перетаскивание по пустому месту рисовало рамку выделения.
+  //
+  // Включается повторным нажатием на «Выделение»: первый клик выбирает
+  // инструмент, второй — переводит в перемещение. Кнопка гаснет, курсор
+  // становится рукой. Выключается так же, сменой инструмента или Esc.
+  //
+  // Мышь и перо ведём сами (перехватываем нажатие раньше всех остальных
+  // обработчиков), а касания отдаём той же системе жестов, что уже умеет
+  // панораму и щипок, — чтобы два пальца по-прежнему меняли масштаб.
+  let panMode = false, panDrag = null;
+
+  // Панели поверх доски: нажатие на них — не перемещение.
+  const PAN_SKIP = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
+    + ' #access-panel, #voice-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control,'
+    + ' #settings-btn, #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor,'
+    + ' #tbox-bar, #tbl-bar, #venn-bar, #dp-pop, #eraser-panel, #storyboard, #pdf-controls,'
+    + ' #frame-exit-btn, #mobile-sheet, #mobile-fab, #mobile-backdrop, #embed-dialog,'
+    + ' #board-pw-dialog, #pdf-export-dialog';
+
+  function setPanMode(on) {
+    panMode = !!on;
+    document.body.classList.toggle('board-pan', panMode);
+    const sel = document.querySelector('#board-toolbar .tool[data-tool="select"]');
+    if (sel) {
+      // Синей подсветки нет — вместо неё отдельный вид «рука», иначе не понять,
+      // почему клики вдруг перестали выделять.
+      sel.classList.toggle('active', !panMode && tool === 'select');
+      sel.classList.toggle('panning', panMode);
+    }
+    if (panMode) {
+      // В перемещении объекты не таскаем и якоря прячем — они ловили бы нажатия.
+      nodes.forEach((n) => n.draggable(false));
+      clearSelection();
+    } else {
+      setTool(tool);   // вернуть обычное поведение выбранного инструмента
+    }
+    renderAnchors();
+    stageEl.style.cursor = panMode ? 'grab' : ((tool === 'select') ? 'default' : 'crosshair');
+    boardHint(panMode ? 'Перемещение доски: тяните мышью, пальцем или пером'
+                      : 'Обычный режим');
+  }
+
+  function panBoardBy(dx, dy) {
+    stage.position({ x: panDrag.sx + dx, y: panDrag.sy + dy });
+    scheduleViewRedraw();   // сетка, курсоры, якоря и трансляция вида ведомым
+  }
+
+  // Мышь и перо: перехватываем на самом раннем этапе, чтобы объекты под
+  // курсором не начали выделяться или двигаться.
+  document.addEventListener('pointerdown', (e) => {
+    if (!panMode || e.pointerType === 'touch') return;
+    if (e.button != null && e.button > 0) return;
+    if (e.target.closest && e.target.closest(PAN_SKIP)) return;
+    const r = stageEl.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+    panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: stage.x(), sy: stage.y() };
+    document.body.classList.add('panning');
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+  document.addEventListener('pointermove', (e) => {
+    if (!panDrag || e.pointerId !== panDrag.id) return;
+    e.preventDefault(); e.stopPropagation();
+    panBoardBy(e.clientX - panDrag.x, e.clientY - panDrag.y);
+  }, true);
+  function endPanDrag(e) {
+    if (!panDrag || (e && e.pointerId !== panDrag.id)) return;
+    panDrag = null;
+    document.body.classList.remove('panning');
+  }
+  document.addEventListener('pointerup', endPanDrag, true);
+  document.addEventListener('pointercancel', endPanDrag, true);
 
   // ── Выделение и удаление ───────────────────────────────────────────────
   // Выделение в режиме select: клик по объекту — выбрать, Shift+клик — добавить,
@@ -8195,7 +8269,12 @@
     }, true);
   }
 
-  toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+  toolButtons.forEach((b) => b.addEventListener('click', () => {
+    // Повторный клик по уже выбранному «Выделению» — переход в перемещение доски.
+    if (b.dataset.tool === 'select' && tool === 'select' && !panMode) { setPanMode(true); return; }
+    if (panMode) setPanMode(false);           // любой другой инструмент выводит из перемещения
+    setTool(b.dataset.tool);
+  }));
 
   // ── Группы инструментов с выпадающим подменю (математика, материалы) ───
   (function initToolGroups() {
@@ -8444,7 +8523,8 @@
     bar.addEventListener('pointercancel', (e) => { if (src && e.pointerId === pid) finish(e, false); });
     // Esc во время перетаскивания — отменить.
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && dragging) {
+      if (e.key === 'Escape' && panMode && !dragging) { setPanMode(false); return; }
+    if (e.key === 'Escape' && dragging) {
         const btn = src; cleanup(); src = null; pid = null; dragging = false;
         if (btn) suppressNextClick();
       }
