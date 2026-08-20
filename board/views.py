@@ -13,8 +13,10 @@ HTTP-страницы раздела досок. Сам realtime идёт по W
 import os
 import secrets
 import string
+import time
 
 from django.conf import settings
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Q
 from django.http import Http404, JsonResponse
@@ -23,10 +25,25 @@ from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 
 from .models import Board, BoardElement
+from .turn import ice_servers
 
 # Разрешённые к загрузке файлы (картинки + PDF) и лимит размера.
 _UPLOAD_EXT = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'}  # .svg исключён: может нести скрипт
 _UPLOAD_MAX = 30 * 1024 * 1024  # 30 МБ
+
+# Версия клиента доски. Берём из времени последней правки board.js, а не пишем
+# руками: тогда при любом изменении файла сама меняется и метка в адресе (?v=…),
+# и подпись в углу доски. Браузер видит новый адрес и подтягивает свежий файл —
+# ученик не остаётся со старой версией из кеша, а забыть «поднять номер» нельзя.
+_BOARD_JS = os.path.join(settings.BASE_DIR, 'static', 'board', 'board.js')
+
+
+def board_client_version():
+    """Короткая метка версии клиента доски, например 260820-1447."""
+    try:
+        return time.strftime('%y%m%d-%H%M', time.localtime(os.path.getmtime(_BOARD_JS)))
+    except OSError:
+        return 'dev'  # файла нет (собранная статика) — не роняем страницу
 
 
 def _elem_id():
@@ -63,16 +80,32 @@ def _seed_template(board, template):
 def boards_list(request):
     """Мои доски (созданные мной + те, к которым присоединился) и форма входа по коду."""
     user = request.user
+    # Показываем ВСЕ доски пользователя. Раньше список обрезался на 50 — доски
+    # сверх этого молча пропадали из вида, хотя продолжали существовать.
+    # Теперь ограничение стоит на СОЗДАНИИ (Board.MAX_PER_OWNER), поэтому своих
+    # досок физически не может быть больше потолка, и обрезать нечего.
     boards = Board.objects.filter(
         Q(owner=user) | Q(members=user)
-    ).distinct().order_by('-updated_at')[:50]
-    return render(request, 'board/boards_list.html', {'boards': boards})
+    ).distinct().order_by('-updated_at')
+    return render(request, 'board/boards_list.html', {
+        'boards': boards,
+        'owned_count': Board.owned_count(user),
+        'board_limit': Board.MAX_PER_OWNER,
+        'quota_left': Board.quota_left(user),
+    })
 
 
 @login_required
 @require_POST
 def board_create(request):
     """Создать новую доску и сразу открыть её."""
+    if Board.quota_left(request.user) <= 0:
+        messages.error(request, (
+            'Достигнут потолок в %d досок. Удалите ненужную старую доску '
+            '(правая кнопка мыши по строке в списке → «Удалить»), '
+            'и можно будет создать новую.' % Board.MAX_PER_OWNER
+        ))
+        return redirect('board:list')
     title = (request.POST.get('title') or '').strip()[:120]
     template = (request.POST.get('template') or 'blank').strip()
     board = Board.create_for(owner=request.user, title=title)
@@ -98,6 +131,11 @@ def board_room(request, code):
     board = get_object_or_404(Board, code=code)
     user = request.user
 
+    # Убранных владельцем не пускаем — и, что важно, не даём автоприсоединению
+    # ниже молча вернуть их в участники при следующем открытии ссылки.
+    if board.is_banned(user):
+        return render(request, 'board/board_no_access.html', {'board': board}, status=403)
+
     # Пароль доски: спрашиваем только у новых (не владелец/участник/суперюзер).
     # Верный пароль присоединяет к доске — дальше вход как обычно.
     if board.needs_password(user):
@@ -118,6 +156,13 @@ def board_room(request, code):
         'board': board,
         'is_owner': board.owner_id == user.id,
         'password_enabled': board.password_enabled,
+        'board_ver': board_client_version(),
+        # Папку со шрифтами pdf.js через {% static %} не получить (это каталог,
+        # а не файл), поэтому адрес собираем здесь.
+        'pdf_fonts_url': settings.STATIC_URL + 'vendor/pdfjs-3.11.174/standard_fonts/',
+        # Серверы для голосовой связи. Пропуск к ретранслятору временный,
+        # поэтому выдаётся здесь, а не лежит в статике.
+        'ice_servers': ice_servers(user),
     })
 
 
@@ -175,6 +220,9 @@ def board_duplicate(request, code):
     board = get_object_or_404(Board, code=code)
     if not board.can_access(request.user):
         raise Http404('Нет доступа к доске.')
+    if Board.quota_left(request.user) <= 0:
+        return JsonResponse({'error': 'Достигнут потолок в %d досок — удалите '
+                                      'ненужную старую.' % Board.MAX_PER_OWNER}, status=400)
     new = Board.create_for(owner=request.user, title=(board.title or 'Доска') + ' (копия)')
     els = [
         BoardElement(board=new, element_id=e.element_id, type=e.type,

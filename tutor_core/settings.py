@@ -126,6 +126,12 @@ TEMPLATES = [
     },
 ]
 
+# Django помечает сообщения об ошибках тегом "error", а Bootstrap ждёт класс
+# alert-danger — без этой карты красные плашки выводились без оформления.
+from django.contrib.messages import constants as _messages  # noqa: E402
+
+MESSAGE_TAGS = {_messages.ERROR: "danger"}
+
 WSGI_APPLICATION = "tutor_core.wsgi.application"
 
 # ASGI + Channels — нужны для WebSocket-досок (раздел /board/).
@@ -151,6 +157,30 @@ else:
     CHANNEL_LAYERS = {
         "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
     }
+
+# ============================================================================
+# ГОЛОСОВАЯ СВЯЗЬ НА ДОСКЕ
+# ----------------------------------------------------------------------------
+# Звук идёт напрямую между браузерами. Чтобы они нашли друг друга, нужен STUN
+# (просто сообщает браузеру его внешний адрес — трафик через него не идёт).
+#
+# Примерно у каждого пятого участника прямое соединение не проходит: домашний
+# роутер или мобильный оператор его не пропускают. Для таких нужен TURN —
+# сервер-ретранслятор, который перекидывает звук через себя. Он включается,
+# только когда заданы И адреса, И секрет; иначе всё работает как раньше.
+#
+# TURN_SECRET должен СОВПАДАТЬ со static-auth-secret в конфиге coturn:
+# по нему сервер проверяет временные пропуска, которые выдаёт сайт.
+# ============================================================================
+TURN_STUN_URLS = [
+    u.strip() for u in os.getenv(
+        "TURN_STUN_URLS",
+        "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302",
+    ).split(",") if u.strip()
+]
+TURN_URLS = [u.strip() for u in os.getenv("TURN_URLS", "").split(",") if u.strip()]
+TURN_SECRET = os.getenv("TURN_SECRET", "")
+TURN_TTL = int(os.getenv("TURN_TTL", "3600") or 3600)   # срок жизни пропуска, сек
 
 # Database
 # Пока SQLite; при переходе на PostgreSQL на хостинге

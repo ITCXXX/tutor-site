@@ -110,6 +110,7 @@
       redrawGrid();
       repositionCursors();
       positionHandles();
+      renderAnchors();
     });
   }
 
@@ -140,6 +141,7 @@
   const nodes = new Map();    // element.id → Konva node
   const elements = new Map(); // element.id → element object (последнее состояние)
   let myId = null;            // мой user id (с сервера, из init)
+  let myLabel = '';           // как меня видят соседи (ник или логин)
 
   function uuid() {
     return 'e' + Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -223,6 +225,15 @@
         radiusY: d.radiusY || 0,
         fill: shapeFillStyle(d, null) || undefined,
       });
+    } else if (el.type === 'venn') {
+      // Диаграмма Венна — обычный объект холста: значит, экспорт в PDF, якоря
+      // для стрелок, выравнивание и группировка достаются бесплатно.
+      node = new Konva.Shape({ id: el.id, x: d.x || 0, y: d.y || 0, sceneFunc: drawVenn, draggable: false });
+      node.hitFunc((ctx, sh) => {
+        const e = elements.get(el.id); const dd = e ? e.data : {};
+        ctx.beginPath(); ctx.rect(0, 0, dd.width || 0, dd.height || 0); ctx.closePath(); ctx.fillStrokeShape(sh);
+      });
+      node.getSelfRect = function () { const e = elements.get(el.id); return { x: 0, y: 0, width: (e && e.data.width) || 0, height: (e && e.data.height) || 0 }; };
     } else if (el.type === 'shape') {
       // Базовая фигура (по рамке): рисуется sceneFunc'ом; заливка для клика — в hitFunc.
       node = new Konva.Shape({ id: el.id, x: d.x || 0, y: d.y || 0, sceneFunc: drawBasicShape, fill: 'rgba(0,0,0,0.01)', draggable: false });
@@ -644,6 +655,7 @@
         node.stroke(d.stroke || '#1f2937');
         node.strokeWidth(d.strokeWidth || 3);
         if (node.getClassName() === 'Line') node.points(d.points || [0, 0]);
+        if (el.type === 'venn') { d._labSig = null; }
         if (el.type === 'rect') { node.width(d.width || 0); node.height(d.height || 0); node.fill(shapeFillStyle(d, null)); }
         if (el.type === 'ellipse') { node.radiusX(d.radiusX || 0); node.radiusY(d.radiusY || 0); node.fill(shapeFillStyle(d, null)); }
         if (el.type === 'image') { if (d.width) node.width(d.width); if (d.height) node.height(d.height); loadImageInto(node, el); }
@@ -691,6 +703,7 @@
       let refs = (d.a === id || d.b === id || d.c === id || d.center === id || d.through === id || d.line === id || d.frame === id || d.vertex === id || d.func === id || d.f === id || d.g === id);
       if (!refs && d.parts && d.parts.some((p) => p.func === id)) refs = true; // условие области ссылается на график
       if (!refs && d.pts && d.pts.indexOf(id) >= 0) refs = true; // вершина многоугольника
+      if (!refs && ((d.from && d.from.id === id) || (d.to && d.to.id === id))) refs = true; // стрелка, привязанная к объекту
       if (!refs && d.refs && d.refs.indexOf(id) >= 0) refs = true; // опора измерения
       if (!refs && d.on) {
         const o = d.on;
@@ -923,6 +936,7 @@
 
   function onNodeDragMove(id, node) {
     positionHandles(); // ручки следуют за объектом при перемещении
+    recomputeConnectors(); renderAnchors(); // привязанные стрелки тянутся следом
     captureDragSnap(dragStart ? Array.from(selected) : [id]);
     const isLead = !dragStart || dragStart.leadId === id;
     if (!isLead) return; // следом-объекты двигает ведущий
@@ -943,6 +957,8 @@
   }
 
   function onNodeDragEnd(id, node) {
+    recomputeConnectors();
+    syncConnectorsOf(dragStart ? Array.from(selected) : [id]);
     // Синхронизируем все сдвинутые объекты: выделение + «прицепы» (надписи на
     // картинке/pdf едут с ней, даже если не выделены).
     const ids = new Set([id]);
@@ -1234,6 +1250,344 @@
     return null;
   }
   function isFilledPoly(t) { return t === 'polygon' || t === 'regpoly'; }
+  // ── Диаграмма Венна ────────────────────────────────────────────────────
+  // Как заливаются отдельные области — главное решение здесь.
+  //
+  // Наивный путь: вычислять границы областей. Каждая область ограничена дугами
+  // окружностей; нужны точки пересечения, сборка дуг в правильном порядке и
+  // обход по направлению. Для трёх кругов это заметный кусок математики, и он
+  // разваливается на вырожденных случаях (круги разъехались, вложились).
+  //
+  // Путь, которым идём: КРАСИМ ПО ПОРЯДКУ, от общего к частному.
+  //   круг A → круг B → круг C → A∩B → A∩C → B∩C → A∩B∩C
+  // Каждая следующая заливка — подмножество предыдущих и ложится поверх. В
+  // итоге «только A» никто не перекрыл, «A и B» перекрыт один раз, центр —
+  // дважды. Картинка выходит ровно правильная, а пересечение кругов холст
+  // делает сам (обрезки накладываются друг на друга). Ни одной формулы
+  // пересечения окружностей не нужно.
+  //
+  // Следствие: заливки непрозрачные, иначе слои смешаются. Полупрозрачность
+  // задаём всей диаграмме целиком — тогда смешивания нет, а рисунок остаётся
+  // чётким на любом увеличении.
+  const VENN_KEYS2 = ['A', 'B', 'AB'];
+  const VENN_KEYS3 = ['A', 'B', 'C', 'AB', 'AC', 'BC', 'ABC'];
+  const VENN_FILLS = ['', '#ffd8a8', '#b2f2bb', '#a5d8ff', '#eebefa', '#ffc9c9', '#ffec99', '#c3fae8'];
+  const VENN_PAD = 18;   // отступ кругов от рамки-универсума
+
+  function vennKeys(d) { return (d.sets === 2) ? VENN_KEYS2 : VENN_KEYS3; }
+
+  // Геометрия: радиус и центры кругов внутри рамки.
+  function vennGeom(d) {
+    const W = Math.max(40, d.width || 0), H = Math.max(40, d.height || 0);
+    const aw = W - 2 * VENN_PAD, ah = H - 2 * VENN_PAD;
+    const s = Math.max(0, Math.min(1, d.overlap == null ? 0.5 : d.overlap));
+    const cx = W / 2, cy = H / 2;
+    if (d.sets === 2) {
+      // Ширина рисунка = расстояние между центрами + два радиуса = 2R(2−s).
+      const R = Math.min(aw / (2 * (2 - s)), ah / 2);
+      const dd = 2 * R * (1 - s);
+      return { W: W, H: H, R: R, cs: [{ x: cx - dd / 2, y: cy }, { x: cx + dd / 2, y: cy }] };
+    }
+    // Три круга — вершины равностороннего треугольника со стороной dd.
+    const Rw = aw / (2 * (2 - s));
+    const Rh = ah / (2 + Math.sqrt(3) * (1 - s));
+    const R = Math.min(Rw, Rh);
+    const dd = 2 * R * (1 - s);
+    const m = dd / Math.sqrt(3);              // расстояние от центра до вершины
+    return {
+      W: W, H: H, R: R,
+      cs: [
+        { x: cx, y: cy - m },
+        { x: cx + m * Math.cos(Math.PI / 6), y: cy + m * Math.sin(Math.PI / 6) },
+        { x: cx - m * Math.cos(Math.PI / 6), y: cy + m * Math.sin(Math.PI / 6) },
+      ],
+    };
+  }
+  // Порядок кругов: A сверху, B справа-снизу, C слева-снизу (для двух — слева/справа).
+  function vennIdx(letter) { return { A: 0, B: 1, C: 2 }[letter]; }
+  function vennInside(g, i, p) {
+    const c = g.cs[i];
+    return (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) <= g.R * g.R;
+  }
+  // Какой области принадлежит точка: 'A', 'AB', 'ABC', 'U'…
+  function vennKeyAt(d, g, p) {
+    const n = (d.sets === 2) ? 2 : 3;
+    let key = '';
+    for (let i = 0; i < n; i++) if (vennInside(g, i, p)) key += 'ABC'[i];
+    return key || 'U';
+  }
+
+  // Точка для подписи — «самая внутренняя» точка области: пробуем сетку и
+  // берём точку, максимально удалённую от всех границ. Аналитические формулы
+  // пришлось бы писать отдельно для каждого случая, а это работает всегда,
+  // включая разъехавшиеся круги (тогда область пуста — подписи просто нет).
+  function vennLabelPoints(d, g) {
+    const sig = [d.sets, Math.round(g.W), Math.round(g.H), Math.round(g.R), Math.round(d.overlap * 100)].join('|');
+    if (d._labSig === sig && d._lab) return d._lab;
+    const n = (d.sets === 2) ? 2 : 3;
+    const best = {};
+    const STEP = 46;
+    for (let ix = 0; ix <= STEP; ix++) {
+      for (let iy = 0; iy <= STEP; iy++) {
+        const p = { x: VENN_PAD + (g.W - 2 * VENN_PAD) * ix / STEP, y: VENN_PAD + (g.H - 2 * VENN_PAD) * iy / STEP };
+        const key = vennKeyAt(d, g, p);
+        // Насколько точка «глубоко внутри»: минимум расстояний до всех границ.
+        let room = Math.min(p.x - VENN_PAD, g.W - VENN_PAD - p.x, p.y - VENN_PAD, g.H - VENN_PAD - p.y);
+        for (let i = 0; i < n; i++) {
+          const c = g.cs[i];
+          room = Math.min(room, Math.abs(Math.hypot(p.x - c.x, p.y - c.y) - g.R));
+        }
+        if (!best[key] || room > best[key].room) best[key] = { x: p.x, y: p.y, room: room };
+      }
+    }
+    d._labSig = sig; d._lab = best;
+    return best;
+  }
+
+  function drawVenn(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const d = el.data, g = vennGeom(d);
+    const n = (d.sets === 2) ? 2 : 3;
+    const col = d.stroke || '#1f2937';
+    const lw = (d.strokeWidth == null ? 2 : d.strokeWidth);
+    const fills = d.fills || {}, labels = d.labels || {};
+    const circle = (i) => { ctx.beginPath(); ctx.arc(g.cs[i].x, g.cs[i].y, g.R, 0, 2 * Math.PI); };
+
+    // Рамка-универсум.
+    if (d.universe !== false) {
+      ctx.beginPath(); ctx.rect(0.5, 0.5, g.W - 1, g.H - 1);
+      if (fills.U) { ctx.fillStyle = fills.U; ctx.fill(); }
+      ctx.lineWidth = Math.max(1, lw - 0.5); ctx.strokeStyle = col; ctx.stroke();
+    }
+
+    // Заливки — строго от общего к частному (см. пояснение выше).
+    const paint = (letters, color) => {
+      if (!color) return;
+      ctx.save();
+      for (let k = 0; k < letters.length; k++) { circle(vennIdx(letters[k])); ctx.clip(); }
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, g.W, g.H);
+      ctx.restore();
+    };
+    ['A', 'B', 'C'].slice(0, n).forEach((L) => paint(L, fills[L]));
+    if (n === 2) paint('AB', fills.AB);
+    else { paint('AB', fills.AB); paint('AC', fills.AC); paint('BC', fills.BC); paint('ABC', fills.ABC); }
+
+    // Контуры кругов.
+    if (lw > 0) {
+      ctx.lineWidth = lw; ctx.strokeStyle = col;
+      for (let i = 0; i < n; i++) { circle(i); ctx.stroke(); }
+    }
+
+    // Подписи областей.
+    const pts = vennLabelPoints(d, g);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = d.textColor || '#2b2b33';
+    ctx.font = '600 ' + (d.fontSize || 15) + 'px system-ui, sans-serif';
+    vennKeys(d).concat(d.universe === false ? [] : ['U']).forEach((k) => {
+      const t = labels[k]; if (!t) return;
+      const p = pts[k]; if (!p || p.room < 6) return;
+      ctx.fillText(String(t), p.x, p.y);
+    });
+
+    // Имена множеств — над кругами, снаружи.
+    ctx.font = '600 ' + Math.round((d.fontSize || 15) * 1.15) + 'px system-ui, sans-serif';
+    ctx.fillStyle = col;
+    const names = d.names || ['A', 'B', 'C'];
+    for (let i = 0; i < n; i++) {
+      const c = g.cs[i];
+      // Отводим подпись от центра диаграммы наружу.
+      const vx = c.x - g.W / 2, vy = c.y - g.H / 2;
+      const len = Math.hypot(vx, vy) || 1;
+      const ox = c.x + (vx / len) * (g.R + 12), oy = c.y + (vy / len) * (g.R + 12);
+      ctx.fillText(names[i] || 'ABC'[i], Math.max(10, Math.min(g.W - 10, ox)), Math.max(10, Math.min(g.H - 10, oy)));
+    }
+    // Подпись универсума в углу.
+    if (d.universe !== false) {
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(d.universeName || 'U', 6, 5);
+    }
+  }
+
+  // ── Панель диаграммы Венна ─────────────────────────────────────────────
+  // Тот же язык, что у таблицы: выбрал часть — появилась плашка с подписью и
+  // палитрой. Ctrl-клик добавляет области к выбору, поэтому «залить A∪B» — это
+  // два клика и цвет.
+  let vennSel = { id: null, keys: new Set() };
+
+  function vennElAt(id) { const e = elements.get(id); return (e && e.type === 'venn') ? e : null; }
+  function vennPickRegion(el, wx, wy, additive) {
+    const d = el.data, g = vennGeom(d);
+    const p = { x: wx - (d.x || 0), y: wy - (d.y || 0) };
+    if (p.x < 0 || p.y < 0 || p.x > g.W || p.y > g.H) return false;
+    const k = vennKeyAt(d, g, p);
+    if (k === 'U' && d.universe === false) return false;
+    if (vennSel.id !== el.id) { vennSel = { id: el.id, keys: new Set() }; }
+    if (additive) { if (vennSel.keys.has(k)) vennSel.keys.delete(k); else vennSel.keys.add(k); }
+    else { vennSel.keys = new Set([k]); }
+    showVennBar(el);
+    return true;
+  }
+  // Панель следует за выделением: выбрали диаграмму — она появилась, ушли — скрылась.
+  function syncVennBar() {
+    const b = document.getElementById('venn-bar'); if (!b) return;
+    if (selected.size === 1) {
+      const el = elements.get(Array.from(selected)[0]);
+      if (el && el.type === 'venn') {
+        if (vennSel.id !== el.id) vennSel = { id: el.id, keys: new Set() };
+        showVennBar(el);
+        return;
+      }
+    }
+    clearVennSel();
+  }
+  function clearVennSel() {
+    vennSel = { id: null, keys: new Set() };
+    const b = document.getElementById('venn-bar'); if (b) b.hidden = true;
+  }
+
+  const VENN_PRESETS2 = [
+    { t: 'A∪B', keys: ['A', 'B', 'AB'] },
+    { t: 'A∩B', keys: ['AB'] },
+    { t: 'A∖B', keys: ['A'] },
+    { t: 'B∖A', keys: ['B'] },
+  ];
+
+  function buildVennBar() {
+    const bar = document.getElementById('venn-bar');
+    if (!bar || bar._built) return bar;
+    bar._built = true;
+    bar.innerHTML =
+      '<div class="vn-row">'
+      + '<span class="vn-lbl">Множеств</span>'
+      + '<span class="vn-seg" id="vn-sets"><button data-n="2">2</button><button data-n="3">3</button></span>'
+      + '<span class="vn-lbl">Пересечение</span>'
+      + '<input type="range" id="vn-overlap" min="0" max="90" step="1">'
+      + '<label class="vn-chk"><input type="checkbox" id="vn-universe"> рамка</label>'
+      + '</div>'
+      + '<div class="vn-row">'
+      + '<span class="vn-lbl" id="vn-what">область</span>'
+      + '<input type="text" id="vn-text" placeholder="число или подпись" maxlength="24">'
+      + '<span class="vn-fills" id="vn-fills"></span>'
+      + '</div>'
+      + '<div class="vn-row" id="vn-presets"><span class="vn-lbl">Закрасить</span></div>';
+
+    VENN_FILLS.forEach((c) => {
+      const b = document.createElement('button');
+      b.className = 'vn-sw' + (c ? '' : ' none');
+      b.dataset.c = c; b.style.background = c || '#fff';
+      b.title = c ? 'Залить выбранное' : 'Убрать заливку';
+      bar.querySelector('#vn-fills').appendChild(b);
+    });
+    bar.addEventListener('mousedown', (e) => { if (e.target.tagName !== 'INPUT') e.preventDefault(); });
+
+    bar.querySelector('#vn-fills').addEventListener('click', (e) => {
+      const b = e.target.closest('.vn-sw'); if (!b) return;
+      const el = vennElAt(vennSel.id); if (!el || !vennSel.keys.size) return;
+      const before = clone(el);
+      el.data.fills = el.data.fills || {};
+      vennSel.keys.forEach((k) => { if (b.dataset.c) el.data.fills[k] = b.dataset.c; else delete el.data.fills[k]; });
+      vennCommit(el, before);
+    });
+    bar.querySelector('#vn-text').addEventListener('input', (e) => {
+      const el = vennElAt(vennSel.id); if (!el || vennSel.keys.size !== 1) return;
+      el.data.labels = el.data.labels || {};
+      const k = Array.from(vennSel.keys)[0];
+      const v = e.target.value.trim();
+      if (v) el.data.labels[k] = v; else delete el.data.labels[k];
+      upsertNode(el); vennSyncSoon(el);
+    });
+    bar.querySelector('#vn-sets').addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      const el = vennElAt(vennSel.id); if (!el) return;
+      const before = clone(el);
+      el.data.sets = +b.dataset.n;
+      el.data._labSig = null;
+      vennSel.keys.clear();
+      vennCommit(el, before);
+    });
+    bar.querySelector('#vn-overlap').addEventListener('input', (e) => {
+      const el = vennElAt(vennSel.id); if (!el) return;
+      el.data.overlap = (+e.target.value) / 100;
+      el.data._labSig = null;
+      upsertNode(el); vennSyncSoon(el);
+    });
+    bar.querySelector('#vn-universe').addEventListener('change', (e) => {
+      const el = vennElAt(vennSel.id); if (!el) return;
+      const before = clone(el);
+      el.data.universe = !!e.target.checked;
+      vennCommit(el, before);
+    });
+    bar.querySelector('#vn-presets').addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      const el = vennElAt(vennSel.id); if (!el) return;
+      vennSel.keys = new Set(JSON.parse(b.dataset.keys));
+      showVennBar(el);
+    });
+    return bar;
+  }
+  let vennSyncTimer = null;
+  function vennSyncSoon(el) {
+    clearTimeout(vennSyncTimer);
+    vennSyncTimer = setTimeout(() => send({ action: 'element_update', element: stripPrivate(el) }), 250);
+  }
+  function vennCommit(el, before) {
+    upsertNode(el);
+    send({ action: 'element_update', element: stripPrivate(el) });
+    if (before) histUpd(stripPrivate(before), stripPrivate(el));
+    showVennBar(el);
+  }
+
+  function showVennBar(el) {
+    const bar = buildVennBar(); if (!bar) return;
+    bar.hidden = false;
+    const d = el.data;
+    bar.querySelectorAll('#vn-sets button').forEach((b) => b.classList.toggle('on', +b.dataset.n === (d.sets || 3)));
+    bar.querySelector('#vn-overlap').value = Math.round((d.overlap == null ? 0.5 : d.overlap) * 100);
+    bar.querySelector('#vn-universe').checked = (d.universe !== false);
+    const one = (vennSel.keys.size === 1) ? Array.from(vennSel.keys)[0] : null;
+    const names = { A: 'только A', B: 'только B', C: 'только C', AB: 'A и B', AC: 'A и C', BC: 'B и C', ABC: 'все три', U: 'вне кругов' };
+    bar.querySelector('#vn-what').textContent = one ? names[one] : (vennSel.keys.size ? 'областей: ' + vennSel.keys.size : 'область');
+    const inp = bar.querySelector('#vn-text');
+    inp.disabled = !one;
+    inp.value = one ? ((d.labels || {})[one] || '') : '';
+    // Заготовки — только для двух множеств: для трёх список был бы длиннее пользы.
+    const pr = bar.querySelector('#vn-presets');
+    pr.querySelectorAll('button').forEach((b) => b.remove());
+    pr.style.display = (d.sets === 2) ? '' : 'none';
+    if (d.sets === 2) {
+      VENN_PRESETS2.forEach((p) => {
+        const b = document.createElement('button');
+        b.className = 'vn-preset'; b.textContent = p.t; b.dataset.keys = JSON.stringify(p.keys);
+        b.title = 'Выбрать эти области — дальше нажмите цвет';
+        pr.appendChild(b);
+      });
+    }
+    const s = stage.scaleX();
+    const left = (d.x || 0) * s + stage.x();
+    const top = (d.y || 0) * s + stage.y() + 56;
+    bar.style.left = Math.max(8, Math.min(left, window.innerWidth - 380)) + 'px';
+    bar.style.top = Math.max(64, top - bar.offsetHeight - 10) + 'px';
+  }
+
+  function insertVenn() {
+    const p = worldPoint() || viewportCenterWorld();
+    const W = 420, H = 320;
+    const el = {
+      id: uuid(), type: 'venn', z: 0,
+      data: {
+        x: p.x - W / 2, y: p.y - H / 2, width: W, height: H,
+        sets: 3, overlap: 0.5, universe: true,
+        stroke: strokeColor, strokeWidth: 2, fontSize: 15,
+        names: ['A', 'B', 'C'], labels: {}, fills: {},
+      },
+    };
+    upsertNode(el); send({ action: 'element_add', element: stripPrivate(el) }); histAdd(stripPrivate(el));
+    setTool('select');
+    selectOnly(el.id);
+    showVennBar(el);
+  }
+
   // ── Измерения (длина / угол / площадь) ─────────────────────────────────
   // Значение считается «вживую» в recomputeGeometry по опорным объектам.
   function fmtMeasure(v) { const r = Math.round(v * 100) / 100; return String(Math.abs(r) < 1e-9 ? 0 : r); }
@@ -2597,9 +2951,10 @@
   // ── Виджеты (таблица, канбан, таймер, колесо) — DOM-оверлей ─────────────
   const widgetLayerEl = document.getElementById('widget-layer');
   const widgetItems = new Map();
-  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card'];
+  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card', 'embed', 'poll', 'screen'];
 
   function repositionWidgets() {
+    if (typeof recomputeConnectors === 'function') recomputeConnectors(); // стрелки к DOM-объектам
     const s = stage.scaleX();
     widgetItems.forEach((it) => {
       const d = it.el.data;
@@ -2608,7 +2963,7 @@
     if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
     if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
   }
-  function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '' }[el.type] || ''; }
+  function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '', embed: 'Страница', poll: 'Голосование', screen: 'Экран' }[el.type] || ''; }
   function syncWidget(it) { send({ action: 'element_update', element: it.el }); }
 
   function upsertWidget(el) {
@@ -2631,6 +2986,8 @@
   function removeWidget(id) {
     const it = widgetItems.get(id);
     if (!it) return;
+    const tb = document.getElementById('tbl-bar');
+    if (tb && tb._owner === it) { tb.hidden = true; tb._owner = null; }
     if (it.timer) clearInterval(it.timer);
     it.wrapper.remove();
     widgetItems.delete(id);
@@ -2640,23 +2997,45 @@
     handle.addEventListener('mousedown', (e) => {
       if (e.target.closest('.wgt-del')) return;
       e.preventDefault();
+      if (isAddKey(e)) { toggleSelect(it.el.id); return; }   // добавить к выделению, не тащить
       if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
       const s = stage.scaleX();
       const sx = e.clientX, sy = e.clientY, ox = it.el.data.x || 0, oy = it.el.data.y || 0;
       const before = clone(it.el);
-      const mv = (ev) => { it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s; repositionWidgets(); };
-      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); syncWidget(it); histUpd(before, it.el); };
+      // Отличаем перетаскивание от клика: клик по объекту должен его ВЫДЕЛИТЬ
+      // (иначе к нему не подступиться — ни якорей, ни настроек), а рассылать
+      // соседям «я не сдвинулся» незачем.
+      let moved = false;
+      const mv = (ev) => {
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return;
+        moved = true;
+        it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s;
+        repositionWidgets();
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+        if (!moved) { selectOnly(it.el.id); return; }
+        syncWidget(it); syncConnectorsOf([it.el.id]); histUpd(before, it.el);
+      };
       document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
     });
   }
 
-  function insertWidget(type, data) {
-    const p = worldPoint() || { x: -stage.x() / stage.scaleX() + 200, y: -stage.y() / stage.scaleX() + 200 };
+  function insertWidget(type, data, at) {
+    // at — заранее запомненная точка (нужна, когда между выбором инструмента и
+    // созданием объекта успевает открыться диалог).
+    const p = at || worldPoint() || { x: -stage.x() / stage.scaleX() + 200, y: -stage.y() / stage.scaleX() + 200 };
     const el = { id: uuid(), type, z: 0, data: Object.assign({ x: p.x, y: p.y }, data) };
     upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
     setTool('select');
   }
-  function insertTable() { insertWidget('table', { rows: 3, cols: 3, cells: [['', '', ''], ['', '', ''], ['', '', '']] }); }
+  function insertTable() {
+    insertWidget('table', {
+      rows: 3, cols: 3,
+      colW: [120, 120, 120], rowH: [36, 36, 36],
+      cells: [[{}, {}, {}], [{}, {}, {}], [{}, {}, {}]],
+    });
+  }
   function insertKanban() { insertWidget('kanban', { columns: [{ title: 'To do', cards: [] }, { title: 'В работе', cards: [] }, { title: 'Готово', cards: [] }] }); }
   function insertTimer() { insertWidget('timer', { duration: 300, remaining: 300, running: false, startedAt: 0 }); }
   function insertWheel() { insertWidget('wheel', { options: ['Аня', 'Боря', 'Вера', 'Гена'] }); }
@@ -2664,7 +3043,10 @@
   function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
   function buildWidgetContent(it) {
-    if (it.el.type === 'table') buildTable(it);
+    if (it.el.type === 'embed') buildEmbed(it);
+    else if (it.el.type === 'screen') buildScreen(it);
+    else if (it.el.type === 'poll') buildPoll(it);
+    else if (it.el.type === 'table') buildTable(it);
     else if (it.el.type === 'kanban') buildKanban(it);
     else if (it.el.type === 'timer') buildTimer(it);
     else if (it.el.type === 'wheel') buildWheel(it);
@@ -2720,22 +3102,41 @@
     ed.style.color = d.color || '#1f2937';
     ed.style.textAlign = d.align || 'left';
     ed.style.background = d.boxBg || '';
+    // Начертание ВСЕГО поля. Внутри текста те же кнопки работают по-старому —
+    // на выделенный кусок; здесь же настройка applies ко всей рамке сразу и
+    // хранится в данных, поэтому переживает перезагрузку и уходит соседям.
+    ed.style.fontWeight = d.bold ? '700' : '';
+    ed.style.fontStyle = d.italic ? 'italic' : '';
+    const deco = [];
+    if (d.underline) deco.push('underline');
+    if (d.strike) deco.push('line-through');
+    ed.style.textDecoration = deco.length ? deco.join(' ') : '';
     if (d.wrapWidth) { ed.style.width = d.wrapWidth + 'px'; ed.style.maxWidth = 'none'; }
     else { ed.style.width = ''; ed.style.maxWidth = '640px'; }
   }
   let activeTbox = null;
   const tboxSyncTimers = {};
   function tboxSyncSoon(it) { const el = it._realEl || it.el, id = el.id; if (tboxSyncTimers[id]) clearTimeout(tboxSyncTimers[id]); tboxSyncTimers[id] = setTimeout(() => { send({ action: 'element_update', element: el }); }, 250); }
+  // Что ПОКАЗЫВАТЬ в обычном текстовом поле: подставленные значения {выражений}
+  // плюс настоящие ссылки. В самих данных при этом лежит ИСХОДНИК без разметки
+  // ссылок — иначе при каждой правке текст обрастал бы тегами, а курсор попадал
+  // бы внутрь ссылки и дописывал бы к ней лишнее.
+  function tboxDisplayHtml(el) {
+    const d = el.data || {};
+    const frame = d.frame ? elements.get(d.frame) : null;
+    return linkifyHtml(sanitizeHtml(renderDynamicText(d.html || '', frame)));
+  }
+
   function upsertTextbox(el) {
     let it = widgetItems.get(el.id);
     if (it && it.isTbox) {
       it.el = el;
-      if (document.activeElement !== it.ed) { const h = sanitizeHtml(renderDynamicText(el.data.html || '', el.data.frame ? elements.get(el.data.frame) : null)); if (it.ed.innerHTML !== h) it.ed.innerHTML = h; }
+      if (document.activeElement !== it.ed) { const h = tboxDisplayHtml(el); if (it.ed.innerHTML !== h) it.ed.innerHTML = h; }
       applyTboxStyle(it.ed, el.data); repositionWidgets(); return;
     }
     const wrapper = document.createElement('div'); wrapper.className = 'tbox';
     const ed = document.createElement('div'); ed.className = 'tbox-edit'; ed.setAttribute('spellcheck', 'false'); ed.setAttribute('data-ph', 'Текст…');
-    ed.innerHTML = sanitizeHtml(renderDynamicText(el.data.html || '', el.data.frame ? elements.get(el.data.frame) : null));
+    ed.innerHTML = tboxDisplayHtml(el);
     applyTboxStyle(ed, el.data);
     wrapper.appendChild(ed); widgetLayerEl.appendChild(wrapper);
     it = { el, wrapper, ed, isTbox: true, editing: false, editBefore: null };
@@ -2748,7 +3149,9 @@
     const ed = it.ed, wrapper = it.wrapper;
     wrapper.addEventListener('mousedown', (e) => {
       if (it.editing || viewOnly) return; // уже правим / только-просмотр — не перехватываем
+      if (e.target.closest('a.lnk')) return;  // клик по ссылке — открыть её, а не начать правку
       e.preventDefault();
+      if (isAddKey(e)) { toggleSelect(it.el.id); return; }   // добавить к выделению, не править
       if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
       const s = stage.scaleX(), sx = e.clientX, sy = e.clientY, ox = it.el.data.x || 0, oy = it.el.data.y || 0;
       const before = clone(it.el); let moved = false;
@@ -2759,9 +3162,21 @@
       const up = (ev) => {
         document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); wrapper.classList.remove('moving');
         if (moved) { send({ action: 'element_update', element: it.el }); histUpd(before, it.el); }
-        else startTboxEdit(it, ev); // клик без перетаскивания → правка
+        // Клик без перетаскивания. Первый — ВЫБИРАЕТ поле: появляется рамка и
+        // панель, настройки которой меняют оформление всего поля сразу. И только
+        // повторный клик по уже выбранному полю открывает ввод текста. Раньше
+        // клик сразу проваливался в набор, и до настроек поля было не добраться.
+        else if (!selected.has(it.el.id)) selectOnly(it.el.id);
+        else startTboxEdit(it, ev);
       };
       document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    // Двойной клик открывает правку даже по ссылке — иначе поле, состоящее из
+    // одной только ссылки, нельзя было бы отредактировать вовсе.
+    wrapper.addEventListener('dblclick', (e) => {
+      if (viewOnly || it.editing) return;
+      e.preventDefault(); e.stopPropagation();
+      startTboxEdit(it, e);
     });
     ed.addEventListener('input', () => { it.el.data.html = ed.innerHTML; tboxSyncSoon(it); });
     ed.addEventListener('blur', () => { setTimeout(() => {
@@ -2775,8 +3190,9 @@
   function startTboxEdit(it, ev) {
     if (it.editing) return;
     activeTbox = it; it.editing = true; it.editBefore = clone(it.el); it.wrapper.classList.add('editing');
-    // Правим ИСХОДНИК (с {выражениями}), а не подставленные значения.
-    if ((it.el.data.html || '').indexOf('{') >= 0) it.ed.innerHTML = sanitizeHtml(it.el.data.html || '');
+    // Правим ИСХОДНИК: без подставленных значений {выражений} и без разметки
+    // ссылок — так курсор не попадает внутрь ссылки, а текст не обрастает тегами.
+    it.ed.innerHTML = sanitizeHtml(it.el.data.html || '');
     it.ed.setAttribute('contenteditable', 'true'); it.ed.focus();
     it.grace = true; setTimeout(() => { it.grace = false; }, 400); // окно защиты от «мгновенной потери фокуса»
     requestAnimationFrame(() => { if (it.editing && document.activeElement !== it.ed) it.ed.focus(); }); // добить фокус после mousedown
@@ -2791,7 +3207,9 @@
     if (activeTbox === it) activeTbox = null;
     hideTboxBar();
     if (!(it.ed.textContent || '').trim()) { histDel(it.el); send({ action: 'element_delete', id: it.el.id }); removeWidget(it.el.id); return; }
+    it.ed.innerHTML = tboxDisplayHtml(it.el);   // правка окончена — снова показываем ссылки
     send({ action: 'element_update', element: it.el }); if (it.editBefore) histUpd(it.editBefore, it.el);
+    syncTboxFieldBar();   // поле осталось выбранным — панель вернётся в режим «всё поле»
   }
   function insertTextbox() {
     const p = worldPoint() || viewportCenterWorld();
@@ -2806,8 +3224,40 @@
   let tbBuilt = false;
   function tbCloseP() { ['tb-color-pop', 'tb-hilite-pop', 'tb-boxbg-pop'].forEach((id) => { const e = document.getElementById(id); if (e) e.classList.add('ps-hidden'); }); }
   function tbAfterExec() { if (!activeTbox) return; activeTbox.el.data.html = activeTbox.ed.innerHTML; tboxSyncSoon(activeTbox); syncTboxBar(); }
-  function tbExec(cmd, val) { if (!activeTbox) return; activeTbox.ed.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} document.execCommand(cmd, false, val == null ? null : val); tbAfterExec(); }
-  function syncTboxBar() { tboxBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => { let on = false; try { on = document.queryCommandState(b.dataset.cmd); } catch (e) {} b.classList.toggle('te-on', on); }); }
+  // Поле выбрано, но текст не правится → команды панели меняют ВСЁ поле.
+  function tbFieldMode() { return !!(activeTbox && !activeTbox.editing); }
+  const TB_FIELD_FLAGS = { bold: 'bold', italic: 'italic', underline: 'underline', strikeThrough: 'strike' };
+  const TB_FIELD_ALIGN = { justifyLeft: 'left', justifyCenter: 'center', justifyRight: 'right' };
+  function tbApplyField(cmd) {
+    const it = activeTbox; if (!it) return;
+    const d = it.el.data;
+    if (TB_FIELD_FLAGS[cmd]) { const k = TB_FIELD_FLAGS[cmd]; d[k] = !d[k]; }
+    else if (TB_FIELD_ALIGN[cmd]) { d.align = TB_FIELD_ALIGN[cmd]; }
+    else { boardHint('Списки задаются внутри текста — откройте поле двойным щелчком'); return; }
+    applyTboxStyle(it.ed, d); tboxSyncSoon(it); syncTboxBar();
+  }
+  function tbExec(cmd, val) {
+    if (!activeTbox) return;
+    if (tbFieldMode()) { tbApplyField(cmd); return; }
+    activeTbox.ed.focus();
+    try { document.execCommand('styleWithCSS', false, true); } catch (e) {}
+    document.execCommand(cmd, false, val == null ? null : val);
+    tbAfterExec();
+  }
+  function syncTboxBar() {
+    const field = tbFieldMode(), d = (activeTbox && activeTbox.el.data) || null;
+    tboxBar.classList.toggle('tb-field', field);
+    tboxBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => {
+      const cmd = b.dataset.cmd; let on = false;
+      if (field && d) {
+        if (TB_FIELD_FLAGS[cmd]) on = !!d[TB_FIELD_FLAGS[cmd]];
+        else if (TB_FIELD_ALIGN[cmd]) on = (d.align || 'left') === TB_FIELD_ALIGN[cmd];
+      } else {
+        try { on = document.queryCommandState(cmd); } catch (e) {}
+      }
+      b.classList.toggle('te-on', on);
+    });
+  }
   function buildTboxBar() {
     if (tbBuilt) return; tbBuilt = true;
     TEXT_FONTS.forEach((f) => { const o = document.createElement('option'); o.value = f.css; o.textContent = f.label; o.style.fontFamily = f.css; tbFontSel.appendChild(o); });
@@ -2816,16 +3266,21 @@
       if (noneLabel) { const n = document.createElement('div'); n.className = 'cp-none'; n.textContent = noneLabel; n.addEventListener('mousedown', (e) => e.preventDefault()); n.addEventListener('click', () => onPick('')); grid.appendChild(n); }
       BASE_COLORS.forEach((c) => { const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c; sw.addEventListener('mousedown', (e) => e.preventDefault()); sw.addEventListener('click', () => onPick(c)); grid.appendChild(sw); });
     };
-    mk('tb-color-grid', (c) => { const col = c || '#1f2937'; tbExec('foreColor', col); if (activeTbox) activeTbox.el.data.color = col; document.getElementById('tb-color-dot').style.background = col; tbCloseP(); });
-    mk('tb-hilite-grid', (c) => { const col = c || 'transparent'; if (activeTbox) activeTbox.ed.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} if (!document.execCommand('hiliteColor', false, col)) document.execCommand('backColor', false, col); tbAfterExec(); tbCloseP(); }, 'Убрать фон');
+    mk('tb-color-grid', (c) => {
+      const col = c || '#1f2937';
+      if (tbFieldMode()) { activeTbox.el.data.color = col; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); }
+      else { tbExec('foreColor', col); if (activeTbox) activeTbox.el.data.color = col; }
+      document.getElementById('tb-color-dot').style.background = col; tbCloseP();
+    });
+    mk('tb-hilite-grid', (c) => { const col = c || 'transparent'; if (tbFieldMode()) { boardHint('Фон за текстом красит выделенный кусок — откройте поле двойным щелчком'); tbCloseP(); return; } if (activeTbox) activeTbox.ed.focus(); try { document.execCommand('styleWithCSS', false, true); } catch (e) {} if (!document.execCommand('hiliteColor', false, col)) document.execCommand('backColor', false, col); tbAfterExec(); tbCloseP(); }, 'Убрать фон');
     mk('tb-boxbg-grid', (c) => { if (!activeTbox) return; activeTbox.el.data.boxBg = c; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); tbCloseP(); }, 'Прозрачный');
     tboxBar.querySelectorAll('.te-b[data-cmd]').forEach((b) => { b.addEventListener('mousedown', (e) => e.preventDefault()); b.addEventListener('click', () => tbExec(b.dataset.cmd)); });
     // всё, кроме select/number, не должно уводить фокус из редактируемого поля
     tboxBar.addEventListener('mousedown', (e) => { if (!e.target.closest('#tb-font, #tb-size')) e.preventDefault(); });
     const pop = (btnId, popId) => { document.getElementById(btnId).addEventListener('click', (e) => { e.stopPropagation(); const el = document.getElementById(popId); const wasHidden = el.classList.contains('ps-hidden'); tbCloseP(); if (wasHidden) el.classList.remove('ps-hidden'); }); };
     pop('tb-color-btn', 'tb-color-pop'); pop('tb-hilite-btn', 'tb-hilite-pop'); pop('tb-boxbg-btn', 'tb-boxbg-pop');
-    tbFontSel.addEventListener('change', () => { if (!activeTbox) return; activeTbox.el.data.font = tbFontSel.value; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); activeTbox.ed.focus(); });
-    tbSizeInp.addEventListener('change', () => { if (!activeTbox) return; const v = Math.max(8, Math.min(200, parseInt(tbSizeInp.value, 10) || 20)); tbSizeInp.value = v; activeTbox.el.data.fontSize = v; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); activeTbox.ed.focus(); });
+    tbFontSel.addEventListener('change', () => { if (!activeTbox) return; activeTbox.el.data.font = tbFontSel.value; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); if (!tbFieldMode()) activeTbox.ed.focus(); });
+    tbSizeInp.addEventListener('change', () => { if (!activeTbox) return; const v = Math.max(8, Math.min(200, parseInt(tbSizeInp.value, 10) || 20)); tbSizeInp.value = v; activeTbox.el.data.fontSize = v; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); if (!tbFieldMode()) activeTbox.ed.focus(); });
     document.addEventListener('mousedown', (e) => { if (!tboxBar.classList.contains('ps-hidden') && !e.target.closest('#tbox-bar')) tbCloseP(); }, true);
   }
   function positionTboxBar(it) {
@@ -2890,7 +3345,9 @@
     const wrapper = it.wrapper;
     wrapper.addEventListener('mousedown', (e) => {
       if (viewOnly || e.target.closest('.mtext-del')) return;
+      if (e.target.closest('a.lnk')) return;  // клик по ссылке — открыть её, а не тащить текст
       e.preventDefault();
+      if (isAddKey(e)) { toggleSelect(it.el.id); return; }
       if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
       const s = stage.scaleX(), sx = e.clientX, sy = e.clientY, ox = it.el.data.x || 0, oy = it.el.data.y || 0;
       const before = clone(it.el); let moved = false;
@@ -2901,6 +3358,7 @@
       const up = () => {
         document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); wrapper.classList.remove('moving');
         if (moved) { send({ action: 'element_update', element: it.el }); histUpd(before, it.el); }
+        else selectOnly(it.el.id);   // клик — выбрать; правка по двойному щелчку
       };
       document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
     });
@@ -2931,27 +3389,243 @@
   function insertSlider() { insertWidget('slider', { name: nextParamName(), min: -5, max: 5, value: 1, step: 0.1 }); }
 
   // — Таблица —
+  // Клетки — прямоугольники без заливки, ширины столбцов и высоты строк хранятся
+  // явно, чтобы границы можно было двигать. Клетка устроена как обычное
+  // текстовое поле (те же ключи стиля), поэтому к ней подключается та же панель
+  // форматирования, что и к тексту внутри фигур — «почти всё как в фигурах».
+  //
+  // Выделение клеток — ЛОКАЛЬНОЕ, соседям не рассылается: иначе двое, работая
+  // за одной таблицей, отбирали бы друг у друга выделение.
+  const TBL_W = 120, TBL_H = 36;      // размеры клетки по умолчанию
+  const TBL_FILLS = ['', '#fff3bf', '#ffe3e3', '#e3fafc', '#e6fcf5', '#f3f0ff', '#f1f3f5'];
+
+  function tblCell(d, r, c) {
+    const row = (d.cells && d.cells[r]) || [];
+    const v = row[c];
+    if (v == null) return {};
+    // Старые таблицы хранили клетку строкой — читаем и такие.
+    if (typeof v === 'string') return { html: escapeHtml(v) };
+    return v;
+  }
+  function tblSetCell(d, r, c, patch) {
+    if (!d.cells) d.cells = [];
+    if (!d.cells[r]) d.cells[r] = [];
+    const cur = tblCell(d, r, c);
+    d.cells[r][c] = Object.assign({}, cur, patch);
+    return d.cells[r][c];
+  }
+  function tblColW(d, c) { return (d.colW && d.colW[c]) || TBL_W; }
+  function tblRowH(d, r) { return (d.rowH && d.rowH[r]) || TBL_H; }
+  function tblEnsureSizes(d) {
+    if (!d.colW) d.colW = [];
+    if (!d.rowH) d.rowH = [];
+    for (let c = 0; c < d.cols; c++) if (!d.colW[c]) d.colW[c] = TBL_W;
+    for (let r = 0; r < d.rows; r++) if (!d.rowH[r]) d.rowH[r] = TBL_H;
+  }
+
   function buildTable(it) {
+    if (!it._sel) it._sel = new Set();      // выбранные клетки, «r,c»
+    const key = (r, c) => r + ',' + c;
+
     const render = () => {
       const d = it.el.data;
-      let html = '<table class="wgt-table">';
+      tblEnsureSizes(d);
+      const cols = d.colW.slice(0, d.cols).map((w) => w + 'px').join(' ');
+      const rows = d.rowH.slice(0, d.rows).map((h) => h + 'px').join(' ');
+
+      let html = '<div class="tbl" style="grid-template-columns:' + cols + ';grid-template-rows:' + rows + '">';
       for (let r = 0; r < d.rows; r++) {
-        html += '<tr>';
-        for (let c = 0; c < d.cols; c++) html += '<td contenteditable="true" data-r="' + r + '" data-c="' + c + '">' + escapeAttr((d.cells[r] && d.cells[r][c]) || '') + '</td>';
-        html += '</tr>';
+        for (let c = 0; c < d.cols; c++) {
+          const cell = tblCell(d, r, c);
+          const sel = it._sel.has(key(r, c)) ? ' sel' : '';
+          html += '<div class="tcell' + sel + '" data-r="' + r + '" data-c="' + c + '"'
+            + ' style="background:' + escapeAttr(cell.boxBg || '') + '">'
+            + '<div class="tcell-in">' + linkifyClickable(cell.html || '') + '</div></div>';
+        }
       }
-      html += '</table><div class="wgt-actions"><button data-act="addrow">+ строка</button><button data-act="addcol">+ столбец</button></div>';
+      html += '</div>';
+      html += '<div class="tbl-tools">'
+        + '<button data-act="addrow" title="Добавить строку">+ стр.</button>'
+        + '<button data-act="delrow" title="Убрать последнюю строку">− стр.</button>'
+        + '<button data-act="addcol" title="Добавить столбец">+ стлб.</button>'
+        + '<button data-act="delcol" title="Убрать последний столбец">− стлб.</button>'
+        + '</div>';
       it.body.innerHTML = html;
-      it.body.querySelectorAll('td').forEach((td) => td.addEventListener('blur', () => {
-        const r = +td.dataset.r, c = +td.dataset.c;
-        if (!it.el.data.cells[r]) it.el.data.cells[r] = [];
-        it.el.data.cells[r][c] = td.textContent;
-        syncWidget(it);
-      }));
-      it.body.querySelector('[data-act="addrow"]').addEventListener('click', () => { it.el.data.rows++; it.el.data.cells.push(new Array(it.el.data.cols).fill('')); syncWidget(it); render(); });
-      it.body.querySelector('[data-act="addcol"]').addEventListener('click', () => { it.el.data.cols++; it.el.data.cells.forEach((row) => row.push('')); syncWidget(it); render(); });
+
+      const grid = it.body.querySelector('.tbl');
+      // Стиль клетки применяем после вставки: цвет текста, шрифт, начертание.
+      grid.querySelectorAll('.tcell').forEach((td) => {
+        const cell = tblCell(d, +td.dataset.r, +td.dataset.c);
+        applyTboxStyle(td.querySelector('.tcell-in'), Object.assign({ fontSize: 14 }, cell, { boxBg: '' }));
+      });
+      addResizeHandles(grid, d);
+      wireCells(grid, d);
+      wireTools();
+      updateTblBar();
     };
-    it.update = render; render();
+
+    // ── Границы: тянем — меняем ширину столбца или высоту строки ──────────
+    function addResizeHandles(grid, d) {
+      let x = 0;
+      for (let c = 0; c < d.cols - 1; c++) {
+        x += tblColW(d, c);
+        const h = document.createElement('div');
+        h.className = 'tbl-vh'; h.style.left = x + 'px';
+        h.title = 'Потяните — изменится ширина столбца';
+        h.addEventListener('mousedown', (e) => startLineDragT(e, 'col', c));
+        grid.appendChild(h);
+      }
+      let y = 0;
+      for (let r = 0; r < d.rows - 1; r++) {
+        y += tblRowH(d, r);
+        const h = document.createElement('div');
+        h.className = 'tbl-hh'; h.style.top = y + 'px';
+        h.title = 'Потяните — изменится высота строки';
+        h.addEventListener('mousedown', (e) => startLineDragT(e, 'row', r));
+        grid.appendChild(h);
+      }
+    }
+    function startLineDragT(e, kind, i) {
+      e.preventDefault(); e.stopPropagation();
+      const d = it.el.data, s = stage.scaleX();
+      const start = (kind === 'col') ? e.clientX : e.clientY;
+      const was = (kind === 'col') ? tblColW(d, i) : tblRowH(d, i);
+      const before = clone(it.el);
+      const mv = (ev) => {
+        const delta = ((kind === 'col' ? ev.clientX : ev.clientY) - start) / s;
+        const v = Math.max(28, Math.round(was + delta));
+        if (kind === 'col') d.colW[i] = v; else d.rowH[i] = v;
+        render();
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+        syncWidget(it); histUpd(before, it.el); syncConnectorsOf([it.el.id]);
+      };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    }
+
+    // ── Выбор клеток ─────────────────────────────────────────────────────
+    function selectRange(r0, c0, r1, c1, additive) {
+      if (!additive) it._sel.clear();
+      for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
+        for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) it._sel.add(key(r, c));
+      }
+    }
+    function wireCells(grid, d) {
+      grid.querySelectorAll('.tcell').forEach((td) => {
+        const r = +td.dataset.r, c = +td.dataset.c;
+        td.addEventListener('mousedown', (e) => {
+          if (it._editing) return;                       // идёт правка — не мешаем
+          e.stopPropagation();                           // не тащить таблицу
+          if (isAddKey(e)) { const k = key(r, c); if (it._sel.has(k)) it._sel.delete(k); else it._sel.add(k); render(); return; }
+          selectRange(r, c, r, c, false);
+          render();
+          // Протяжка по клеткам — выбор прямоугольного участка.
+          const mv = (ev) => {
+            const t = document.elementFromPoint(ev.clientX, ev.clientY);
+            const cell = t && t.closest ? t.closest('.tcell') : null;
+            if (!cell || !grid.contains(cell)) return;
+            selectRange(r, c, +cell.dataset.r, +cell.dataset.c, false);
+            render();
+          };
+          const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+          document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+        });
+        td.addEventListener('dblclick', (e) => { e.stopPropagation(); startCellEdit(r, c); });
+      });
+    }
+
+    // ── Правка текста в клетке ───────────────────────────────────────────
+    // Подключаем ту же панель, что у текста внутри фигур: клетка хранит те же
+    // ключи стиля, поэтому кнопки шрифта, цвета и начертания работают как есть.
+    function startCellEdit(r, c) {
+      if (viewOnly) return;
+      const d = it.el.data;
+      const cell = tblSetCell(d, r, c, {});
+      const td = it.body.querySelector('.tcell[data-r="' + r + '"][data-c="' + c + '"]');
+      if (!td) return;
+      const ed = td.querySelector('.tcell-in');
+      it._editing = { r: r, c: c, ed: ed };
+      it._sel.clear(); it._sel.add(key(r, c));
+      td.classList.add('editing');
+      ed.setAttribute('contenteditable', 'true');
+      ed.innerHTML = sanitizeHtml(cell.html || '');       // сырой html — для правки
+      ed.focus();
+      const rng = document.createRange(); rng.selectNodeContents(ed); rng.collapse(false);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(rng);
+      const before = clone(it.el);
+      activeTbox = { ed: ed, el: { id: it.el.id, data: cell }, _realEl: it.el, wrapper: it.wrapper, isShapeText: true, editing: true };
+      showTboxBar(activeTbox);
+      const finish = () => {
+        ed.removeEventListener('blur', onBlur);
+        ed.setAttribute('contenteditable', 'false');
+        td.classList.remove('editing');
+        tblSetCell(it.el.data, r, c, { html: ed.innerHTML });
+        it._editing = null;
+        if (activeTbox && activeTbox._realEl === it.el) { activeTbox = null; hideTboxBar(); }
+        syncWidget(it); histUpd(before, it.el);
+        render();
+      };
+      const onBlur = () => setTimeout(() => {
+        if (document.activeElement === ed) return;
+        if (tboxBar && tboxBar.contains(document.activeElement)) return;
+        finish();
+      }, 0);
+      ed.addEventListener('blur', onBlur);
+      ed.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); ed.blur(); }
+        else if (e.key === 'Tab') { e.preventDefault(); const nc = (c + 1) % it.el.data.cols; const nr = nc ? r : (r + 1) % it.el.data.rows; ed.blur(); setTimeout(() => startCellEdit(nr, nc), 30); }
+      });
+    }
+
+    // ── Строки и столбцы ─────────────────────────────────────────────────
+    function wireTools() {
+      const tools = it.body.querySelector('.tbl-tools');
+      tools.addEventListener('mousedown', (e) => e.stopPropagation());
+      tools.addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        const d = it.el.data, a = b.dataset.act;
+        const before = clone(it.el);
+        if (a === 'addrow') { d.rows++; d.rowH.push(TBL_H); d.cells.push(new Array(d.cols).fill(null).map(() => ({}))); }
+        else if (a === 'delrow' && d.rows > 1) { d.rows--; d.rowH.pop(); d.cells.pop(); }
+        else if (a === 'addcol') { d.cols++; d.colW.push(TBL_W); d.cells.forEach((row) => row.push({})); }
+        else if (a === 'delcol' && d.cols > 1) { d.cols--; d.colW.pop(); d.cells.forEach((row) => row.pop()); }
+        else return;
+        it._sel.clear();
+        syncWidget(it); histUpd(before, it.el); render();
+      });
+    }
+
+    // ── Панель заливки выбранных клеток ──────────────────────────────────
+    function updateTblBar() {
+      const bar = document.getElementById('tbl-bar');
+      if (!bar) return;
+      if (!it._sel.size || it._editing) { if (bar._owner === it) { bar.hidden = true; bar._owner = null; } return; }
+      bar._owner = it;
+      bar.hidden = false;
+      if (!bar._built) {
+        bar._built = true;
+        bar.innerHTML = '<span class="tb-lbl">Заливка клеток</span>'
+          + TBL_FILLS.map((c) => '<button class="tb-sw' + (c ? '' : ' none') + '" data-c="' + c + '"'
+              + ' style="background:' + (c || '#fff') + '" title="' + (c ? c : 'без заливки') + '"></button>').join('');
+        bar.addEventListener('mousedown', (e) => e.preventDefault());
+        bar.addEventListener('click', (e) => {
+          const b = e.target.closest('.tb-sw'); if (!b) return;
+          const own = bar._owner; if (!own) return;
+          const d = own.el.data, before = clone(own.el);
+          own._sel.forEach((k) => { const p = k.split(','); tblSetCell(d, +p[0], +p[1], { boxBg: b.dataset.c }); });
+          syncWidget(own); histUpd(before, own.el);
+          if (own._render) own._render();
+        });
+      }
+      const r = it.wrapper.getBoundingClientRect();
+      bar.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 260)) + 'px';
+      bar.style.top = Math.max(8, r.top - 44) + 'px';
+    }
+
+    it._render = render;
+    it.update = render;
+    render();
   }
 
   // — Канбан —
@@ -3013,44 +3687,250 @@
     it.update = render; render();
   }
 
+  // — Голосование —
+  // Голоса хранятся картой «кто → за какой вариант», а не счётчиками. Так у
+  // каждого ровно один голос, переголосовать можно, а пересчёт всегда сходится,
+  // даже если два голоса прилетели одновременно.
+  //
+  // Голос отправляется отдельным действием poll_vote, а не обычной правкой:
+  // наблюдателю править доску нельзя, а голосовать он должен.
+  const POLL_COLORS = ['#4d7cfe', '#27ae60', '#e67e22', '#8e44ad', '#e7505a', '#16a2b8'];
+
+  function pollCounts(d) {
+    const opts = d.options || [], counts = opts.map(() => 0);
+    const votes = d.votes || {};
+    Object.keys(votes).forEach((k) => {
+      const i = votes[k];
+      if (typeof i === 'number' && i >= 0 && i < counts.length) counts[i]++;
+    });
+    return counts;
+  }
+  function pollMyChoice(d) {
+    const v = (d.votes || {})[String(myId)];
+    return (typeof v === 'number') ? v : null;
+  }
+
+  function buildPoll(it) {
+    const render = () => {
+      const d = it.el.data;
+      const opts = d.options || [];
+      const counts = pollCounts(d);
+      const total = counts.reduce((a, b) => a + b, 0);
+      const mine = pollMyChoice(d);
+      const open = d.showResults !== false || mine != null;   // свой голос видно всегда
+
+      let html = '<div class="poll-q" contenteditable="' + (viewOnly ? 'false' : 'true')
+        + '" data-ph="Вопрос">' + escapeHtml(d.title || '') + '</div>';
+      html += '<div class="poll-opts">';
+      opts.forEach((o, i) => {
+        const n = counts[i];
+        const pct = total ? Math.round(n * 100 / total) : 0;
+        const on = (mine === i);
+        html += '<button type="button" class="poll-opt' + (on ? ' on' : '') + '" data-i="' + i + '">'
+          + '<span class="poll-fill" style="width:' + (open ? pct : 0) + '%;background:'
+          + POLL_COLORS[i % POLL_COLORS.length] + '22"></span>'
+          + '<span class="poll-mark"></span>'
+          + '<span class="poll-label">' + escapeHtml(o) + '</span>'
+          + (open ? '<span class="poll-num">' + n + (total ? ' · ' + pct + '%' : '') + '</span>' : '')
+          + '</button>';
+      });
+      html += '</div>';
+      html += '<div class="poll-foot">'
+        + '<span class="poll-total">' + (total ? 'голосов: ' + total : 'пока никто не голосовал') + '</span>'
+        + '<span class="poll-tools">'
+        + '<button type="button" data-act="results" title="Показывать ли результаты до конца голосования">'
+        + (d.showResults === false ? 'Показать всем' : 'Скрыть до конца') + '</button>'
+        + '<button type="button" data-act="edit" title="Изменить варианты">Варианты</button>'
+        + '<button type="button" data-act="reset" title="Убрать все голоса">Сброс</button>'
+        + '</span></div>';
+      it.body.innerHTML = html;
+
+      // Вопрос правится прямо на месте.
+      const q = it.body.querySelector('.poll-q');
+      q.addEventListener('blur', () => {
+        const t = (q.textContent || '').trim();
+        if (t === (d.title || '')) return;
+        d.title = t; syncWidget(it);
+      });
+      q.addEventListener('mousedown', (e) => e.stopPropagation());   // не тащить объект
+
+      it.body.querySelectorAll('.poll-opt').forEach((b) => {
+        b.addEventListener('click', () => {
+          const i = +b.dataset.i;
+          const was = pollMyChoice(d);
+          const choice = (was === i) ? null : i;      // повторный клик снимает голос
+          // Показываем сразу, не дожидаясь сервера: свой голос должен отзываться мгновенно.
+          const votes = Object.assign({}, d.votes || {});
+          if (choice === null) delete votes[String(myId)]; else votes[String(myId)] = choice;
+          d.votes = votes;
+          render();
+          send({ action: 'poll_vote', id: it.el.id, choice: choice });
+        });
+      });
+
+      const tools = it.body.querySelector('.poll-tools');
+      tools.addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        e.stopPropagation();
+        if (b.dataset.act === 'results') { d.showResults = (d.showResults === false); syncWidget(it); render(); }
+        else if (b.dataset.act === 'reset') {
+          if (!confirm('Убрать все голоса?')) return;
+          d.votes = {}; syncWidget(it); render();
+        } else if (b.dataset.act === 'edit') {
+          const raw = window.prompt('Варианты — по одному в строке:', (d.options || []).join('\n'));
+          if (raw == null) return;
+          const list = raw.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 12);
+          if (!list.length) return;
+          d.options = list; d.votes = {};    // варианты сменились — прежние голоса не о том
+          syncWidget(it); render();
+        }
+      });
+    };
+    it.update = render; render();
+  }
+
+  function insertPoll() {
+    insertWidget('poll', {
+      title: 'Вопрос', options: ['Вариант 1', 'Вариант 2', 'Вариант 3'],
+      votes: {}, showResults: true,
+    });
+  }
+
   // — Колесо случайного выбора —
+  // Рисуем под плотность экрана (иначе на ретине края секторов мылят), крутим
+  // с длинным замедлением и отбойником, который щёлкает по каждому сектору.
+  const WHEEL_SIZE = 240;                    // видимый размер, px
+  const WHEEL_PALETTE = ['#4d7cfe', '#e7505a', '#27ae60', '#e67e22', '#8e44ad', '#16a2b8', '#d63384', '#f1c40f', '#2dd4bf', '#f97316'];
+
+  function wheelDraw(cv, opts, rot, winner) {
+    const dpr = window.devicePixelRatio || 1;
+    const S = WHEEL_SIZE, R = S / 2 - 10, cx = S / 2, cy = S / 2;
+    if (cv.width !== S * dpr) { cv.width = S * dpr; cv.height = S * dpr; cv.style.width = S + 'px'; cv.style.height = S + 'px'; }
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, S, S);
+    const n = Math.max(1, opts.length);
+
+    // Обод — тонкая тень под колесом, чтобы оно не выглядело наклейкой.
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, R + 5, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,.22)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rot || 0);
+    for (let i = 0; i < n; i++) {
+      const a0 = i / n * 2 * Math.PI, a1 = (i + 1) / n * 2 * Math.PI;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R, a0, a1); ctx.closePath();
+      ctx.fillStyle = WHEEL_PALETTE[i % WHEEL_PALETTE.length];
+      ctx.fill();
+      // Выпавший сектор притушаем остальные, а не подсвечиваем его: так виднее.
+      if (winner != null && winner !== i) { ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fill(); }
+      ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+      // Подпись вдоль радиуса, обрезаем по ширине сектора.
+      const label = String(opts[i] == null ? '' : opts[i]);
+      if (label) {
+        ctx.save();
+        ctx.rotate((a0 + a1) / 2);
+        ctx.fillStyle = (winner != null && winner !== i) ? '#8a8a94' : '#fff';
+        ctx.font = (n > 8 ? '600 11px ' : '600 13px ') + 'system-ui, sans-serif';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        let t = label;
+        const maxW = R - 26;
+        while (t.length > 1 && ctx.measureText(t).width > maxW) t = t.slice(0, -1);
+        if (t !== label) t = t.slice(0, -1) + '…';
+        ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 2;
+        ctx.fillText(t, R - 12, 0);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+
+    // Втулка.
+    ctx.beginPath(); ctx.arc(cx, cy, 15, 0, 2 * Math.PI);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#e0e0e8'; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, 2 * Math.PI);
+    ctx.fillStyle = '#c2c2ce'; ctx.fill();
+  }
+
+  // Отбойник справа: отклоняется, когда мимо проходит граница сектора.
+  function wheelDrawPointer(el, kick) {
+    el.style.transform = 'rotate(' + (kick || 0) + 'deg)';
+  }
+
   function buildWheel(it) {
     const render = () => {
       const opts = it.el.data.options || [];
-      it.body.innerHTML = '<canvas class="wh-canvas" width="180" height="180"></canvas>'
+      it.body.innerHTML = '<div class="wh-stage">'
+        + '<canvas class="wh-canvas"></canvas>'
+        + '<div class="wh-pointer"></div>'
+        + '</div>'
         + '<div class="wh-result"></div>'
         + '<textarea class="wh-opts" rows="3" placeholder="по одному варианту в строке">' + escapeAttr(opts.join('\n')) + '</textarea>'
         + '<div class="wgt-actions"><button data-act="spin">Крутить</button></div>';
       const cv = it.body.querySelector('.wh-canvas');
-      const draw = (rot) => {
-        const o = it.el.data.options || []; const ctx = cv.getContext('2d'); const n = Math.max(1, o.length);
-        ctx.clearRect(0, 0, 180, 180); ctx.save(); ctx.translate(90, 90); ctx.rotate(rot || 0);
-        const palette = ['#e7505a', '#27ae60', '#4d7cfe', '#e67e22', '#8e44ad', '#16a2b8', '#d63384', '#f1c40f'];
-        for (let i = 0; i < n; i++) {
-          const a0 = i / n * 2 * Math.PI, a1 = (i + 1) / n * 2 * Math.PI;
-          ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 84, a0, a1); ctx.closePath();
-          ctx.fillStyle = palette[i % palette.length]; ctx.fill();
-          ctx.save(); ctx.rotate((a0 + a1) / 2); ctx.fillStyle = '#fff'; ctx.font = '11px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(String(o[i] || '').slice(0, 10), 78, 4); ctx.restore();
-        }
-        ctx.restore();
-        ctx.beginPath(); ctx.moveTo(174, 90); ctx.lineTo(186, 84); ctx.lineTo(186, 96); ctx.closePath(); ctx.fillStyle = '#333'; ctx.fill();
-      };
-      draw(it._rot || 0);
-      it.body.querySelector('.wh-opts').addEventListener('blur', (e) => { it.el.data.options = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean); syncWidget(it); render(); });
-      it.body.querySelector('[data-act="spin"]').addEventListener('click', () => {
-        const o = it.el.data.options || []; if (!o.length) return;
+      const ptr = it.body.querySelector('.wh-pointer');
+      const res = it.body.querySelector('.wh-result');
+      const btn = it.body.querySelector('[data-act="spin"]');
+      wheelDraw(cv, it.el.data.options || [], it._rot || 0, it._winner);
+      if (it._winner != null && (it.el.data.options || [])[it._winner] != null) {
+        res.textContent = 'Выпало: ' + it.el.data.options[it._winner];
+        res.classList.add('on');
+      }
+
+      it.body.querySelector('.wh-opts').addEventListener('blur', (e) => {
+        it.el.data.options = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean);
+        it._winner = null; syncWidget(it); render();
+      });
+
+      btn.addEventListener('click', () => {
+        const o = it.el.data.options || [];
+        if (!o.length || it._spinning) return;
+        it._spinning = true; it._winner = null;
+        btn.disabled = true; res.textContent = ''; res.classList.remove('on');
+
         const pick = Math.floor(Math.random() * o.length);
-        const target = 2 * Math.PI * 5 + (2 * Math.PI - (pick + 0.5) / o.length * 2 * Math.PI);
-        const start = it._rot || 0, t0 = Date.now(), dur = 2600;
+        const seg = 2 * Math.PI / o.length;
+        // Останавливаемся так, чтобы середина выпавшего сектора смотрела вправо,
+        // где стоит отбойник. Небольшой сдвиг внутри сектора — чтобы колесо не
+        // замирало каждый раз в одной и той же позе.
+        const jitter = (Math.random() - 0.5) * seg * 0.5;
+        const turns = 6 + Math.floor(Math.random() * 3);          // 6–8 оборотов
+        const start = it._rot || 0;
+        const base = 2 * Math.PI * turns;
+        const target = start + base + ((2 * Math.PI - ((pick + 0.5) * seg + jitter)) - (start % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+        const dur = 4200 + Math.random() * 900;
+        const t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+        let lastSeg = -1;
+
         const anim = () => {
-          const k = Math.min(1, (Date.now() - t0) / dur);
-          const ease = 1 - Math.pow(1 - k, 3);
+          const now = (window.performance && performance.now) ? performance.now() : Date.now();
+          const k = Math.min(1, (now - t0) / dur);
+          // Замедление пятой степени: долгий разгон-выбег без рывка в конце.
+          const ease = 1 - Math.pow(1 - k, 5);
           it._rot = start + (target - start) * ease;
-          draw(it._rot);
+          wheelDraw(cv, o, it._rot, null);
+          // Отбойник щёлкает на каждой границе сектора — и всё замедляется вместе с колесом.
+          const segNow = Math.floor(((2 * Math.PI - (it._rot % (2 * Math.PI))) % (2 * Math.PI)) / seg);
+          if (segNow !== lastSeg) {
+            lastSeg = segNow;
+            wheelDrawPointer(ptr, -14 * (1 - k) - 3);
+            setTimeout(() => wheelDrawPointer(ptr, 0), 70);
+          }
           if (k < 1) requestAnimationFrame(anim);
-          else { it.body.querySelector('.wh-result').textContent = 'Выпало: ' + o[pick]; }
+          else {
+            it._spinning = false; it._winner = pick; btn.disabled = false;
+            wheelDraw(cv, o, it._rot, pick);
+            res.textContent = 'Выпало: ' + o[pick];
+            res.classList.add('on');
+          }
         };
-        anim();
+        requestAnimationFrame(anim);
       });
     };
     it.update = render; render();
@@ -3131,6 +4011,387 @@
   }
 
   function placePoint() { newPointAt(worldPoint()); }
+
+  // ── Встроенные страницы (iframe) ───────────────────────────────────────
+  // Что синхронизируется, а что нет — и почему.
+  //
+  // Браузер намеренно не даёт родительской странице заглядывать внутрь чужого
+  // сайта во фрейме: нельзя узнать ни прокрутку, ни введённый текст, ни секунду
+  // видео. Это защита, а не недоработка, и обойти её нельзя. Поэтому:
+  //   • ВСЕГДА синхронно: сам объект — адрес, положение, размер, подпись.
+  //     Вставил — появилось у всех; подвинул — уехало у всех.
+  //   • ВСЕГДА синхронно: смена адреса и «перезагрузить у всех». Для Desmos,
+  //     Google Документов и ссылок с якорем адрес и ЕСТЬ состояние, поэтому это
+  //     покрывает большую часть случаев.
+  //   • ДЛЯ ВИДЕО: у плеера YouTube есть свой канал управления, и через него мы
+  //     рассылаем «включить», «пауза» и «всем на мою секунду».
+  //   • НЕ синхронно: прокрутка и ввод внутри обычной страницы. У каждого свои.
+  //     Так и написано под объектом, чтобы это не было сюрпризом на занятии.
+
+  // Разрешаем только настоящие веб-адреса. Проверка нужна ИМЕННО при отрисовке:
+  // данные приходят от других участников, а адрес вида javascript:… во фрейме
+  // выполнился бы уже в контексте нашей страницы — это была бы дыра.
+  function safeEmbedUrl(u) {
+    const s = String(u == null ? '' : u).trim();
+    return /^https?:\/\//i.test(s) ? s : '';
+  }
+
+  // Приводим ссылку к встраиваемому виду: обычная ссылка на YouTube во фрейме
+  // не открывается, нужен адрес плеера. Заодно узнаём, чем управлять.
+  function normalizeEmbedUrl(raw) {
+    const src = String(raw == null ? '' : raw).trim();
+    if (!/^https?:\/\//i.test(src)) return null;
+    let u;
+    try { u = new URL(src); } catch (e) { return null; }
+    const host = u.hostname.replace(/^www\./, '');
+
+    let vid = null;
+    if (host === 'youtu.be') vid = u.pathname.slice(1).split('/')[0];
+    else if (host === 'youtube.com' || host === 'youtube-nocookie.com' || host === 'm.youtube.com') {
+      if (u.pathname === '/watch') vid = u.searchParams.get('v');
+      else if (u.pathname.indexOf('/shorts/') === 0) vid = u.pathname.split('/')[2];
+      else if (u.pathname.indexOf('/embed/') === 0) vid = u.pathname.split('/')[2];
+    }
+    if (vid && /^[A-Za-z0-9_-]{6,20}$/.test(vid)) {
+      const t = parseInt(u.searchParams.get('t') || u.searchParams.get('start') || '0', 10) || 0;
+      return {
+        // nocookie-домен: YouTube не ставит рекламные куки ученикам.
+        url: 'https://www.youtube-nocookie.com/embed/' + vid
+             + '?enablejsapi=1&rel=0&modestbranding=1&playsinline=1' + (t ? '&start=' + t : ''),
+        src: src, kind: 'youtube', title: 'Видео YouTube',
+      };
+    }
+    if (host === 'vimeo.com') {
+      const id = (u.pathname.match(/\/(\d+)/) || [])[1];
+      if (id) return { url: 'https://player.vimeo.com/video/' + id, src: src, kind: 'page', title: 'Видео Vimeo' };
+    }
+    if (host === 'player.vimeo.com') return { url: src, src: src, kind: 'page', title: 'Видео Vimeo' };
+    // Rutube: обычная ссылка на ролик во фрейм не пускается, нужен адрес плеера.
+    if (host === 'rutube.ru') {
+      const m2 = u.pathname.match(/^\/video\/(?:private\/)?([0-9a-f]{16,40})/i);
+      if (m2) return { url: 'https://rutube.ru/play/embed/' + m2[1], src: src, kind: 'page', title: 'Видео Rutube' };
+      if (u.pathname.indexOf('/play/embed/') === 0) return { url: src, src: src, kind: 'page', title: 'Видео Rutube' };
+    }
+    // VK Видео: собрать адрес плеера из обычной ссылки нельзя (нужен ключ из кода
+    // вставки), поэтому принимаем только готовый адрес плеера.
+    if ((host === 'vk.com' && u.pathname.indexOf('/video_ext.php') === 0) || host === 'vkvideo.ru') {
+      return { url: src, src: src, kind: 'page', title: 'Видео VK' };
+    }
+    if (host === 'docs.google.com') {
+      // Режим правки во фрейм не пускают — подменяем на режим просмотра.
+      return { url: src.replace(/\/edit[^/]*$/, '/preview'), src: src, kind: 'page', title: 'Google Документы' };
+    }
+    if (host === 'desmos.com' && u.pathname.indexOf('/calculator') === 0) {
+      return { url: u.origin + u.pathname + '?embed', src: src, kind: 'page', title: 'Desmos' };
+    }
+    return { url: src, src: src, kind: 'page', title: host };
+  }
+
+  // ── Разбор кода вставки (<iframe …>) ───────────────────────────────────
+  // Сайты обычно дают не ссылку, а готовый кусок разметки под кнопкой
+  // «Поделиться → Встроить». Принимаем и его.
+  //
+  // Ключевой момент: сам код мы НИКОГДА не вставляем в страницу. Из него
+  // извлекаются только адрес и размеры, а фрейм строится наш собственный — в
+  // песочнице и с проверенным адресом. Иначе чужая разметка приехала бы на
+  // доску целиком, вместе с тем, что в ней может быть спрятано.
+  function parseEmbedInput(text) {
+    const raw = String(text == null ? '' : text).trim();
+    if (!raw) return { error: 'Пусто — вставьте ссылку или код для вставки.' };
+
+    // Обычная ссылка — разбираем как раньше.
+    if (raw.indexOf('<') < 0) {
+      const info = normalizeEmbedUrl(raw);
+      return info || { error: 'Нужна ссылка, начинающаяся с http:// или https://' };
+    }
+
+    // Разметку читаем через DOMParser: он строит «мёртвый» документ — скрипты в
+    // нём не выполняются, картинки и фреймы не загружаются. Через innerHTML так
+    // делать нельзя: там содержимое ожило бы прямо у нас на странице.
+    let doc = null;
+    try { doc = new DOMParser().parseFromString(raw, 'text/html'); } catch (e) { doc = null; }
+    const fr = doc && doc.querySelector('iframe[src], iframe[data-src]');
+    if (!fr) {
+      return { error: /<script\b/i.test(raw)
+        ? 'Этот код вставки работает через скрипт — такие мы не поддерживаем. Возьмите вариант с <iframe> или обычную ссылку на страницу.'
+        : 'В коде не нашёлся <iframe>. Вставьте ссылку или код с тегом <iframe>.' };
+    }
+
+    let src = (fr.getAttribute('src') || fr.getAttribute('data-src') || '').trim();
+    if (src.indexOf('//') === 0) src = 'https:' + src;   // адрес без схемы
+    const info = normalizeEmbedUrl(src);
+    if (!info) return { error: 'Адрес внутри кода не похож на обычную ссылку — вставка отклонена.' };
+
+    // Размеры из кода берём, если они разумные (бывает width="100%").
+    const w = parseInt(fr.getAttribute('width'), 10);
+    const h = parseInt(fr.getAttribute('height'), 10);
+    if (w > 100 && w < 4000) info.width = w;
+    if (h > 80 && h < 4000) info.height = h;
+    const t = (fr.getAttribute('title') || '').trim();
+    if (t) info.title = t.slice(0, 60);
+    return info;
+  }
+
+  // ── Диалог вставки ─────────────────────────────────────────────────────
+  // Системное окошко prompt() не годится: код вставки многострочный, и в
+  // однострочное поле он вставляется как попало.
+  let embedDlgCb = null;
+  function openEmbedDialog(initial, cb) {
+    const dlg = document.getElementById('embed-dialog');
+    const ta = document.getElementById('emb-input');
+    const err = document.getElementById('emb-error');
+    if (!dlg || !ta) {                       // подстраховка, если разметки нет
+      const v = window.prompt('Ссылка или код для вставки:', initial || 'https://');
+      if (v != null) cb(v);
+      return;
+    }
+    embedDlgCb = cb;
+    if (err) err.textContent = '';
+    ta.value = initial || '';
+    dlg.hidden = false;
+    setTimeout(() => { try { ta.focus(); ta.select(); } catch (e) {} }, 30);
+  }
+  function closeEmbedDialog() {
+    const dlg = document.getElementById('embed-dialog');
+    if (dlg) dlg.hidden = true;
+    embedDlgCb = null;
+  }
+  function submitEmbedDialog() {
+    const ta = document.getElementById('emb-input');
+    const err = document.getElementById('emb-error');
+    if (!ta || !embedDlgCb) return;
+    const info = parseEmbedInput(ta.value);
+    if (!info || !info.url) {
+      if (err) err.textContent = (info && info.error) || 'Не удалось разобрать вставку.';
+      return;
+    }
+    const cb = embedDlgCb;
+    closeEmbedDialog();
+    cb(info);
+  }
+  (function initEmbedDialog() {
+    const dlg = document.getElementById('embed-dialog');
+    if (!dlg) return;
+    const ok = document.getElementById('emb-ok');
+    const cancel = document.getElementById('emb-cancel');
+    const ta = document.getElementById('emb-input');
+    if (ok) ok.addEventListener('click', submitEmbedDialog);
+    if (cancel) cancel.addEventListener('click', closeEmbedDialog);
+    dlg.addEventListener('mousedown', (e) => { if (e.target === dlg) closeEmbedDialog(); });
+    if (ta) ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeEmbedDialog(); }
+      // Enter отправляет, Shift+Enter — перенос строки (код бывает многострочным).
+      else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitEmbedDialog(); }
+    });
+  })();
+
+  function insertEmbed() {
+    // Точку вставки запоминаем СЕЙЧАС: пока человек вставляет код в диалог,
+    // указатель уедет, и объект встал бы не туда.
+    const at = worldPoint() || viewportCenterWorld();
+    openEmbedDialog('', (info) => {
+      insertWidget('embed', {
+        width: info.width || (info.kind === 'youtube' ? 560 : 620),
+        height: info.height || (info.kind === 'youtube' ? 315 : 420),
+        url: info.url, src: info.src, title: info.title, kind: info.kind, rev: 1,
+      }, at);
+    });
+    setTool('select');
+  }
+
+  // Команда плееру YouTube. Плеер слушает такие сообщения, потому что мы
+  // добавили в адрес enablejsapi=1.
+  function ytPost(frame, func, args) {
+    if (!frame || !frame.contentWindow) return;
+    try {
+      frame.contentWindow.postMessage(JSON.stringify({ event: 'command', func: func, args: args || [] }), '*');
+    } catch (e) { /* фрейм ещё не готов — не страшно */ }
+  }
+
+  // Плеер сам присылает своё состояние, если с ним «поздороваться». Так мы
+  // узнаём текущую секунду, чтобы подтянуть к ней остальных.
+  window.addEventListener('message', (ev) => {
+    if (!/(^|\.)youtube(-nocookie)?\.com$/.test((function () {
+      try { return new URL(ev.origin).hostname; } catch (e) { return ''; }
+    })())) return;
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (!m || m.event !== 'infoDelivery' || !m.info) return;
+    widgetItems.forEach((it) => {
+      if (it.el.type !== 'embed' || !it.frame || it.frame.contentWindow !== ev.source) return;
+      if (typeof m.info.currentTime === 'number') it._t = m.info.currentTime;
+      if (typeof m.info.playerState === 'number') it._state = m.info.playerState;
+    });
+  });
+
+  // Применить общее состояние воспроизведения, пришедшее от другого участника.
+  function embedApplyPlay(it) {
+    const d = it.el.data, p = d && d.play;
+    if (!p || d.kind !== 'youtube' || !it.frame) return;
+    if (it._playSeen === p.at) return;         // это состояние уже применяли
+    it._playSeen = p.at;
+    // Пока сообщение шло по сети, видео у отправителя ушло вперёд — учитываем.
+    const drift = (p.state === 'playing') ? Math.max(0, (Date.now() - (p.at || 0)) / 1000) : 0;
+    ytPost(it.frame, 'seekTo', [Math.max(0, (p.t || 0) + drift), true]);
+    ytPost(it.frame, p.state === 'playing' ? 'playVideo' : 'pauseVideo');
+  }
+  function embedBroadcastPlay(it, state) {
+    it.el.data.play = { state: state, t: it._t || 0, at: Date.now() };
+    it._playSeen = it.el.data.play.at;
+    ytPost(it.frame, 'seekTo', [it._t || 0, true]);
+    ytPost(it.frame, state === 'playing' ? 'playVideo' : 'pauseVideo');
+    syncWidget(it);
+    boardHint(state === 'playing' ? 'Включили видео у всех' : 'Поставили на паузу у всех');
+  }
+
+  // «Крышка» поверх фрейма: пока она есть, объект можно таскать и выделять.
+  // Нажали — работаем со страницей. Это состояние ЛОКАЛЬНОЕ: каждый решает сам.
+  function setEmbedLive(it, on) {
+    it._live = !!on;
+    it.wrapper.classList.toggle('live', it._live);
+  }
+
+  function buildEmbed(it) {
+    it.wrapper.classList.add('wgt-embed');
+
+    const tools = document.createElement('span');
+    tools.className = 'emb-tools';
+    it.bar.insertBefore(tools, it.bar.querySelector('.wgt-del'));
+
+    const wrap = document.createElement('div');
+    wrap.className = 'emb-wrap';
+    const frame = document.createElement('iframe');
+    frame.className = 'emb-frame';
+    // Песочница: чужая страница не сможет увести нашу вкладку на другой адрес.
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-popups-to-escape-sandbox');
+    frame.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen');
+    frame.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    const lock = document.createElement('div');
+    lock.className = 'emb-lock';
+    lock.innerHTML = '<span>Нажмите, чтобы работать со страницей</span>';
+    lock.addEventListener('click', () => setEmbedLive(it, true));
+    const grip = document.createElement('div');
+    grip.className = 'emb-grip';
+    grip.title = 'Потянуть — изменить размер';
+    wrap.appendChild(frame); wrap.appendChild(lock); wrap.appendChild(grip);
+    const note = document.createElement('div');
+    note.className = 'emb-note';
+    it.body.appendChild(wrap);
+    it.body.appendChild(note);
+    it.frame = frame;
+    it._live = false;
+    it._t = 0;
+
+    function applySize() {
+      const d = it.el.data;
+      const w = Math.max(200, d.width || 560), h = Math.max(140, d.height || 340);
+      wrap.style.width = w + 'px';
+      wrap.style.height = h + 'px';
+      it.wrapper.style.width = w + 'px';
+    }
+    function applySrc() {
+      const url = safeEmbedUrl(it.el.data.url);
+      const key = url + '|' + (it.el.data.rev || 1);
+      if (it._srcKey === key) return;
+      it._srcKey = key;
+      frame.src = url || 'about:blank';
+      if (!url) note.textContent = 'Адрес не распознан — вставьте ссылку заново.';
+    }
+    function applyTools() {
+      const d = it.el.data, video = d.kind === 'youtube';
+      tools.innerHTML =
+        (video
+          ? '<button class="emb-play" title="Включить видео у всех">▶</button>'
+            + '<button class="emb-pause" title="Поставить на паузу у всех">❙❙</button>'
+            + '<button class="emb-here" title="Перемотать всех на мою секунду">⇥</button>'
+          : '<button class="emb-reload" title="Перезагрузить страницу у всех">⟳</button>')
+        + '<button class="emb-url" title="Сменить адрес — у всех участников">Адрес</button>'
+        + '<button class="emb-open" title="Открыть в новой вкладке">↗</button>';
+      note.textContent = video
+        ? 'Кнопки ▶ ❙❙ ⇥ управляют просмотром у всех участников.'
+        : 'Прокрутка и ввод здесь у каждого свои — браузер не даёт их передавать. Общее: адрес и кнопка ⟳.';
+    }
+    function render() {
+      const d = it.el.data;
+      it.bar.querySelector('.wgt-title').textContent = d.title || 'Страница';
+      applySize(); applyTools(); applySrc();
+      embedApplyPlay(it);
+    }
+
+    // Нажатия в шапке.
+    tools.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      e.stopPropagation();
+      const d = it.el.data;
+      if (b.classList.contains('emb-play')) embedBroadcastPlay(it, 'playing');
+      else if (b.classList.contains('emb-pause')) embedBroadcastPlay(it, 'paused');
+      else if (b.classList.contains('emb-here')) embedBroadcastPlay(it, 'playing');
+      else if (b.classList.contains('emb-reload')) {
+        d.rev = (d.rev || 1) + 1; it._srcKey = null; applySrc(); syncWidget(it);
+        boardHint('Перезагрузили страницу у всех');
+      } else if (b.classList.contains('emb-open')) {
+        const u = safeEmbedUrl(d.src || d.url);
+        if (u) window.open(u, '_blank', 'noopener');
+      } else if (b.classList.contains('emb-url')) {
+        openEmbedDialog(d.src || d.url || '', (info) => {
+          const before = clone(it.el);
+          d.url = info.url; d.src = info.src; d.kind = info.kind; d.title = info.title;
+          if (info.width) d.width = info.width;
+          if (info.height) d.height = info.height;
+          d.rev = (d.rev || 1) + 1; d.play = null;
+          it._srcKey = null; render(); syncWidget(it); histUpd(before, it.el);
+          boardHint('Адрес сменился у всех участников');
+        });
+      }
+    });
+
+    // Своя ручка размера: у обычных виджетов её нет, а встроенной странице она
+    // нужна больше всего. Размер синхронизируется, как и положение.
+    grip.addEventListener('mousedown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const s = stage.scaleX();
+      const sx = e.clientX, sy = e.clientY;
+      const w0 = it.el.data.width || 560, h0 = it.el.data.height || 340;
+      const before = clone(it.el);
+      const mv = (ev) => {
+        it.el.data.width = Math.max(200, w0 + (ev.clientX - sx) / s);
+        it.el.data.height = Math.max(140, h0 + (ev.clientY - sy) / s);
+        applySize();
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv);
+        document.removeEventListener('mouseup', up);
+        syncWidget(it); histUpd(before, it.el);
+      };
+      document.addEventListener('mousemove', mv);
+      document.addEventListener('mouseup', up);
+    });
+
+    // Здороваемся с плеером, чтобы он присылал текущую секунду.
+    frame.addEventListener('load', () => {
+      if (it.el.data.kind !== 'youtube') return;
+      const hello = () => {
+        if (!it.frame || !it.frame.contentWindow) return;
+        try { it.frame.contentWindow.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*'); } catch (e) {}
+      };
+      hello(); setTimeout(hello, 400); setTimeout(hello, 1200);
+      embedApplyPlay(it);
+    });
+
+    it.update = render;
+    render();
+  }
+
+  // Клик мимо встроенной страницы — снова «накрываем» её, чтобы объект можно
+  // было двигать и выделять.
+  document.addEventListener('mousedown', (e) => {
+    widgetItems.forEach((it) => {
+      if (it.el.type !== 'embed' || !it._live) return;
+      const inside = e.target.closest && e.target.closest('.wgt-embed') === it.wrapper;
+      if (!inside) setEmbedLive(it, false);
+    });
+  }, true);
 
   // ── Математические рамки (окна с собственной системой координат) ───────
   // Окно: прямоугольник (x,y,width,height в координатах доски) + своя матем.
@@ -3258,7 +4519,7 @@
       e.cancelBubble = true;
       const el = elements.get(id); if (!el) return;
       const w = worldPoint();
-      frameMove = { id, sx: w.x, sy: w.y, ox: el.data.x, oy: el.data.y, moved: false, shift: !!(e.evt && e.evt.shiftKey) };
+      frameMove = { id, sx: w.x, sy: w.y, ox: el.data.x, oy: el.data.y, moved: false, shift: isAddKey(e.evt) };
     };
     header.on('mousedown', startMove);
     if (hlabel) hlabel.on('mousedown', startMove);
@@ -3917,9 +5178,16 @@
             URL_RE.lastIndex = 0; const frag = document.createDocumentFragment(); let last = 0, m;
             while ((m = URL_RE.exec(t))) {
               if (m.index > last) frag.appendChild(document.createTextNode(t.slice(last, m.index)));
-              const span = document.createElement('span'); span.className = 'lnk';
-              span.style.color = '#1f6feb'; span.style.textDecoration = 'underline'; span.textContent = m[0];
-              frag.appendChild(span); last = m.index + m[0].length;
+              // Настоящая ссылка, а не просто покрашенный текст: раньше здесь был
+              // <span>, из-за чего адрес выглядел кликабельным, но клик ничего не
+              // делал. Адрес без схемы (www.…) дополняем до https://.
+              const a = document.createElement('a');
+              a.className = 'lnk';
+              a.href = /^https?:\/\//i.test(m[0]) ? m[0] : 'https://' + m[0];
+              a.target = '_blank'; a.rel = 'noopener noreferrer nofollow';
+              a.style.color = '#1f6feb'; a.style.textDecoration = 'underline';
+              a.textContent = m[0];
+              frag.appendChild(a); last = m.index + m[0].length;
             }
             if (last < t.length) frag.appendChild(document.createTextNode(t.slice(last)));
             child.replaceWith(frag);
@@ -4035,18 +5303,21 @@
   // ── PDF через pdf.js (CDN) ──────────────────────────────────────────────
   const PDFJS_VER = '3.11.174';
   function ensurePdfLib(cb, tries) {
-    if (window.pdfjsLib) { if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VER + '/build/pdf.worker.min.js'; cb(window.pdfjsLib); return; }
+    if (window.pdfjsLib) { if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) window.pdfjsLib.GlobalWorkerOptions.workerSrc = cfg.pdfWorker; cb(window.pdfjsLib); return; }
     if ((tries || 0) > 40) { boardHint('pdf.js не загрузился'); return; }
     setTimeout(() => ensurePdfLib(cb, (tries || 0) + 1), 150);
   }
   const pdfDocs = new Map(); // url → Promise<pdfDoc>
   function getPdfDoc(url) {
     if (pdfDocs.has(url)) return pdfDocs.get(url);
-    const base = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VER + '/';
+    // cMaps нужны только для иероглифических PDF (китайский/японский/корейский) —
+    // такие у нас не встречаются, поэтому их одних оставляем на CDN, а всё, без
+    // чего PDF не откроется, лежит у нас.
+    const cmaps = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VER + '/cmaps/';
     const p = new Promise((res, rej) => {
       ensurePdfLib((lib) => {
         // cMap + стандартные шрифты нужны pdf.js 3.x, иначе отрисовка текста зависает/падает.
-        lib.getDocument({ url: url, cMapUrl: base + 'cmaps/', cMapPacked: true, standardFontDataUrl: base + 'standard_fonts/' }).promise.then(res, rej);
+        lib.getDocument({ url: url, cMapUrl: cmaps, cMapPacked: true, standardFontDataUrl: cfg.pdfFonts }).promise.then(res, rej);
       });
     });
     pdfDocs.set(url, p); return p;
@@ -4245,11 +5516,185 @@
     return { id: el.id, type: el.type, z: el.z, data };
   }
 
+  // ── Касания, стилус и графический планшет ──────────────────────────────
+  // Доска задумывалась под мышь: панорама была только на стрелках и колесе, а
+  // палец на пустом месте рисовал рамку выделения. На телефоне и планшете это
+  // означало, что по доске вообще нельзя перемещаться. Здесь мы добавляем жесты
+  // и учим доску отличать перо от пальца.
+  //
+  // Правила (выбраны владельцем):
+  //   • перо — всегда рисует;
+  //   • пока перо ведёт, все касания считаются ладонью и игнорируются;
+  //   • если на устройстве видели перо — палец ДВИГАЕТ доску (как в Procreate),
+  //     чтобы можно было писать, положив руку на экран;
+  //   • если пера не видели — палец рисует, а доску двигают двумя пальцами;
+  //   • два пальца всегда: щипок — масштаб, движение — панорама.
+  // Нажим намеренно не читаем: толщина линии всегда ровная.
+
+  const PEN_SEEN_KEY = 'board-pen-seen-v1';     // на этом устройстве работали пером
+  const FINGER_DRAW_KEY = 'board-finger-draw';  // ручное «всё равно рисовать пальцем»
+  let penSeen = false, fingerDrawPref = false;
+  try { penSeen = localStorage.getItem(PEN_SEEN_KEY) === '1'; } catch (e) {}
+  try { fingerDrawPref = localStorage.getItem(FINGER_DRAW_KEY) === '1'; } catch (e) {}
+
+  // Режим пера: палец двигает доску, а не рисует.
+  function penMode() { return penSeen && !fingerDrawPref; }
+
+  const touchPts = new Map();   // pointerId → {x, y} — активные касания на холсте
+  let penDown = false;          // перо сейчас на экране
+  let lastDownType = 'mouse';   // тип последнего нажатия (перо приходит и как касание)
+  let gesture = null;           // идёт жест холста (панорама/щипок), рисованию не мешаем
+
+  // Событие Konva — это касание ПАЛЬЦЕМ? Перо на iPad приходит тоже как касание,
+  // поэтому проверяем и признак стилуса Safari, и тип последнего события указателя.
+  function evtIsFinger(e) {
+    const ev = e && e.evt;
+    const list = ev && (ev.touches || ev.changedTouches);
+    if (!list) return false;                    // мышь или перо без тач-совместимости
+    const t0 = list[0];
+    if (t0 && t0.touchType === 'stylus') return false;
+    if (lastDownType === 'pen') return false;
+    return true;
+  }
+
+  // Должна ли обычная логика доски пропустить это событие.
+  function touchBlocked(e) {
+    if (gesture) return true;                   // идёт жест — доска не рисует и не выделяет
+    if (!evtIsFinger(e)) return false;          // мышь и перо всегда работают как раньше
+    if (penDown) return true;                   // перо ведёт → это ладонь
+    if (penMode()) return true;                 // палец здесь двигает доску, а не рисует
+    return false;
+  }
+
+  // Прервать начатое действие: при жесте нарисованное «в процессе» надо убрать,
+  // иначе от щипка на доске останется случайная закорючка.
+  function abortBoardInput() {
+    if (typeof drawing !== 'undefined' && drawing) {
+      send({ action: 'element_delete', id: drawing.id });
+      removeNode(drawing.id);
+      drawing = null;
+    }
+    endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp();
+  }
+
+  function markPenSeen() {
+    if (penSeen) return;
+    penSeen = true;
+    try { localStorage.setItem(PEN_SEEN_KEY, '1'); } catch (e) {}
+    syncFingerDrawUI();
+    if (!fingerDrawPref) boardHint('Перо распознано: пишите пером, пальцем двигайте доску');
+  }
+
+  function touchCenter() {
+    let sx = 0, sy = 0, n = 0;
+    touchPts.forEach((p) => { sx += p.x; sy += p.y; n++; });
+    return n ? { x: sx / n, y: sy / n, n: n } : null;
+  }
+  function touchSpread() {
+    const pts = Array.from(touchPts.values());
+    if (pts.length < 2) return 0;
+    return Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+  }
+  // Экранная точка → координаты внутри контейнера сцены (их ждёт zoomTo).
+  function toStageXY(x, y) {
+    const r = stageEl.getBoundingClientRect();
+    return { x: x - r.left, y: y - r.top };
+  }
+
+  function startGesture() {
+    const c = touchCenter();
+    if (!c) return;
+    gesture = { cx: c.x, cy: c.y, dist: touchSpread() };
+    abortBoardInput();
+    stageEl.style.cursor = 'grabbing';
+  }
+  function updateGesture() {
+    if (!gesture) return;
+    const c = touchCenter();
+    if (!c) return;
+    // Панорама: доска едет за серединой между пальцами (или за единственным пальцем).
+    const dx = c.x - gesture.cx, dy = c.y - gesture.cy;
+    if (dx || dy) stage.position({ x: stage.x() + dx, y: stage.y() + dy });
+    gesture.cx = c.x; gesture.cy = c.y;
+    // Щипок: масштаб вокруг середины между пальцами — точка под пальцами стоит на месте.
+    const d = touchSpread();
+    if (d > 0 && gesture.dist > 0) {
+      const k = d / gesture.dist;
+      if (Math.abs(k - 1) > 0.002) zoomTo(stage.scaleX() * k, toStageXY(c.x, c.y));
+      gesture.dist = d;
+    } else if (d > 0) {
+      gesture.dist = d;
+    }
+    scheduleViewRedraw();   // перерисовать сетку/курсоры и передать вид ведомым
+  }
+  function endGestureIfDone() {
+    if (touchPts.size === 0) {
+      gesture = null;
+      stageEl.style.cursor = (tool === 'select') ? 'default' : 'crosshair';
+    }
+  }
+
+  // Слушаем события указателя ДО Konva: браузер шлёт pointerdown раньше
+  // touchstart, поэтому к моменту работы обычных обработчиков доски мы уже
+  // знаем, чем именно человек прикоснулся к экрану.
+  stageEl.addEventListener('pointerdown', (ev) => {
+    lastDownType = ev.pointerType || 'mouse';
+    if (ev.pointerType === 'pen') { markPenSeen(); penDown = true; return; }
+    if (ev.pointerType !== 'touch') return;
+    touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (penDown) return;                       // ладонь при письме пером — молчим
+    if (gesture) { startGesture(); return; }   // добавился ещё палец — пересчитать опору
+    if (penMode() || touchPts.size >= 2) startGesture();
+  }, true);
+
+  stageEl.addEventListener('pointermove', (ev) => {
+    if (ev.pointerType !== 'touch') return;
+    if (!touchPts.has(ev.pointerId)) return;
+    touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (gesture) { ev.preventDefault(); updateGesture(); }
+  }, true);
+
+  function onPointerGone(ev) {
+    if (ev.pointerType === 'pen') { penDown = false; return; }
+    if (ev.pointerType !== 'touch') return;
+    touchPts.delete(ev.pointerId);
+    if (gesture) {
+      if (touchPts.size >= 1) startGesture();  // остались пальцы — продолжаем с новой опорой
+      else endGestureIfDone();
+    }
+  }
+  stageEl.addEventListener('pointerup', onPointerGone, true);
+  stageEl.addEventListener('pointercancel', onPointerGone, true);
+  // Перо могло уйти за край экрана — иначе penDown завис бы включённым.
+  window.addEventListener('pointerup', (ev) => { if (ev.pointerType === 'pen') penDown = false; }, true);
+
+  // Переключатель «Рисовать пальцем» в меню доски: нужен, если перо на устройстве
+  // есть, но сейчас его нет под рукой. Показываем только там, где он осмыслен.
+  function syncFingerDrawUI() {
+    const row = document.getElementById('finger-draw-row');
+    const box = document.getElementById('finger-draw');
+    if (!row || !box) return;
+    row.hidden = !penSeen;
+    box.checked = fingerDrawPref;
+  }
+  function setFingerDraw(on) {
+    fingerDrawPref = !!on;
+    try { localStorage.setItem(FINGER_DRAW_KEY, on ? '1' : '0'); } catch (e) {}
+    boardHint(on ? 'Палец рисует; доску двигайте двумя пальцами'
+                 : 'Палец двигает доску; рисуйте пером');
+  }
+  (function initFingerDrawToggle() {
+    const box = document.getElementById('finger-draw');
+    if (box) box.addEventListener('change', () => setFingerDraw(box.checked));
+    syncFingerDrawUI();
+  })();
+
   // ── События указателя ─────────────────────────────────────────────────
   // Выделение и захват старта перетаскивания — на mousedown (press-to-select),
   // ДО того как Konva сдвинет узел. Это и устраняет рассинхрон группового
   // перетаскивания (стартовые позиции точны), и убирает двойную обработку.
   stage.on('mousedown touchstart', (e) => {
+    if (touchBlocked(e)) return;   // палец ведёт доску / идёт щипок — не выделяем
     if (tool !== 'select') return;
     // Клик по ручке/рамке трансформера — отдать Konva (ресайз), не обрабатывать.
     if (e.target && (e.target === tr || (e.target.getParent && e.target.getParent() === tr))) return;
@@ -4282,6 +5727,7 @@
         dragStart = null;
         return;
       }
+      if (vennSel.id) clearVennSel();
       startMarquee(e); // пустое место → рамочное выделение
       dragStart = null;
       return;
@@ -4289,15 +5735,27 @@
 
     // Линия/окружность — свой параллельный перенос (двигаем опорные точки).
     if (rel && isPointBoundLine(rel)) {
-      if (e.evt && e.evt.shiftKey) { toggleSelect(id); }
+      if (isAddKey(e.evt)) { toggleSelect(id); }
       else { selectOnly(id); startLineDrag(id); }
       dragStart = null;
       return;
     }
 
+    // Клик по диаграмме Венна выбирает ОБЛАСТЬ внутри неё (Ctrl — несколько),
+    // а не только сам объект: заливать и подписывать надо именно области.
+    if (rel && rel.type === 'venn' && !isAddKey(e.evt)) {
+      const wp = stage.getRelativePointerPosition();
+      if (wp) vennPickRegion(rel, wp.x, wp.y, false);
+    } else if (rel && rel.type === 'venn') {
+      const wp = stage.getRelativePointerPosition();
+      if (wp && vennPickRegion(rel, wp.x, wp.y, true)) { dragStart = null; return; }
+    } else if (vennSel.id) {
+      clearVennSel();
+    }
+
     // Под курсором обычный объект (или привязанная геометрия) — выделяем/тащим.
-    if (e.evt && e.evt.shiftKey) {
-      toggleSelect(id);            // Shift — добавить/убрать группу
+    if (isAddKey(e.evt)) {
+      toggleSelect(id);            // Shift/Ctrl — добавить или убрать из выделения
     } else if (!selected.has(id)) {
       selectOnly(id);              // обычный клик по невыделенному — выбрать его группу
     } // клик по уже выделенному без Shift — сохраняем выделение (чтобы тащить всё)
@@ -4374,12 +5832,17 @@
     }
   });
   stage.on('mousedown touchstart', (e) => {
+    if (touchBlocked(e)) return;   // палец ведёт доску / идёт щипок — не рисуем
     if (tool === 'select') return; // в режиме выделения сцена сама панорамит
     if (tool === 'latex') { openLatexEditor(); return; }
     if (tool === 'graph') { if (e.evt) e.evt.preventDefault(); handleGraphPick(worldPoint()); return; }
     if (tool === 'text') { openTextEditor(false); return; }
     if (tool === 'text_plain') { if (e.evt) e.evt.preventDefault(); insertTextbox(); return; }
     if (tool === 'geogebra') { insertGeoGebra(); return; }
+    if (tool === 'embed') { if (e.evt) e.evt.preventDefault(); insertEmbed(); return; }
+    if (tool === 'poll') { if (e.evt) e.evt.preventDefault(); insertPoll(); return; }
+    if (tool === 'venn') { if (e.evt) e.evt.preventDefault(); insertVenn(); return; }
+    if (tool === 'screen') { if (e.evt) e.evt.preventDefault(); setTool('select'); startScreenShare(); return; }
     if (tool === 'point') { if (e.evt) e.evt.preventDefault(); placePoint(); return; }
     if (tool === 'isect') { if (e.evt) e.evt.preventDefault(); handleIsectPick(worldPoint()); return; }
     if (tool === 'polygon') { if (e.evt) e.evt.preventDefault(); handlePolygonPick(); return; }
@@ -4414,6 +5877,7 @@
     startDraw();
   });
   stage.on('mousemove touchmove', (e) => {
+    if (touchBlocked(e)) return;   // движение принадлежит жесту холста
     sendCursor();
     if (tool === 'laser') laserMove();
     else if (isEraser(tool)) { eraserMove(); positionEraserRing(); }
@@ -4426,7 +5890,7 @@
     if (resizeState) doResize();
     if (tool === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
   });
-  stage.on('mouseup touchend', () => { endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); });
+  stage.on('mouseup touchend', (e) => { if (touchBlocked(e)) return; endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); });
   stage.on('mouseleave', () => { endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); if (eraserRing) eraserRing.style.display = 'none'; });
 
   function doFrameMove() {
@@ -4665,7 +6129,245 @@
     if (XFORM_SPEC[name]) startXformTool();
     updateFuncEditor();
     if (typeof updateEraserPanel === 'function') updateEraserPanel();
+    if (typeof syncMobileFab === 'function') syncMobileFab();
   }
+
+  // ── Якоря и соединительные стрелки ─────────────────────────────────────
+  // У блочных объектов по краям четыре точки. Потянул от точки — тянется
+  // стрелка; отпустил на другом объекте — она к нему привязалась и дальше
+  // следует за обоими концами при перемещении.
+  //
+  // Кому якорей НЕ даём и почему:
+  //   • карандашу и маркеру — форма произвольная, якоря по прямоугольной рамке
+  //     повисли бы в пустоте рядом с закорючкой;
+  //   • всей геометрии по точкам (точки, отрезки, прямые, окружности,
+  //     многоугольники, углы, векторы, засечки, измерения) — соединительная
+  //     стрелка не входит в язык чертежа, а якоря начали бы перехватывать
+  //     клики вместо точек, которые на чертеже стоят плотно;
+  //   • бесконечным построениям — у прямой нет рамки;
+  //   • графикам и областям — они живут внутри матокна и обрезаются им;
+  //   • матокну — у него своя панорама, зум и шапка, якоря ловили бы жесты;
+  //   • самим линиям и стрелкам — стрелка к стрелке даёт кольцо ссылок.
+  const ANCHOR_TYPES = {
+    rect: 1, ellipse: 1, shape: 1, image: 1, pdf: 1, latex: 1, text: 1, textbox: 1,
+    sticky: 1, card: 1, table: 1, kanban: 1, timer: 1, wheel: 1, slider: 1,
+    embed: 1, poll: 1, geogebra: 1, venn: 1, screen: 1,
+  };
+  const ANCHOR_SIDES = ['top', 'right', 'bottom', 'left'];
+  function hasAnchors(el) { return !!(el && ANCHOR_TYPES[el.type] && !(el.data && el.data.hidden)); }
+
+  // Прямоугольник объекта в мировых координатах — одинаково для холста и DOM.
+  function objBox(id) {
+    const el = elements.get(id);
+    if (!el) return null;
+    const w = widgetItems.get(id);
+    if (w) {
+      const ww = w.wrapper.offsetWidth || 0, hh = w.wrapper.offsetHeight || 0;
+      if (!ww && !hh) return null;
+      return { x: el.data.x || 0, y: el.data.y || 0, width: ww, height: hh };
+    }
+    const g = ggbItems.get(id);
+    if (g) return { x: el.data.x || 0, y: el.data.y || 0, width: el.data.width || 0, height: el.data.height || 0 };
+    const n = nodes.get(id);
+    if (!n) return null;
+    const b = n.getClientRect({ relativeTo: layer });
+    return (b.width || b.height) ? b : null;
+  }
+  function anchorPoint(box, side) {
+    if (side === 'top') return { x: box.x + box.width / 2, y: box.y };
+    if (side === 'bottom') return { x: box.x + box.width / 2, y: box.y + box.height };
+    if (side === 'left') return { x: box.x, y: box.y + box.height / 2 };
+    return { x: box.x + box.width, y: box.y + box.height / 2 };
+  }
+
+  // ── Пересчёт привязанных стрелок ───────────────────────────────────────
+  // Привязанная стрелка — обычная стрелка, у которой концы каждый раз
+  // вычисляются заново. Так весь прежний рендер (кривые, уступы, наконечники)
+  // работает без изменений.
+  function connBoundEnd(bind) {
+    if (!bind || !bind.id) return null;
+    const box = objBox(bind.id);
+    if (!box) return null;
+    return anchorPoint(box, bind.side || 'right');
+  }
+  function recomputeConnectors() {
+    let touched = false;
+    elements.forEach((el) => {
+      const d = el.data;
+      if (!d || (el.type !== 'line' && el.type !== 'arrow')) return;
+      if (!d.from && !d.to) return;
+      const e = connEnds(d);
+      const A = connBoundEnd(d.from) || { x: (d.x || 0) + e.A.x, y: (d.y || 0) + e.A.y };
+      const B = connBoundEnd(d.to) || { x: (d.x || 0) + e.B.x, y: (d.y || 0) + e.B.y };
+      const nx = A.x, ny = A.y;
+      const pts = [0, 0, B.x - A.x, B.y - A.y];
+      const same = (d.x === nx && d.y === ny && (d.points || []).join() === pts.join());
+      if (same) return;
+      d.x = nx; d.y = ny; d.points = pts;
+      const n = nodes.get(el.id);
+      if (n) n.position({ x: nx, y: ny });
+      touched = true;
+    });
+    if (touched) layer.batchDraw();
+  }
+  // Разослать соседям стрелки, привязанные к этим объектам (после перемещения).
+  function syncConnectorsOf(ids) {
+    const set = new Set(ids);
+    elements.forEach((el) => {
+      const d = el.data;
+      if (!d || (el.type !== 'line' && el.type !== 'arrow')) return;
+      if ((d.from && set.has(d.from.id)) || (d.to && set.has(d.to.id))) {
+        send({ action: 'element_update', element: stripPrivate(el) });
+      }
+    });
+  }
+
+  // ── Точки на объекте ───────────────────────────────────────────────────
+  const anchorLayerEl = document.getElementById('anchor-layer');
+  let anchorEls = null, anchorForId = null, anchorDrag = null;
+
+  function ensureAnchorEls() {
+    if (anchorEls || !anchorLayerEl) return anchorEls;
+    anchorEls = {};
+    ANCHOR_SIDES.forEach((side) => {
+      const a = document.createElement('div');
+      a.className = 'anch';
+      a.dataset.side = side;
+      a.title = 'Потяните, чтобы соединить стрелкой';
+      a.addEventListener('pointerdown', (e) => startAnchorDrag(e, side));
+      anchorLayerEl.appendChild(a);
+      anchorEls[side] = a;
+    });
+    return anchorEls;
+  }
+  function hideAnchors() {
+    anchorForId = null;
+    if (anchorEls) ANCHOR_SIDES.forEach((s) => { anchorEls[s].style.display = 'none'; });
+  }
+  // Показываем якоря у ОДНОГО выделенного блочного объекта. На наведение не
+  // вешаем: пришлось бы опрашивать холст на каждом движении мыши, а выигрыш
+  // невелик — объект всё равно почти всегда сначала выделяют.
+  function renderAnchors() {
+    if (!anchorLayerEl) return;
+    // Признак — само выделение, а не активный инструмент: по объекту можно
+    // щёлкнуть и с карандашом в руках, и якоря должны появиться.
+    if (viewOnly || selected.size !== 1) { hideAnchors(); return; }
+    const id = Array.from(selected)[0];
+    const el = elements.get(id);
+    if (!hasAnchors(el) || (el.data && el.data.locked)) { hideAnchors(); return; }
+    const box = objBox(id);
+    if (!box) { hideAnchors(); return; }
+    ensureAnchorEls();
+    anchorForId = id;
+    const s = stage.scaleX();
+    ANCHOR_SIDES.forEach((side) => {
+      const p = anchorPoint(box, side);
+      const a = anchorEls[side];
+      a.style.display = 'block';
+      a.style.left = (p.x * s + stage.x()) + 'px';
+      a.style.top = (p.y * s + stage.y()) + 'px';
+    });
+  }
+
+  // Куда целимся: объект под курсором и его ближайшая сторона.
+  function anchorTargetAt(wx, wy, excludeId) {
+    let best = null;
+    elements.forEach((el) => {
+      if (el.id === excludeId || !hasAnchors(el)) return;
+      const box = objBox(el.id);
+      if (!box) return;
+      if (wx < box.x || wx > box.x + box.width || wy < box.y || wy > box.y + box.height) return;
+      // Ближайшая сторона — по наименьшему расстоянию до края.
+      const dl = wx - box.x, dr = box.x + box.width - wx;
+      const dt = wy - box.y, db = box.y + box.height - wy;
+      const m = Math.min(dl, dr, dt, db);
+      const side = (m === dt) ? 'top' : (m === db) ? 'bottom' : (m === dl) ? 'left' : 'right';
+      // Мельче — значит сверху: берём самый маленький подходящий объект.
+      const area = box.width * box.height;
+      if (!best || area < best.area) best = { id: el.id, side: side, area: area };
+    });
+    return best ? { id: best.id, side: best.side } : null;
+  }
+
+  function startAnchorDrag(e, side) {
+    if (!anchorForId || viewOnly) return;
+    e.preventDefault(); e.stopPropagation();
+    const box = objBox(anchorForId);
+    if (!box) return;
+    const A = anchorPoint(box, side);
+    const el = {
+      id: uuid(), type: 'arrow', z: 0,
+      data: {
+        stroke: strokeColor, strokeWidth: Math.max(2, strokeWidth),
+        x: A.x, y: A.y, points: [0, 0, 0, 0],
+        startCap: 'none', endCap: 'arrow',
+        from: { id: anchorForId, side: side },
+      },
+    };
+    anchorDrag = { el: el, pid: e.pointerId, target: null, moved: false };
+    upsertNode(el);
+    try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
+    document.body.classList.add('anchor-dragging');
+  }
+  function moveAnchorDrag(e) {
+    if (!anchorDrag) return;
+    const r = stageEl.getBoundingClientRect();
+    const s = stage.scaleX();
+    const wx = (e.clientX - r.left - stage.x()) / s;
+    const wy = (e.clientY - r.top - stage.y()) / s;
+    anchorDrag.moved = true;
+    const d = anchorDrag.el.data;
+    const tgt = anchorTargetAt(wx, wy, d.from.id);
+    anchorDrag.target = tgt;
+    let B = { x: wx, y: wy };
+    if (tgt) {
+      const tb = objBox(tgt.id);
+      if (tb) B = anchorPoint(tb, tgt.side);
+    }
+    d.points = [0, 0, B.x - d.x, B.y - d.y];
+    upsertNode(anchorDrag.el);
+    highlightAnchorTarget(tgt);
+  }
+  function endAnchorDrag() {
+    if (!anchorDrag) return;
+    const st = anchorDrag;
+    anchorDrag = null;
+    document.body.classList.remove('anchor-dragging');
+    highlightAnchorTarget(null);
+    const d = st.el.data;
+    const len = Math.hypot(d.points[2] - d.points[0], d.points[3] - d.points[1]);
+    if (!st.moved || len < 8) {          // просто щёлкнули по якорю — стрелки не надо
+      removeNode(st.el.id);
+      return;
+    }
+    if (st.target) d.to = { id: st.target.id, side: st.target.side };
+    recomputeConnectors();
+    send({ action: 'element_add', element: stripPrivate(st.el) });
+    histAdd(stripPrivate(st.el));
+    selectOnly(st.el.id);
+  }
+  function highlightAnchorTarget(tgt) {
+    document.querySelectorAll('.anch-target').forEach((e) => e.classList.remove('anch-target'));
+    if (!tgt) { if (anchorHalo) anchorHalo.style.display = 'none'; return; }
+    const box = objBox(tgt.id);
+    if (!box) return;
+    if (!anchorHalo) {
+      anchorHalo = document.createElement('div');
+      anchorHalo.className = 'anch-halo';
+      anchorLayerEl.appendChild(anchorHalo);
+    }
+    const s = stage.scaleX();
+    anchorHalo.style.display = 'block';
+    anchorHalo.style.left = (box.x * s + stage.x()) + 'px';
+    anchorHalo.style.top = (box.y * s + stage.y()) + 'px';
+    anchorHalo.style.width = (box.width * s) + 'px';
+    anchorHalo.style.height = (box.height * s) + 'px';
+  }
+  let anchorHalo = null;
+
+  document.addEventListener('pointermove', (e) => { if (anchorDrag && e.pointerId === anchorDrag.pid) moveAnchorDrag(e); }, true);
+  document.addEventListener('pointerup', (e) => { if (anchorDrag && e.pointerId === anchorDrag.pid) endAnchorDrag(); }, true);
+  document.addEventListener('pointercancel', () => { if (anchorDrag) { removeNode(anchorDrag.el.id); anchorDrag = null; document.body.classList.remove('anchor-dragging'); highlightAnchorTarget(null); } }, true);
 
   // ── Выделение и удаление ───────────────────────────────────────────────
   // Выделение в режиме select: клик по объекту — выбрать, Shift+клик — добавить,
@@ -4682,7 +6384,7 @@
   // ── Ресайз/гомотетия собственными угловыми ручками ────────────────────
   // Konva.Transformer в нашей связке не запускал трансформ, поэтому делаем свои
   // ручки на том же надёжном механизме, что перемещение (mousedown→stage mousemove).
-  const RESIZABLE = ['rect', 'ellipse', 'circle', 'latex', 'text', 'freehand', 'frame', 'shape', 'image', 'pdf'];
+  const RESIZABLE = ['rect', 'ellipse', 'circle', 'latex', 'text', 'freehand', 'frame', 'shape', 'image', 'pdf', 'venn'];
   // Габариты объекта для ручек: у окна берём его прямоугольник из данных.
   function elBox(el, node) {
     if (el.type === 'frame') return { x: el.data.x, y: el.data.y, width: el.data.width, height: el.data.height };
@@ -4869,7 +6571,9 @@
     updateDebug('resize КОНЕЦ');
   }
 
-  const BOARD_VER = '20260614z55';
+  // Версию считает сервер по времени последней правки board.js и передаёт в
+  // BOARD_CONFIG.ver — вручную её здесь больше не задают.
+  const BOARD_VER = (cfg && cfg.ver) || 'dev';
   (function () { const v = document.getElementById('board-version'); if (v) v.textContent = 'v' + BOARD_VER; })();
   function updateDebug(extra) {
     const el = document.getElementById('board-debug');
@@ -4954,6 +6658,9 @@
     tr.moveToTop();
     // DOM-объекты (текст/виджеты) трансформер не оборачивает — показываем рамку через класс.
     if (widgetItems.size) widgetItems.forEach((it, id) => it.wrapper.classList.toggle('wsel', selected.has(id)));
+    syncTboxFieldBar();
+    renderAnchors();   // якоря показываем у одиночного выделенного объекта
+    if (typeof syncVennBar === 'function') syncVennBar();
     refreshConstructionHighlight();
     positionHandles();
     updateFuncEditor();
@@ -4961,6 +6668,21 @@
     syncFigureSettings();
     updatePdfControls();
   }
+  // Показать панель форматирования у ВЫБРАННОГО (не правящегося) текстового
+  // поля и убрать её, когда выделение ушло. Во время правки панелью занимается
+  // startTboxEdit/endTboxEdit — сюда не вмешиваемся.
+  function syncTboxFieldBar() {
+    if (typeof tboxBar === 'undefined' || !tboxBar) return;
+    if (activeTbox && activeTbox.editing) return;
+    let it = null;
+    if (selected.size === 1) {
+      const w = widgetItems.get(Array.from(selected)[0]);
+      if (w && w.isTbox) it = w;
+    }
+    if (it) { activeTbox = it; showTboxBar(it); }
+    else if (activeTbox) { activeTbox = null; hideTboxBar(); }
+  }
+
   function clearSelection() {
     activeFrameId = null; // клик по пустому — деактивировать окно
     if (selected.size === 0) { tr.nodes([]); updateFuncEditor(); return; }
@@ -5788,7 +7510,7 @@
 
   function startMarquee(e) {
     const w = worldPoint();
-    marquee = { x0: w.x, y0: w.y, additive: !!(e.evt && e.evt.shiftKey), moved: false };
+    marquee = { x0: w.x, y0: w.y, additive: isAddKey(e.evt), moved: false };
     marqueeRect.moveToTop();
     // Пока тянем рамку — DOM-текст/виджеты «прозрачны» для мыши, иначе указатель
     // цепляется за них, события не доходят до холста и рамка «спотыкается».
@@ -6098,15 +7820,24 @@
       .filter((e) => e.data && e.data.groupId === gid)
       .map((e) => e.id);
   }
+  // Выделять умеем и объекты холста (nodes), и DOM-объекты — текст, стикеры,
+  // таблицы, встроенные страницы (widgetItems). Раньше здесь проверялся только
+  // nodes, поэтому кликом такие объекты не выделялись вовсе: сработать могло
+  // лишь рамочное выделение, которое их учитывает отдельно.
+  function selectable(mid) { return nodes.has(mid) || widgetItems.has(mid); }
+  // «Добавить к выделению»: Shift, Ctrl или Cmd. Ctrl привычен по проводнику и
+  // офисным программам, Cmd — то же самое на маке. Осторожно: Shift отдельно
+  // используется при РИСОВАНИИ (привязка к 45°), поэтому там его не трогаем.
+  function isAddKey(ev) { return !!(ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey)); }
   function selectOnly(id) {
     selected.clear();
-    groupMembers(id).forEach((mid) => { if (nodes.has(mid)) selected.add(mid); });
+    groupMembers(id).forEach((mid) => { if (selectable(mid)) selected.add(mid); });
     const el = elements.get(id);
     activeFrameId = (el && el.type === 'frame') ? id : null; // активное окно
     refreshTransformer();
   }
   function toggleSelect(id) {
-    const members = groupMembers(id).filter((mid) => nodes.has(mid));
+    const members = groupMembers(id).filter(selectable);
     if (!members.length) return;
     const allSelected = members.every((mid) => selected.has(mid));
     members.forEach((mid) => { if (allSelected) selected.delete(mid); else selected.add(mid); });
@@ -6539,6 +8270,10 @@
     movables().forEach((el) => el.setAttribute('draggable', 'true'));
     let dragEl = null;
     bar.addEventListener('dragstart', (e) => {
+      // Тянут подынструмент из выпадающего меню — это перетаскивание на холст
+      // (см. initToolDragToCanvas). Родное HTML5-перетаскивание группы гасим,
+      // иначе оно перехватит жест: флайаут лежит внутри кнопки-группы.
+      if (e.target.closest && e.target.closest('.tool-flyout')) { e.preventDefault(); dragEl = null; return; }
       const it = e.target.closest(SEL);
       if (!isMovable(it)) { dragEl = null; return; }
       // Закрываем открытые флайауты: они спозиционированы фиксированно по месту
@@ -6559,6 +8294,163 @@
     bar.addEventListener('drop', (e) => { if (dragEl) { e.preventDefault(); save(); } });
     applySaved();
   })();
+
+  // ── Перетаскивание инструмента с панели прямо на холст (как в Miro) ─────
+  // Обычный клик по инструменту работает как раньше: выбрал — щёлкнул по доске.
+  // Но кнопку можно и просто перетащить на холст — объект появится там, где
+  // отпустили. Слушаем события указателя (pointer), а не HTML5-перетаскивание:
+  // только так один и тот же код работает мышью, пальцем и пером.
+
+  // Короткая подпись из подсказки: «Стикер — цветная заметка» → «Стикер».
+  function toolShortTitle(el) {
+    const t = (el && el.getAttribute && el.getAttribute('title')) || '';
+    return t.split(/[—(:]/)[0].trim();
+  }
+
+  // Размеры по умолчанию для того, что обычно рисуют протяжкой рамки.
+  const DROP_SIZE = { rect: [180, 120], ellipse: [180, 120], shape: [160, 120], frame: [640, 460] };
+
+  // Инструменты, создающие объект «в точке». Ключ — имя инструмента.
+  const DROP_MAKE = {
+    sticky: insertSticky, card: insertCard, table: insertTable, kanban: insertKanban,
+    timer: insertTimer, wheel: insertWheel, slider: insertSlider,
+    text_plain: insertTextbox, geogebra: insertGeoGebra, point: placePoint, embed: insertEmbed, poll: insertPoll, venn: insertVenn,
+    screen: function () { setTool('select'); startScreenShare(); },
+    text: function () { openTextEditor(false); },
+    latex: function () { openLatexEditor(); },
+  };
+  function isDropTool(name) {
+    return !!(DROP_MAKE[name] || SHAPE_TOOLS[name]
+      || name === 'rect' || name === 'ellipse' || name === 'frame');
+  }
+
+  // Фигуры и матокно при броске ставим готового размера, центром в точку броска.
+  function dropCreateShape(name, w) {
+    const base = { stroke: strokeColor, strokeWidth: strokeWidth };
+    let el = null, W, H;
+    if (name === 'rect') {
+      W = DROP_SIZE.rect[0]; H = DROP_SIZE.rect[1];
+      el = { id: uuid(), type: 'rect', z: 0, data: Object.assign({}, base, { x: w.x - W / 2, y: w.y - H / 2, width: W, height: H }) };
+    } else if (name === 'ellipse') {
+      W = DROP_SIZE.ellipse[0]; H = DROP_SIZE.ellipse[1];
+      el = { id: uuid(), type: 'ellipse', z: 0, data: Object.assign({}, base, { x: w.x, y: w.y, radiusX: W / 2, radiusY: H / 2 }) };
+    } else if (name === 'frame') {
+      W = DROP_SIZE.frame[0]; H = DROP_SIZE.frame[1];
+      el = { id: uuid(), type: 'frame', z: 0, data: { x: w.x - W / 2, y: w.y - H / 2, width: W, height: H, cx: 0, cy: 0, unit: 40 } };
+    } else if (SHAPE_TOOLS[name]) {
+      W = DROP_SIZE.shape[0]; H = DROP_SIZE.shape[1];
+      el = { id: uuid(), type: 'shape', z: 0, data: Object.assign({}, base, { color: strokeColor, x: w.x - W / 2, y: w.y - H / 2, width: W, height: H, kind: SHAPE_TOOLS[name] }) };
+    }
+    if (!el) return false;
+    upsertNode(el);
+    send({ action: 'element_add', element: stripPrivate(el) });
+    histAdd(stripPrivate(el));
+    setTool('select');
+    return true;
+  }
+
+  // Создать объект инструмента name там, где отпустили указатель.
+  function createToolAt(name, ev) {
+    // Сообщаем Konva позицию указателя из события броска: вся дальнейшая логика
+    // создания читает координаты указателя, и объект встанет ровно в эту точку.
+    try { stage.setPointersPositions(ev); } catch (e) { return; }
+    const w = stage.getRelativePointerPosition();
+    if (!w) return;
+    if (dropCreateShape(name, w)) return;
+    const make = DROP_MAKE[name];
+    if (make) make();
+  }
+
+  // Подключает перетаскивание на холст к контейнеру с кнопками инструментов.
+  // Вызывается и для панели компьютера, и для мобильного листа.
+  function enableToolDragToCanvas(bar) {
+    if (!bar) return;
+    // Панели поверх холста — бросать в них нельзя.
+    const PANELS = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
+      + ' #access-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control, #settings-btn,'
+      + ' #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor, #tbox-bar,'
+      + ' #dp-pop, #eraser-panel, #storyboard, #pdf-controls, #frame-exit-btn,'
+      + ' #mobile-sheet, #mobile-fab, #mobile-backdrop';
+    const THRESHOLD = 8; // сдвиг меньше этого — обычный клик, а не перетаскивание
+    let src = null, ghost = null, pid = null, startX = 0, startY = 0, dragging = false;
+
+    // Помечаем перетаскиваемые кнопки: им нужен touch-action: none, иначе на
+    // касании жест уедет в прокрутку панели вместо перетаскивания.
+    bar.querySelectorAll('[data-tool]').forEach((b) => {
+      if (isDropTool(b.dataset.tool)) b.classList.add('tool-draggable');
+    });
+
+    function makeGhost(btn) {
+      const g = document.createElement('div');
+      g.className = 'tool-ghost';
+      g.innerHTML = btn.innerHTML;
+      const cap = toolShortTitle(btn);
+      if (cap) { const s2 = document.createElement('span'); s2.className = 'tg-cap'; s2.textContent = cap; g.appendChild(s2); }
+      document.body.appendChild(g);
+      return g;
+    }
+    function dropAllowed(x, y) {
+      const r = stageEl.getBoundingClientRect();
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) return false;
+      const t = document.elementFromPoint(x, y);
+      return !(t && t.closest && t.closest(PANELS));
+    }
+    // После перетаскивания браузер шлёт click по кнопке — он выбрал бы инструмент.
+    // Гасим ровно один такой клик.
+    function suppressNextClick() {
+      const kill = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+      document.addEventListener('click', kill, true);
+      setTimeout(() => document.removeEventListener('click', kill, true), 0);
+    }
+    function cleanup() {
+      if (src) { try { src.releasePointerCapture(pid); } catch (e) {} src.classList.remove('tool-dragging'); }
+      if (ghost) { ghost.remove(); ghost = null; }
+      document.body.classList.remove('tool-dragging-body');
+    }
+    function finish(e, place) {
+      const wasDragging = dragging, btn = src;
+      cleanup();
+      src = null; pid = null; dragging = false;
+      if (!wasDragging) return;      // просто клик — обычный выбор инструмента
+      suppressNextClick();
+      if (place && btn && dropAllowed(e.clientX, e.clientY)) createToolAt(btn.dataset.tool, e);
+    }
+
+    bar.addEventListener('pointerdown', (e) => {
+      if (e.button != null && e.button > 0) return;   // правая/средняя кнопка — не наше дело
+      const btn = e.target.closest('[data-tool]');
+      if (!btn || !isDropTool(btn.dataset.tool)) return;
+      src = btn; pid = e.pointerId; startX = e.clientX; startY = e.clientY; dragging = false;
+      try { btn.setPointerCapture(pid); } catch (err) {}
+    });
+    bar.addEventListener('pointermove', (e) => {
+      if (!src || e.pointerId !== pid) return;
+      if (!dragging) {
+        if (Math.hypot(e.clientX - startX, e.clientY - startY) < THRESHOLD) return;
+        dragging = true;
+        // Флайауты спозиционированы по месту кнопки — при перетаскивании закрываем.
+        document.querySelectorAll('#board-toolbar .tool-flyout.open').forEach((f) => f.classList.remove('open'));
+        if (typeof closeMobileSheet === 'function') closeMobileSheet();
+        ghost = makeGhost(src);
+        src.classList.add('tool-dragging');
+        document.body.classList.add('tool-dragging-body');
+      }
+      e.preventDefault();
+      ghost.style.left = e.clientX + 'px';
+      ghost.style.top = e.clientY + 'px';
+      ghost.classList.toggle('over', dropAllowed(e.clientX, e.clientY));
+    });
+    bar.addEventListener('pointerup', (e) => { if (src && e.pointerId === pid) finish(e, true); });
+    bar.addEventListener('pointercancel', (e) => { if (src && e.pointerId === pid) finish(e, false); });
+    // Esc во время перетаскивания — отменить.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && dragging) {
+        const btn = src; cleanup(); src = null; pid = null; dragging = false;
+        if (btn) suppressNextClick();
+      }
+    });
+  }
+  enableToolDragToCanvas(document.getElementById('board-toolbar'));
 
   document.getElementById('stroke-width').addEventListener('input', (e) => { strokeWidth = parseInt(e.target.value, 10); });
 
@@ -7102,18 +8994,11 @@
   // переиспользует панель #tbox-bar (activeTbox-совместимый item). Ссылки — кликабельны.
   const shapeTextItems = new Map();
   function shapeTextDefaults() { return { html: '', font: TEXT_FONT, fontSize: 18, color: '#1f2937', align: 'center', boxBg: '' }; }
-  function linkifyClickable(html) {
-    const root = document.createElement('div'); root.innerHTML = sanitizeHtml(html || '');
-    (function walk(node) { let child = node.firstChild; while (child) { const next = child.nextSibling;
-      if (child.nodeType === 3) { const t = child.nodeValue; URL_RE.lastIndex = 0;
-        if (URL_RE.test(t)) { URL_RE.lastIndex = 0; const frag = document.createDocumentFragment(); let last = 0, m;
-          while ((m = URL_RE.exec(t))) { if (m.index > last) frag.appendChild(document.createTextNode(t.slice(last, m.index)));
-            const a = document.createElement('a'); a.href = /^https?:/i.test(m[0]) ? m[0] : 'https://' + m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = m[0]; frag.appendChild(a); last = m.index + m[0].length; }
-          if (last < t.length) frag.appendChild(document.createTextNode(t.slice(last))); child.replaceWith(frag); } }
-      else if (child.nodeType === 1) { const isLink = child.tagName === 'A' || (child.classList && child.classList.contains('lnk')); if (!isLink) walk(child); }
-      child = next; } })(root);
-    return root.innerHTML;
-  }
+  // Текст внутри фигуры размечает ссылки тем же кодом, что и остальной текст
+  // доски. Раньше здесь лежала вторая, отдельная копия того же алгоритма — и
+  // расходилась с первой: тут ссылки были кликабельными, а в обычном тексте нет.
+  function linkifyClickable(html) { return linkifyHtml(sanitizeHtml(html || '')); }
+
   function ensureShapeTextItem(el) {
     let it = shapeTextItems.get(el.id); if (it) return it;
     const wrapper = document.createElement('div'); wrapper.className = 'shape-text';
@@ -7412,7 +9297,25 @@
     if (apDefault) apDefault.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; boardDefaultRole = b.dataset.role; refreshAccessPanel(); send({ action: 'set_role', target: null, role: b.dataset.role }); });
     // Личная роль участника (владелец).
     const apPeople = document.getElementById('ap-people');
-    if (apPeople) apPeople.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; const seg = b.closest('.ap-seg'); if (!seg) return; const uid = seg.getAttribute('data-uid'), role = b.dataset.r; boardRoles[uid] = role; refreshAccessPanel(); send({ action: 'set_role', target: uid, role: role }); });
+    if (apPeople) apPeople.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      // «Убрать»: спрашиваем подтверждение — действие видно всем и рвёт связь участнику.
+      if (b.dataset.kick) {
+        const name = (b.closest('.ap-person').querySelector('.ap-name') || {}).textContent || 'участника';
+        if (confirm('Убрать ' + name + ' с доски?\n\nОн выйдет сейчас же и не сможет войти по ссылке, пока вы не вернёте доступ.')) {
+          send({ action: 'member_remove', target: b.dataset.kick });
+        }
+        return;
+      }
+      const seg = b.closest('.ap-seg'); if (!seg) return;
+      const uid = seg.getAttribute('data-uid'), role = b.dataset.r;
+      boardRoles[uid] = role; refreshAccessPanel(); send({ action: 'set_role', target: uid, role: role });
+    });
+    const apRemoved = document.getElementById('ap-removed');
+    if (apRemoved) apRemoved.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b || !b.dataset.back) return;
+      send({ action: 'member_restore', target: b.dataset.back });
+    });
     on('pdf-prev', () => { const el = selectedPdf(); if (el) setPdfPage(el, (el.data.page || 1) - 1); });
     on('pdf-next', () => { const el = selectedPdf(); if (el) setPdfPage(el, (el.data.page || 1) + 1); });
     on('pdf-extract', () => { const el = selectedPdf(); if (el) extractPdfPage(el, el.data.page || 1); });
@@ -7542,6 +9445,8 @@
   // myRole приходит с сервера; наблюдатель («viewer») не может править — сервер
   // отклоняет его правки, а клиент запирает UI (view-only без права выключить).
   let boardIsOwner = false, myRole = 'editor', boardDefaultRole = 'editor', boardRoles = {}, roleViewer = false;
+  let boardRemoved = [];   // [{id, label}] — кого владелец убрал с доски
+  let iAmRemoved = false;  // меня убрали: не переподключаемся и не шлём правки
   function computeMyRole() { if (boardIsOwner) return 'editor'; const r = boardRoles[String(myId)]; return (r === 'viewer' || r === 'editor') ? r : boardDefaultRole; }
   function applyMyRole() {
     myRole = computeMyRole(); roleViewer = (myRole === 'viewer');
@@ -7566,9 +9471,23 @@
         + '<div class="ap-seg" data-uid="' + uid + '">'
         + '<button data-r="editor"' + (eff === 'editor' ? ' class="on"' : '') + '>Ред.</button>'
         + '<button data-r="viewer"' + (eff === 'viewer' ? ' class="on"' : '') + '>Набл.</button>'
-        + '</div></div>';
+        + '</div>'
+        + '<button class="ap-kick" data-kick="' + uid + '" title="Убрать с доски: выйдет сейчас и не войдёт по ссылке">Убрать</button>'
+        + '</div>';
     });
     box.innerHTML = html;
+    renderRemovedPeople();
+  }
+  // Раздел «Убранные с доски»: показываем, только если кого-то убрали.
+  function renderRemovedPeople() {
+    const wrap = document.getElementById('ap-removed-wrap'), box = document.getElementById('ap-removed');
+    if (!wrap || !box) return;
+    if (!boardIsOwner || !boardRemoved.length) { wrap.hidden = true; box.innerHTML = ''; return; }
+    wrap.hidden = false;
+    box.innerHTML = boardRemoved.map((p) =>
+      '<div class="ap-person"><span class="ap-name">' + escapeHtml(p.label || ('участник #' + p.id)) + '</span>'
+      + '<button class="ap-back" data-back="' + p.id + '" title="Вернуть доступ к доске">Вернуть</button></div>'
+    ).join('');
   }
   function toggleAccessPanel(force) {
     const p = document.getElementById('access-panel'), ab = document.getElementById('access-btn'); if (!p) return;
@@ -7835,8 +9754,8 @@
     if (_exportLibs) return _exportLibs;
     const load = (src) => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load ' + src)); document.head.appendChild(s); });
     _exportLibs = Promise.all([
-      (typeof html2canvas !== 'undefined') ? Promise.resolve() : load('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'),
-      (window.jspdf) ? Promise.resolve() : load('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js'),
+      (typeof html2canvas !== 'undefined') ? Promise.resolve() : load(cfg.html2canvas),
+      (window.jspdf) ? Promise.resolve() : load(cfg.jspdf),
     ]).catch((e) => { _exportLibs = null; throw e; });
     return _exportLibs;
   }
@@ -7964,6 +9883,487 @@
     } finally { _exporting = false; }
   }
 
+  // ── Голосовая связь ────────────────────────────────────────────────────
+  // Звук идёт НАПРЯМУЮ между браузерами участников, минуя наш сервер: он лишь
+  // пересылает служебные сообщения, которыми браузеры «знакомятся». Поэтому
+  // нагрузки на сервер почти нет, а задержка минимальная.
+  //
+  // Чего ждать честно: примерно у одного участника из пяти домашний роутер или
+  // мобильный оператор прямое соединение не пропустит. Лечится это отдельным
+  // сервером-ретранслятором (TURN) — его сюда можно добавить одной строкой в
+  // VOICE_ICE, когда и если понадобится.
+
+  // Список серверов связи присылает сервер (см. board/turn.py): пропуск к
+  // ретранслятору временный, а состав списка — вопрос настройки, а не кода.
+  // Запасной вариант нужен только на случай, если сервер ничего не прислал.
+  const VOICE_ICE = (cfg && cfg.iceServers && cfg.iceServers.length)
+    ? cfg.iceServers
+    : [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  // Сейчас все соединяются со всеми — при двух-трёх это лучший вариант. Дальше
+  // растёт квадратично, поэтому честно предупреждаем, а не молча тормозим.
+  const MESH_SOFT_LIMIT = 5;
+
+  let myPeer = null;              // id этого соединения (вкладки), приходит с сервера
+  let voiceOn = false;            // мы в разговоре
+  let voiceMuted = false;         // микрофон выключен (но разговор идёт)
+  let localStream = null;
+  let voiceCtx = null;            // для определения, кто сейчас говорит
+  let voiceTimer = null;
+  const voicePeers = new Map();   // peerId → { pc, label, audio, analyser, buf, pending, speaking }
+
+  function rtcSend(kind, to, data) { send({ action: 'rtc', kind: kind, to: to || null, data: data || null }); }
+
+  function voiceBtn() { return document.getElementById('voice-btn'); }
+  function voicePanel() { return document.getElementById('voice-panel'); }
+
+  // ── Кто сейчас говорит ────────────────────────────────────────────────
+  // Считаем громкость дорожки: так видно, что микрофон жив и кто говорит.
+  function watchLevel(holder, stream) {
+    try {
+      if (!voiceCtx) voiceCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (voiceCtx.state === 'suspended') voiceCtx.resume();
+      const src = voiceCtx.createMediaStreamSource(stream);
+      const an = voiceCtx.createAnalyser();
+      an.fftSize = 1024; an.smoothingTimeConstant = 0.4;
+      src.connect(an);
+      holder.analyser = an;
+      // Буфер под ВОЛНУ (не спектр): длина равна fftSize.
+      holder.buf = new Uint8Array(an.fftSize);
+    } catch (e) { /* без индикатора обойдёмся */ }
+  }
+  // Громкость считаем по звуковой ВОЛНЕ, а не по усреднённому спектру: усреднение
+  // по всем частотам занижает результат в разы (энергия голоса сидит в узкой
+  // полосе и тонет среди пустых частот), и индикатор молчал бы даже при крике.
+  function levelOf(holder) {
+    if (!holder || !holder.analyser) return 0;
+    holder.analyser.getByteTimeDomainData(holder.buf);
+    let sum = 0;
+    for (let i = 0; i < holder.buf.length; i++) {
+      const v = (holder.buf[i] - 128) / 128;   // отклонение от тишины, −1…+1
+      sum += v * v;
+    }
+    return Math.sqrt(sum / holder.buf.length); // среднеквадратичная громкость
+  }
+  function startVoiceMeter() {
+    if (voiceTimer) return;
+    voiceTimer = setInterval(() => {
+      let changed = false;
+      const me = { analyser: localHolder.analyser, buf: localHolder.buf };
+      const lvlMe = voiceMuted ? 0 : levelOf(me);
+      const spMe = lvlMe > SPEAK_LEVEL;
+      if (spMe !== localHolder.speaking) { localHolder.speaking = spMe; changed = true; }
+      voicePeers.forEach((p) => {
+        const sp = levelOf(p) > SPEAK_LEVEL;
+        if (sp !== p.speaking) { p.speaking = sp; changed = true; }
+      });
+      if (changed) renderVoiceList();
+    }, 180);
+  }
+  function stopVoiceMeter() { if (voiceTimer) { clearInterval(voiceTimer); voiceTimer = null; } }
+  const localHolder = { analyser: null, buf: null, speaking: false };
+  const SPEAK_LEVEL = 0.03;   // порог «говорит»: тише — считаем тишиной
+
+  // Соединение с одним участником.
+  //
+  // Переговоры ведём по схеме «идеальных переговоров»: любая сторона может в
+  // любой момент добавить дорожку (включить микрофон, начать показ экрана), и
+  // браузер сам попросит переспросить состав связи. Если обе стороны заговорят
+  // одновременно, «вежливая» (та, у кого id меньше) уступает и переспрашивает
+  // заново. Без этого показ экрана посреди разговора рвал бы соединение.
+  function ensurePeer(pid, label) {
+    let p = voicePeers.get(pid);
+    if (p) { if (label) p.label = label; return p; }
+    let pc;
+    try { pc = new RTCPeerConnection({ iceServers: VOICE_ICE }); }
+    catch (e) { boardHint('Браузер не поддерживает прямую связь'); return null; }
+    p = {
+      pc: pc, pid: pid, label: label || 'участник',
+      audio: null, analyser: null, buf: null, pending: [], speaking: false,
+      state: 'связываемся',
+      polite: (myPeer < pid), makingOffer: false, ignoreOffer: false,
+      senders: {},          // вид дорожки → отправитель (чтобы убирать по одной)
+    };
+    voicePeers.set(pid, p);
+
+    if (localStream) localStream.getTracks().forEach((t) => addTrackTo(p, t, localStream, 'mic'));
+    if (screenStream) screenStream.getTracks().forEach((t) => addTrackTo(p, t, screenStream, 'screen'));
+
+    pc.onicecandidate = (e) => { if (e.candidate) rtcSend('ice', pid, e.candidate.toJSON ? e.candidate.toJSON() : e.candidate); };
+    pc.onnegotiationneeded = () => {
+      p.makingOffer = true;
+      pc.createOffer()
+        .then((o) => pc.setLocalDescription(o))
+        .then(() => rtcSend('offer', pid, { type: pc.localDescription.type, sdp: pc.localDescription.sdp }))
+        .catch(() => {})
+        .then(() => { p.makingOffer = false; });
+    };
+    pc.ontrack = (e) => {
+      const stream = (e.streams && e.streams[0]) || new MediaStream([e.track]);
+      if (e.track.kind === 'video') { attachRemoteScreen(pid, stream, e.track); return; }
+      if (!p.audio) {
+        const a = document.createElement('audio');
+        a.autoplay = true; a.playsInline = true;
+        document.getElementById('voice-audio').appendChild(a);
+        p.audio = a;
+      }
+      p.audio.srcObject = stream;
+      const go = p.audio.play();
+      if (go && go.catch) go.catch(() => boardHint('Нажмите на доску, чтобы разрешить звук'));
+      watchLevel(p, stream);
+    };
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState;
+      p.state = (st === 'connected') ? 'на связи' : (st === 'connecting' ? 'связываемся' : st);
+      if (st === 'failed') {
+        p.state = 'не удалось соединиться';
+        boardHint('С участником «' + p.label + '» не удалось соединиться напрямую');
+      }
+      if (st === 'closed') closePeer(pid);
+      renderVoiceList();
+    };
+
+    if (voicePeers.size === MESH_SOFT_LIMIT) {
+      boardHint('Участников много — на слабом интернете возможны заминки');
+    }
+    renderVoiceList();
+    return p;
+  }
+
+  // Добавить/убрать дорожку у ВСЕХ собеседников. kind — 'mic' или 'screen',
+  // чтобы потом снять именно её, не трогая остальные.
+  function addTrackTo(p, track, stream, kind) {
+    try {
+      const s = p.pc.addTrack(track, stream);
+      (p.senders[kind] = p.senders[kind] || []).push(s);
+    } catch (e) { /* дорожка уже добавлена */ }
+  }
+  function addTrackEverywhere(track, stream, kind) {
+    voicePeers.forEach((p) => addTrackTo(p, track, stream, kind));
+  }
+  function removeTracksEverywhere(kind) {
+    voicePeers.forEach((p) => {
+      (p.senders[kind] || []).forEach((s) => { try { p.pc.removeTrack(s); } catch (e) {} });
+      p.senders[kind] = [];
+    });
+  }
+
+  function closePeer(pid) {
+    const p = voicePeers.get(pid); if (!p) return;
+    try { p.pc.close(); } catch (e) {}
+    if (p.audio) { try { p.audio.srcObject = null; } catch (e) {} p.audio.remove(); }
+    voicePeers.delete(pid);
+    dropRemoteScreen(pid);
+    renderVoiceList();
+  }
+  function closeAllPeers() { Array.from(voicePeers.keys()).forEach(closePeer); }
+
+  // Кандидаты сети могут прийти раньше описания связи — придерживаем их.
+  function addIce(p, cand) {
+    if (!p.pc.remoteDescription || !p.pc.remoteDescription.type) { p.pending.push(cand); return; }
+    p.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+  }
+  function flushIce(p) {
+    const q = p.pending.splice(0, p.pending.length);
+    q.forEach((c) => p.pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}));
+  }
+
+  // Есть ли нам что передавать (голос или экран).
+  function rtcSending() { return voiceOn || screenOn; }
+  // Объявиться всем: «я готов к прямой связи». Соединение поднимется у всех,
+  // кто это услышит, — даже если сами они ничего не передают, ведь принимать
+  // показ экрана они должны.
+  function rtcAnnounce() { rtcSend('ready', null, null); }
+
+  function handleRtc(m) {
+    if (!m || !m.peer || m.peer === myPeer) return;
+    if (m.to && m.to !== myPeer) return;          // сообщение адресовано не нам
+    const pid = m.peer;
+
+    if (m.kind === 'bye') { closePeer(pid); return; }
+    if (m.kind === 'ready') {
+      // На общий вызов отвечаем лично, чтобы собеседник узнал о нас. На личный
+      // ответ уже не отвечаем — иначе получилась бы бесконечная перекличка.
+      if (!m.to) rtcSend('ready', pid, null);
+      ensurePeer(pid, m.label);
+      return;
+    }
+    // Дальше — служебные сообщения переговоров. Отвечаем на них всегда: даже
+    // если сами ничего не передаём, нам могут показывать экран.
+    const p = ensurePeer(pid, m.label);
+    if (!p) return;
+    const pc = p.pc;
+
+    if (m.kind === 'offer' || m.kind === 'answer') {
+      const desc = m.data;
+      const collision = (m.kind === 'offer') && (p.makingOffer || pc.signalingState !== 'stable');
+      p.ignoreOffer = !p.polite && collision;
+      if (p.ignoreOffer) return;                  // невежливый игнорирует чужое предложение
+      const ready = collision
+        ? Promise.all([pc.setLocalDescription({ type: 'rollback' }).catch(() => {}), Promise.resolve()])
+        : Promise.resolve();
+      ready
+        .then(() => pc.setRemoteDescription(new RTCSessionDescription(desc)))
+        .then(() => {
+          flushIce(p);
+          if (m.kind !== 'offer') return null;
+          return pc.createAnswer()
+            .then((a) => pc.setLocalDescription(a))
+            .then(() => rtcSend('answer', pid, { type: pc.localDescription.type, sdp: pc.localDescription.sdp }));
+        })
+        .catch(() => { p.state = 'ошибка'; renderVoiceList(); });
+      return;
+    }
+    if (m.kind === 'ice') addIce(p, m.data);
+  }
+
+  // ── Демонстрация экрана ────────────────────────────────────────────────
+  // Показ живёт отдельно от голоса: можно показать экран молча. Картинка идёт
+  // тем же прямым соединением, что и звук, а на доске появляется объект-экран,
+  // который все могут двигать и растягивать.
+  //
+  // Сам объект синхронизируется как обычный (положение, размер), а картинка —
+  // живой поток: она не хранится и не переживает перезагрузку у показывающего.
+  let screenOn = false, screenStream = null, screenElId = null;
+  const remoteScreens = new Map();   // peerId → MediaStream (пришедшая картинка)
+
+  function screenSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+  }
+
+  function startScreenShare() {
+    if (screenOn) { stopScreenShare(); return; }
+    if (!screenSupported()) {
+      boardHint('Показ экрана недоступен: с телефона браузеры этого не умеют');
+      return;
+    }
+    navigator.mediaDevices.getDisplayMedia({
+      // Низкая частота кадров и высокое разрешение — ради ЧЁТКОГО ТЕКСТА.
+      // По умолчанию браузер жертвует резкостью ради плавности, и мелкие буквы
+      // расплываются; документу плавность не нужна.
+      video: { frameRate: { ideal: 8, max: 15 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    }).then((stream) => {
+      screenStream = stream;
+      screenOn = true;
+      const track = stream.getVideoTracks()[0];
+      if (track && 'contentHint' in track) track.contentHint = 'detail';   // резкость важнее плавности
+      // Остановка кнопкой самого браузера — тоже конец показа.
+      if (track) track.onended = () => stopScreenShare();
+
+      addTrackEverywhere(track, stream, 'screen');
+      rtcAnnounce();                       // поднять связь с теми, кого ещё нет
+      createScreenElement(track);
+      updateScreenUI();
+      boardHint('Показ экрана включён — объект появился на доске');
+    }).catch((err) => {
+      const n = (err && err.name) || '';
+      if (n !== 'NotAllowedError') boardHint('Не удалось начать показ экрана');
+    });
+  }
+
+  function stopScreenShare() {
+    if (!screenOn) return;
+    screenOn = false;
+    removeTracksEverywhere('screen');
+    if (screenStream) { screenStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); screenStream = null; }
+    if (screenElId) {
+      send({ action: 'element_delete', id: screenElId });
+      removeNode(screenElId);
+      screenElId = null;
+    }
+    if (!voiceOn) { rtcSend('bye', null, null); closeAllPeers(); }
+    updateScreenUI();
+    boardHint('Показ экрана выключен');
+  }
+
+  // Объект-экран на доске. Размер берём по пропорциям картинки.
+  function createScreenElement(track) {
+    const s = (track && track.getSettings) ? track.getSettings() : {};
+    const ratio = (s.width && s.height) ? (s.width / s.height) : (16 / 9);
+    const W = 640, H = Math.round(W / ratio);
+    const p = viewportCenterWorld();
+    const el = {
+      id: uuid(), type: 'screen', z: 0,
+      data: {
+        x: p.x - W / 2, y: p.y - H / 2, width: W, height: H,
+        ratio: ratio, by: myPeer, label: myLabel || 'участник',
+      },
+    };
+    screenElId = el.id;
+    upsertNode(el);
+    send({ action: 'element_add', element: el });
+  }
+
+  // Картинка пришла от участника: показать её в его объекте-экране.
+  function attachRemoteScreen(pid, stream, track) {
+    remoteScreens.set(pid, stream);
+    if (track) track.onended = () => dropRemoteScreen(pid);
+    widgetItems.forEach((it) => {
+      if (it.el.type === 'screen' && it.el.data.by === pid && it._video) bindScreenVideo(it);
+    });
+  }
+  function dropRemoteScreen(pid) {
+    remoteScreens.delete(pid);
+    widgetItems.forEach((it) => {
+      if (it.el.type === 'screen' && it.el.data.by === pid && it._render) it._render();
+    });
+  }
+  function bindScreenVideo(it) {
+    const d = it.el.data, v = it._video;
+    if (!v) return;
+    const mine = (d.by === myPeer);
+    const stream = mine ? screenStream : remoteScreens.get(d.by);
+    if (!stream) { it.wrapper.classList.add('waiting'); v.srcObject = null; return; }
+    it.wrapper.classList.remove('waiting');
+    if (v.srcObject !== stream) v.srcObject = stream;
+    v.muted = true;                       // свой же звук обратно слушать не надо
+    const go = v.play(); if (go && go.catch) go.catch(() => {});
+  }
+
+  function buildScreen(it) {
+    const render = () => {
+      const d = it.el.data;
+      it.body.innerHTML = '<div class="scr-box"><video class="scr-video" playsinline autoplay muted></video>'
+        + '<div class="scr-wait">Ожидаем картинку…</div>'
+        + '<div class="scr-grip" title="Потяните — размер меняется пропорционально"></div></div>';
+      const box = it.body.querySelector('.scr-box');
+      it._video = it.body.querySelector('.scr-video');
+      it.bar.querySelector('.wgt-title').textContent = 'Экран · ' + (d.label || 'участник');
+      applyScreenSize();
+      bindScreenVideo(it);
+      wireGrip(it.body.querySelector('.scr-grip'));
+      return box;
+    };
+    function applyScreenSize() {
+      const d = it.el.data;
+      const w = Math.max(200, d.width || 640);
+      const h = Math.max(120, d.height || Math.round(w / (d.ratio || 16 / 9)));
+      const box = it.body.querySelector('.scr-box');
+      if (box) { box.style.width = w + 'px'; box.style.height = h + 'px'; }
+      it.wrapper.style.width = w + 'px';
+    }
+    // Растягивание СТРОГО пропорционально: экран с искажёнными пропорциями
+    // читается хуже, а пользы от произвольного размера нет.
+    function wireGrip(grip) {
+      if (!grip) return;
+      grip.addEventListener('mousedown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const d = it.el.data, s = stage.scaleX();
+        const sx = e.clientX, w0 = d.width || 640;
+        const ratio = d.ratio || (16 / 9);
+        const before = clone(it.el);
+        const mv = (ev) => {
+          const w = Math.max(200, Math.round(w0 + (ev.clientX - sx) / s));
+          d.width = w; d.height = Math.round(w / ratio);
+          applyScreenSize();
+        };
+        const up = () => {
+          document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+          syncWidget(it); histUpd(before, it.el); syncConnectorsOf([it.el.id]);
+        };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      });
+    }
+    it._render = render;
+    it.update = render;
+    render();
+  }
+
+  function updateScreenUI() {
+    const b = document.getElementById('screen-btn');
+    if (b) { b.classList.toggle('on', screenOn); b.textContent = screenOn ? 'Остановить показ' : 'Показать экран'; }
+    const t = document.querySelector('#board-toolbar .tool[data-tool="screen"]');
+    if (t) t.classList.toggle('active', screenOn);
+  }
+  (function initScreenShare() {
+    const b = document.getElementById('screen-btn');
+    if (b) b.addEventListener('click', startScreenShare);
+    window.addEventListener('pagehide', () => { if (screenOn) { try { stopScreenShare(); } catch (e) {} } });
+    updateScreenUI();
+  })();
+
+  // ── Вход и выход из разговора ──────────────────────────────────────────
+  function voiceStart() {
+    if (voiceOn) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      boardHint('Браузер не даёт доступ к микрофону (нужен https)');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
+    }).then((stream) => {
+      localStream = stream;
+      voiceOn = true; voiceMuted = false;
+      watchLevel(localHolder, stream);
+      startVoiceMeter();
+      updateVoiceUI();
+      localStream.getTracks().forEach((t) => addTrackEverywhere(t, localStream, 'mic'));
+      rtcAnnounce();   // объявляемся всем, кто уже на связи
+      boardHint('Вы в разговоре');
+    }).catch((err) => {
+      const name = (err && err.name) || '';
+      boardHint(name === 'NotAllowedError' ? 'Доступ к микрофону запрещён — разрешите его в браузере'
+        : name === 'NotFoundError' ? 'Микрофон не найден'
+        : 'Не удалось включить микрофон');
+    });
+  }
+  function voiceStop() {
+    if (!voiceOn) return;
+    removeTracksEverywhere('mic');
+    // Соединение рвём, только если и экран не показываем: иначе показ оборвётся.
+    if (!screenOn) { rtcSend('bye', null, null); closeAllPeers(); }
+    stopVoiceMeter();
+    if (localStream) { localStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); localStream = null; }
+    localHolder.analyser = null; localHolder.speaking = false;
+    voiceOn = false; voiceMuted = false;
+    updateVoiceUI();
+    boardHint('Вы вышли из разговора');
+  }
+  function voiceToggleMute() {
+    if (!voiceOn || !localStream) return;
+    voiceMuted = !voiceMuted;
+    localStream.getAudioTracks().forEach((t) => { t.enabled = !voiceMuted; });
+    updateVoiceUI();
+  }
+
+  // ── Оформление ────────────────────────────────────────────────────────
+  function updateVoiceUI() {
+    const b = voiceBtn(), p = voicePanel();
+    if (b) {
+      b.classList.toggle('on', voiceOn);
+      b.textContent = voiceOn ? (voiceMuted ? 'Голос (микрофон выкл.)' : 'Голос') : 'Голос';
+    }
+    if (p) p.hidden = !voiceOn;
+    const mute = document.getElementById('vp-mute');
+    if (mute) { mute.textContent = voiceMuted ? 'Включить микрофон' : 'Выключить микрофон'; mute.classList.toggle('off', voiceMuted); }
+    renderVoiceList();
+  }
+  function renderVoiceList() {
+    const box = document.getElementById('vp-list');
+    if (!box || !voiceOn) return;
+    let html = '<div class="vp-person' + (localHolder.speaking ? ' talking' : '') + '">'
+      + '<span class="vp-dot"></span><span class="vp-name">Вы</span>'
+      + '<span class="vp-state">' + (voiceMuted ? 'микрофон выкл.' : 'на связи') + '</span></div>';
+    voicePeers.forEach((p) => {
+      html += '<div class="vp-person' + (p.speaking ? ' talking' : '') + '">'
+        + '<span class="vp-dot"></span><span class="vp-name">' + escapeHtml(p.label) + '</span>'
+        + '<span class="vp-state">' + escapeHtml(p.state) + '</span></div>';
+    });
+    if (!voicePeers.size) html += '<div class="vp-empty">Ждём, пока кто-нибудь тоже включит голос</div>';
+    box.innerHTML = html;
+  }
+
+  (function initVoice() {
+    const b = voiceBtn();
+    if (b) b.addEventListener('click', () => { if (voiceOn) voiceStop(); else voiceStart(); });
+    const mute = document.getElementById('vp-mute');
+    if (mute) mute.addEventListener('click', voiceToggleMute);
+    const leave = document.getElementById('vp-leave');
+    if (leave) leave.addEventListener('click', voiceStop);
+    // Уходим со страницы — вежливо прощаемся, чтобы у соседей не висел «мертвец».
+    window.addEventListener('pagehide', () => { if (voiceOn) { try { rtcSend('bye', null, null); } catch (e) {} closeAllPeers(); } });
+  })();
+
   // ── Связь по WebSocket ────────────────────────────────────────────────
   let ws = null;
   let lastCursorAt = 0;
@@ -7988,11 +10388,18 @@
     reconnectDelay = Math.min(15000, Math.round(reconnectDelay * 1.7)); // бэкофф до 15с
   }
   function connect() {
+    if (iAmRemoved) return;
     clearTimeout(reconnectTimer);
     const url = cfg.wsScheme + '://' + location.host + '/ws/board/' + cfg.code + '/';
     try { ws = new WebSocket(url); } catch (e) { scheduleReconnect(); return; }
     ws.onopen = () => { reconnectDelay = 1000; setConnState(true); };
-    ws.onclose = () => { setConnState(false); scheduleReconnect(); };
+    ws.onclose = (ev) => {
+      setConnState(false);
+      // 4403 — сервер отказал в доступе (убрали с доски или её удалили).
+      // Переподключаться бессмысленно: молча стучались бы вечно.
+      if (iAmRemoved || (ev && ev.code === 4403)) { clearTimeout(reconnectTimer); return; }
+      scheduleReconnect();
+    };
     ws.onerror = () => { try { ws.close(); } catch (e) {} };
     ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; } handleMessage(m); };
   }
@@ -8004,7 +10411,7 @@
   function send(obj) {
     // Наблюдатель не шлёт правки — сервер их всё равно отклонит; так чище и без
     // лишнего трафика (UI правок у наблюдателя и так заблокирован ролью).
-    if (roleViewer && obj && PERSIST_ACTIONS[obj.action]) return;
+    if ((roleViewer || iAmRemoved) && obj && PERSIST_ACTIONS[obj.action]) return;
     if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return; }
     // Оффлайн: копим правки холста, чтобы не потерять (курсоры/лазер/вид — эфемерные, не копим).
     if (obj && PERSIST_ACTIONS[obj.action]) queueOp(obj);
@@ -8040,9 +10447,15 @@
     switch (msg.action) {
       case 'init':
         myId = msg.me;
+        myLabel = msg.label || myLabel;
+        // Новый id соединения: прежние голосовые связи к нему уже не относятся.
+        if (myPeer && myPeer !== msg.peer) closeAllPeers();
+        myPeer = msg.peer || null;
+        if (rtcSending()) rtcAnnounce();   // после переподключения объявляемся заново
         boardIsOwner = !!msg.is_owner;
         boardDefaultRole = msg.default_role || 'editor';
         boardRoles = msg.roles || {};
+        boardRemoved = msg.removed || [];
         (msg.elements || []).forEach(upsertNode);
         reattachFuncs(); // функции могли загрузиться раньше своих окон
         recomputeGeometry(); // построения — после загрузки всех точек
@@ -8054,6 +10467,17 @@
         break;
       case 'history':
         applyHistoryEntry(msg.entry);
+        break;
+      case 'members_update':
+        boardRoles = msg.roles || {};
+        boardRemoved = msg.removed || [];
+        if (msg.kicked && String(msg.target) === String(myId)) { showRemovedFromBoard(); break; }
+        if (msg.kicked) { peers.delete(Number(msg.target)); peers.delete(msg.target); removeCursor(msg.target); renderPeers(); }
+        applyMyRole();
+        if (boardIsOwner) refreshAccessPanel();
+        break;
+      case 'rtc':
+        handleRtc(msg);
         break;
       case 'roles_update':
         boardDefaultRole = msg.default_role || boardDefaultRole;
@@ -8076,7 +10500,9 @@
         break;
       case 'presence':
         if (msg.event === 'join' && msg.user !== myId) { peers.set(msg.user, msg.label); renderPeers(); }
-        if (msg.event === 'leave') { peers.delete(msg.user); removeCursor(msg.user); laserTrails.delete(msg.user); renderPeers(); }
+        if (msg.event === 'leave') { peers.delete(msg.user); removeCursor(msg.user); laserTrails.delete(msg.user); if (msg.peer) { closePeer(msg.peer); dropRemoteScreen(msg.peer);
+          // Показывающий ушёл — объект-экран без картинки не нужен.
+          elements.forEach((el) => { if (el.type === 'screen' && el.data.by === msg.peer) { send({ action: 'element_delete', id: el.id }); removeNode(el.id); } }); } renderPeers(); }
         break;
       case 'laser':
         if (msg.user !== myId) addLaserPoint(msg.user, msg.x, msg.y, !!msg.s);
@@ -8087,12 +10513,192 @@
     }
   }
 
+  // Владелец убрал нас с доски: запираем правки, показываем объяснение и
+  // прекращаем попытки переподключиться (иначе клиент вечно стучался бы в дверь,
+  // на которую ему уже не откроют).
+  function showRemovedFromBoard() {
+    iAmRemoved = true;
+    try { if (ws) ws.close(); } catch (e) {}
+    clearTimeout(reconnectTimer);
+    setViewOnly(true);
+    if (!connBanner) { connBanner = document.createElement('div'); connBanner.id = 'conn-banner'; document.body.appendChild(connBanner); }
+    connBanner.textContent = 'Владелец убрал вас с доски. Если вернёт — обновите страницу';
+    connBanner.style.display = 'block';
+  }
+
   function renderPeers() {
     if (peers.size === 0) { peersEl.textContent = ''; }
     else peersEl.textContent = '· с вами: ' + Array.from(peers.values()).join(', ');
     const ap = document.getElementById('access-panel');
     if (boardIsOwner && ap && !ap.hidden) refreshAccessPanel();
   }
+
+  // ── Панель инструментов для телефона и планшета ────────────────────────
+  // Лист собирается из ТОЙ ЖЕ панели, что и на компьютере: кнопки копируются, а
+  // клик переадресуется оригиналу. Значит, любой инструмент, добавленный в
+  // разметку панели, появится и здесь — дублировать логику не нужно.
+  const mobSheet = document.getElementById('mobile-sheet');
+  const mobFab = document.getElementById('mobile-fab');
+  const mobBackdrop = document.getElementById('mobile-backdrop');
+  const FAB_PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+
+  function closeMobileSheet() {
+    if (!mobSheet) return;
+    mobSheet.classList.remove('open');
+    if (mobBackdrop) mobBackdrop.hidden = true;
+    if (mobFab) mobFab.classList.remove('on');
+  }
+  function openMobileSheet() {
+    if (!mobSheet) return;
+    syncMobileSheetActive();
+    mobSheet.classList.add('open');
+    if (mobBackdrop) mobBackdrop.hidden = false;
+    if (mobFab) mobFab.classList.add('on');
+  }
+  function toggleMobileSheet() {
+    if (!mobSheet) return;
+    if (mobSheet.classList.contains('open')) closeMobileSheet(); else openMobileSheet();
+  }
+  // Подсветка выбранного инструмента в листе.
+  function syncMobileSheetActive() {
+    if (!mobSheet) return;
+    mobSheet.querySelectorAll('.ms-item[data-tool]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tool === tool);
+    });
+  }
+  // На кнопке «+» показываем значок текущего инструмента — видно, чем рисуешь,
+  // не открывая лист.
+  function syncMobileFab() {
+    if (!mobFab) return;
+    syncMobileSheetActive();
+    const src = document.querySelector('#board-toolbar .tool[data-tool="' + tool + '"] svg');
+    mobFab.innerHTML = src ? src.outerHTML : FAB_PLUS;
+  }
+
+  (function buildMobileSheet() {
+    const bar = document.getElementById('board-toolbar');
+    const body = mobSheet && mobSheet.querySelector('.ms-body');
+    if (!bar || !body) return;
+
+    function mkItem(src, caption) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ms-item';
+      if (src.dataset.tool) b.dataset.tool = src.dataset.tool;
+      const svg = src.querySelector('svg');
+      b.innerHTML = svg ? svg.outerHTML : '';
+      const cap = document.createElement('span');
+      cap.className = 'ms-cap';
+      cap.textContent = caption || toolShortTitle(src) || (src.textContent || '').trim();
+      b.appendChild(cap);
+      b.title = src.getAttribute('title') || cap.textContent;
+      // Клик переадресуем оригиналу — вся прежняя логика остаётся на месте.
+      b.addEventListener('click', () => { src.click(); closeMobileSheet(); });
+      return b;
+    }
+    function mkSection(label) {
+      const sec = document.createElement('div');
+      sec.className = 'ms-sec';
+      const l = document.createElement('div');
+      l.className = 'ms-sec-lbl';
+      l.textContent = label;
+      const g = document.createElement('div');
+      g.className = 'ms-grid';
+      sec.appendChild(l); sec.appendChild(g);
+      body.appendChild(sec);
+      return g;
+    }
+
+    // 1. Инструменты — по группам исходной панели.
+    Array.from(bar.children).forEach((child) => {
+      if (!child.classList) return;
+      if (child.classList.contains('tool-group')) {
+        const fly = child.querySelector('.tool-flyout');
+        if (!fly) return;
+        const subs = fly.querySelectorAll('.flyout-section');
+        if (subs.length) {
+          // Например, «Математика»: у неё внутри свои подписанные разделы.
+          subs.forEach((sub) => {
+            const lbl = sub.querySelector('.flyout-label');
+            const grid = mkSection(toolShortTitle(child) + ' · ' + ((lbl && lbl.textContent.trim()) || ''));
+            sub.querySelectorAll('.tool[data-tool]').forEach((t) => grid.appendChild(mkItem(t)));
+          });
+        } else {
+          const grid = mkSection(toolShortTitle(child));
+          fly.querySelectorAll('.tool[data-tool]').forEach((t) => grid.appendChild(mkItem(t)));
+        }
+      }
+    });
+
+    // 2. Выделение и действия (отмена/повтор/очистка) — прямые кнопки панели.
+    const actGrid = mkSection('Действия');
+    bar.querySelectorAll(':scope > .tool[data-tool], :scope > .tool[data-action]').forEach((t) => {
+      actGrid.appendChild(mkItem(t));
+    });
+
+    // 3. Занятие: кнопки верхней плашки, которым не хватает места на узком экране.
+    const topIds = ['import-btn', 'hide-selected', 'reveal-hidden', 'present-btn',
+                    'follow-btn', 'viewonly-btn', 'access-btn'];
+    const liveGrid = mkSection('Занятие');
+    topIds.forEach((id) => {
+      const src = document.getElementById(id);
+      if (!src) return;
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'ms-item';
+      b.innerHTML = '<span class="ms-cap">' + escapeHtml((src.textContent || '').trim()) + '</span>';
+      b.title = src.getAttribute('title') || '';
+      b.addEventListener('click', () => { src.click(); closeMobileSheet(); });
+      b.dataset.mirrors = id;   // чтобы подсвечивать включённые режимы
+      liveGrid.appendChild(b);
+    });
+
+    // 4. Цвет и толщина — переиспользуем существующие элементы управления.
+    const styleSec = document.createElement('div');
+    styleSec.className = 'ms-sec';
+    styleSec.innerHTML = '<div class="ms-sec-lbl">Цвет и толщина</div>';
+    const row = document.createElement('div');
+    row.className = 'ms-wide';
+    const colorBtn = document.getElementById('color-btn');
+    const sw = document.createElement('button');
+    sw.type = 'button'; sw.className = 'ms-swatch';
+    sw.title = 'Цвет';
+    function syncSwatch() { if (colorBtn) sw.style.background = colorBtn.style.background || '#1f2937'; }
+    syncSwatch();
+    sw.addEventListener('click', () => { closeMobileSheet(); if (colorBtn) colorBtn.click(); });
+    const widthSrc = document.getElementById('stroke-width');
+    const rng = document.createElement('input');
+    rng.type = 'range'; rng.min = '1'; rng.max = '24'; rng.title = 'Толщина';
+    rng.value = widthSrc ? widthSrc.value : '3';
+    rng.addEventListener('input', () => {
+      if (!widthSrc) return;
+      widthSrc.value = rng.value;
+      widthSrc.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    row.appendChild(sw); row.appendChild(rng);
+    styleSec.appendChild(row);
+    const hint = document.createElement('div');
+    hint.className = 'ms-hint';
+    hint.textContent = 'Инструмент можно не только нажать, но и перетащить прямо на доску.';
+    styleSec.appendChild(hint);
+    body.appendChild(styleSec);
+
+    // Перетаскивание на холст работает и отсюда — тем же кодом, что на компьютере.
+    enableToolDragToCanvas(mobSheet);
+
+    if (mobFab) mobFab.addEventListener('click', toggleMobileSheet);
+    if (mobBackdrop) mobBackdrop.addEventListener('click', closeMobileSheet);
+    const closeBtn = mobSheet.querySelector('.ms-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeMobileSheet);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMobileSheet(); });
+    // Свайп вниз по «ручке» — закрыть лист.
+    const grip = mobSheet.querySelector('.ms-grip');
+    if (grip) {
+      let y0 = null;
+      grip.addEventListener('pointerdown', (e) => { y0 = e.clientY; });
+      grip.addEventListener('pointerup', (e) => { if (y0 != null && e.clientY - y0 > 24) closeMobileSheet(); y0 = null; });
+    }
+    syncMobileFab();
+  })();
 
   // ── Старт ─────────────────────────────────────────────────────────────
   setTool('pen');

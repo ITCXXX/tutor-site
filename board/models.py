@@ -34,6 +34,12 @@ def gen_board_code(length=6):
 class Board(models.Model):
     """Доска-комната. Участвовать могут владелец и присоединившиеся по коду."""
 
+    # Сколько досок разрешено ИМЕТЬ одному пользователю. Считаются только
+    # собственные: доски, куда вы зашли по чужой ссылке, квоту не занимают —
+    # иначе активный ученик выбрал бы её чужими досками.
+    # Упёрлись в потолок — удалите ненужную старую доску (правой кнопкой в списке).
+    MAX_PER_OWNER = 50
+
     # Роли доступа. Комментариев у нас нет, поэтому ролей две (как «viewer» и
     # «editor» в Miro): наблюдатель — только смотрит, редактор — может менять холст.
     ROLE_VIEWER = 'viewer'
@@ -54,6 +60,12 @@ class Board(models.Model):
     # Личные назначения ролей: {"<user_id>": "viewer"|"editor"}. Переопределяют
     # роль по умолчанию для конкретных участников. Владелец всегда редактор.
     roles = models.JSONField('Личные роли', default=dict, blank=True)
+
+    # Кого владелец явно убрал с доски (id пользователей строками, как в roles).
+    # Без этого списка кнопка «Убрать» была бы фикцией: вход на доску по ссылке
+    # снова автоматически делает человека участником (см. board_room). Здесь же
+    # хранится решение владельца — оно переживает и перезаход, и перезагрузку.
+    banned = models.JSONField('Убранные с доски', default=list, blank=True)
 
     # Пароль доски (необязательный). Храним ТОЛЬКО хеш; включён/выключен — отдельным
     # флагом, чтобы владелец мог явно снять пароль. Пароль решает «кто вообще войдёт»
@@ -90,6 +102,18 @@ class Board(models.Model):
         return self.title or f'Доска {self.code}'
 
     @classmethod
+    def owned_count(cls, user):
+        """Сколько досок у пользователя уже есть (только свои)."""
+        if not (user and user.is_authenticated):
+            return 0
+        return cls.objects.filter(owner=user).count()
+
+    @classmethod
+    def quota_left(cls, user):
+        """Сколько досок ещё можно создать. 0 — потолок достигнут."""
+        return max(0, cls.MAX_PER_OWNER - cls.owned_count(user))
+
+    @classmethod
     def create_for(cls, owner, *, title='', lesson=None):
         """Создать доску с уникальным кодом."""
         for _attempt in range(20):
@@ -100,13 +124,24 @@ class Board(models.Model):
             raise RuntimeError('Не удалось сгенерировать уникальный код доски')
         return cls.objects.create(owner=owner, code=code, title=title, lesson=lesson)
 
+    def is_banned(self, user):
+        """Убрал ли владелец этого человека с доски.
+        Владельца и суперпользователя убрать нельзя."""
+        if not (user and user.is_authenticated):
+            return False
+        if user.is_superuser or self.owner_id == user.pk:
+            return False
+        return str(user.pk) in [str(x) for x in (self.banned or [])]
+
     def can_access(self, user):
         """Может ли пользователь видеть/редактировать доску.
-        Владелец, участник или суперпользователь."""
+        Владелец, участник или суперпользователь — и только если не убран."""
         if not (user and user.is_authenticated):
             return False
         if user.is_superuser or self.owner_id == user.pk:
             return True
+        if self.is_banned(user):
+            return False
         return self.members.filter(pk=user.pk).exists()
 
     def set_password(self, raw):
@@ -163,24 +198,72 @@ class Board(models.Model):
 class BoardElement(models.Model):
     """Один объект на холсте."""
 
-    TYPE_FREEHAND = 'freehand'   # рисунок от руки (набор точек)
-    TYPE_LINE = 'line'
-    TYPE_RECT = 'rect'
-    TYPE_ELLIPSE = 'ellipse'
-    TYPE_TEXT = 'text'
-    TYPE_LATEX = 'latex'         # формула (LaTeX-исходник в data)
-    TYPE_GEOGEBRA = 'geogebra'   # встроенный аплет ГеоГебры
-    TYPE_IMAGE = 'image'
+    # Полный перечень типов объектов, которые кладёт на холст board.js.
+    # Список нужен только для человекочитаемых подписей в админке — сам холст
+    # присылает тип строкой и в этот список не заглядывает. Добавили на доске
+    # новый инструмент — допишите строку сюда, иначе в админке будет сырой код.
     TYPE_CHOICES = [
-        (TYPE_FREEHAND, 'Рисунок от руки'),
-        (TYPE_LINE, 'Линия'),
-        (TYPE_RECT, 'Прямоугольник'),
-        (TYPE_ELLIPSE, 'Эллипс'),
-        (TYPE_TEXT, 'Текст'),
-        (TYPE_LATEX, 'Формула (LaTeX)'),
-        (TYPE_GEOGEBRA, 'ГеоГебра'),
-        (TYPE_IMAGE, 'Изображение'),
+        # рисование и оформление
+        ('freehand', 'Рисунок от руки'),
+        ('line', 'Линия'),
+        ('arrow', 'Стрелка'),
+        ('rect', 'Прямоугольник'),
+        ('ellipse', 'Эллипс'),
+        ('shape', 'Фигура'),
+        # тексты и формулы
+        ('text', 'Текст с формулами'),
+        ('textbox', 'Обычный текст'),
+        ('latex', 'Формула (LaTeX)'),
+        # геометрия по точкам
+        ('point', 'Точка'),
+        ('segment', 'Отрезок'),
+        ('ray', 'Луч'),
+        ('gline', 'Прямая'),
+        ('vector', 'Вектор'),
+        ('perp', 'Перпендикуляр'),
+        ('parallel', 'Параллель'),
+        ('perpbis', 'Серединный перпендикуляр'),
+        ('bisector', 'Биссектриса'),
+        ('circle', 'Окружность'),
+        ('circ', 'Окружность по точкам'),
+        ('conic', 'Коника по 5 точкам'),
+        ('polygon', 'Многоугольник'),
+        ('regpoly', 'Правильный многоугольник'),
+        ('angle', 'Угол'),
+        ('mark', 'Пометка (засечки, прямой угол)'),
+        ('venn', 'Диаграмма Венна'),
+        ('measure', 'Измерение'),
+        # координатное окно и функции
+        ('frame', 'Математическое окно'),
+        ('func', 'График функции'),
+        ('implicit', 'Неявная кривая'),
+        ('region', 'Область неравенства'),
+        ('ftangent', 'Касательная'),
+        ('farea', 'Площадь под графиком'),
+        ('fintersect', 'Пересечение графиков'),
+        # материалы и виджеты
+        ('image', 'Изображение'),
+        ('pdf', 'Страница PDF'),
+        ('geogebra', 'ГеоГебра'),
+        ('embed', 'Встроенная страница'),
+        ('poll', 'Голосование'),
+        ('screen', 'Демонстрация экрана'),
+        ('table', 'Таблица'),
+        ('kanban', 'Канбан'),
+        ('timer', 'Таймер'),
+        ('wheel', 'Колесо'),
+        ('slider', 'Ползунок-параметр'),
+        ('sticky', 'Стикер'),
+        ('card', 'Карточка'),
+        # служебное
+        ('boardconfig', 'Настройки доски (фон)'),
     ]
+
+    # Длина поля должна совпадать с проверкой в consumers.MAX_TYPE_LEN. Если
+    # поле короче проверки, объект с длинным типом пройдёт контроль на сервере
+    # и упадёт уже при записи в PostgreSQL — причём только на проде: SQLite
+    # длину строк не проверяет и локально такую ошибку не покажет.
+    MAX_TYPE_LEN = 24
 
     board = models.ForeignKey(
         Board, on_delete=models.CASCADE, related_name='elements',
@@ -190,7 +273,7 @@ class BoardElement(models.Model):
     # ссылаются на элемент при обновлении/удалении — без round-trip к серверу.
     element_id = models.CharField('ID элемента', max_length=40, db_index=True)
 
-    type = models.CharField('Тип', max_length=12, choices=TYPE_CHOICES)
+    type = models.CharField('Тип', max_length=MAX_TYPE_LEN, choices=TYPE_CHOICES)
     # Вся геометрия и стиль: координаты, точки, цвет, толщина, текст, latex…
     data = models.JSONField('Данные', default=dict)
     z_index = models.IntegerField('Слой (z)', default=0)

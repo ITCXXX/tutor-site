@@ -26,15 +26,20 @@ WebSocket-«потребитель» одной доски. На каждое с
 """
 
 import json
+import secrets
 import time
 
 from channels.db import database_sync_to_async
+from django.contrib.auth import get_user_model
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from .models import Board, BoardElement, BoardHistory
 
 # Какие действия меняют сохраняемое состояние холста.
 _PERSIST_ACTIONS = {'element_add', 'element_update', 'element_delete'}
+# Голос в опросе — тоже запись в базу, поэтому попадает под общий троттлинг.
+# Но НЕ под проверку роли: наблюдателю правки запрещены, а голосовать он должен.
+_RATE_ACTIONS = _PERSIST_ACTIONS | {'poll_vote'}
 
 # Лимиты защиты (DoS / раздувание БД). Обычное рисование шлёт ~33 правки/с и
 # элементы небольшие — эти пороги заведомо выше нормы, но режут злоупотребления.
@@ -42,6 +47,7 @@ _MAX_ELEMENT_BYTES = 256 * 1024   # один элемент (data) не боль
 _MAX_ELEMENTS = 20000             # потолок объектов на доску
 _RATE_MAX = 250                   # не больше N правок в окне
 _RATE_WINDOW = 1.0                # окно троттлинга, сек
+_MAX_RTC_BYTES = 64 * 1024        # одно служебное сообщение голоса (описание связи)
 
 
 class BoardConsumer(AsyncJsonWebsocketConsumer):
@@ -58,6 +64,9 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             return
 
         self.board_id = board.id
+        # Идентификатор этого соединения (не пользователя): для голосовой связи
+        # важно различать вкладки: две вкладки одного человека — два собеседника.
+        self.peer_id = secrets.token_hex(8)
         self.label = await database_sync_to_async(board.label_for)(self.user)
         self.user_id = getattr(self.user, 'pk', None)
         self.is_owner = (board.owner_id == getattr(self.user, 'pk', None)) or bool(getattr(self.user, 'is_superuser', False))
@@ -75,12 +84,14 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             'action': 'init',
             'elements': elements,
             'me': self.user_id,
+            'peer': self.peer_id,
             'label': self.label,
             'role': self.role,
             'is_owner': self.is_owner,
             'default_role': board.default_role,
             'roles': board.roles or {},
             'password_enabled': board.password_enabled,
+            'removed': await self._removed_people(self.board_id),
             'history': history,
         })
 
@@ -89,6 +100,7 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             'action': 'presence',
             'event': 'join',
             'user': self.user_id,
+            'peer': self.peer_id,
             'label': self.label,
         })
 
@@ -98,6 +110,7 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
                 'action': 'presence',
                 'event': 'leave',
                 'user': self.user_id,
+                'peer': getattr(self, 'peer_id', None),
                 'label': self.label,
             })
             await self.channel_layer.group_discard(self.group, self.channel_name)
@@ -134,6 +147,50 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             })
             return
 
+        # Убрать участника с доски / вернуть обратно — только владелец.
+        # «Убрать» = выкинуть из участников, снять личную роль и запретить вход
+        # (иначе он вернётся сам, просто открыв ссылку). Если он сейчас на доске —
+        # его соединение закрывается сразу, см. board_event.
+        if action in ('member_remove', 'member_restore'):
+            if not getattr(self, 'is_owner', False):
+                return
+            target = content.get('target')
+            state = await self._set_member_removed(
+                self.board_id, target, action == 'member_remove')
+            if state is None:
+                return
+            await self._broadcast({
+                'action': 'members_update',
+                'removed': state['removed'],
+                'roles': state['roles'],
+                'target': str(target),
+                'kicked': action == 'member_remove',
+                'by': self.user_id,
+            })
+            return
+
+        # Голосовая связь. Сам звук через сервер НЕ идёт — браузеры соединяются
+        # напрямую. Здесь мы только пересылаем служебные сообщения, которыми они
+        # «знакомятся» (описания связи и сетевые адреса). Адресат указан в поле
+        # to; остальные участники такие сообщения просто игнорируют.
+        if action == 'rtc':
+            payload = content.get('data')
+            try:
+                if payload is not None and len(json.dumps(payload)) > _MAX_RTC_BYTES:
+                    return
+            except (TypeError, ValueError):
+                return
+            await self._broadcast({
+                'action': 'rtc',
+                'kind': content.get('kind'),
+                'to': content.get('to'),
+                'data': payload,
+                'peer': self.peer_id,
+                'user': self.user_id,
+                'label': self.label,
+            })
+            return
+
         # Эфемерные сообщения занятия (в БД не пишем, просто пересылаем):
         #   laser — точка гаснущего следа (x,y, s=начало штриха);
         #   view  — вид ведущего (x,y,scale).
@@ -158,7 +215,7 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             return
 
         # Троттлинг правок: тихо отбрасываем всё сверх порога (защита от флуда).
-        if action in _PERSIST_ACTIONS:
+        if action in _RATE_ACTIONS:
             now = time.monotonic()
             rate = getattr(self, '_rate', None)
             if rate is None:
@@ -169,6 +226,20 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             if len(rate) >= _RATE_MAX:
                 return
             rate.append(now)
+
+        # Голос в опросе. Отдельное действие, а не обычная правка: голосовать
+        # должны все, включая наблюдателей, а трогать при этом можно ТОЛЬКО свой
+        # голос — за чужой никто расписаться не сможет даже в обход интерфейса.
+        if action == 'poll_vote':
+            saved = await self._poll_vote(self.board_id, content.get('id'), content.get('choice'))
+            if saved is None:
+                return
+            await self._broadcast({
+                'action': 'element_update',
+                'element': saved,
+                'author': self.user_id,
+            })
+            return
 
         if action in ('element_add', 'element_update'):
             element = content.get('element') or {}
@@ -218,9 +289,19 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         # роль для серверной проверки правок (даже если событие пришло от нас).
         if payload.get('action') == 'roles_update':
             self.role = self._role_from(payload.get('default_role'), payload.get('roles') or {})
+        # Убрали именно этого участника — сообщаем и рвём соединение, чтобы он
+        # не продолжал править доску до перезагрузки страницы.
+        if (payload.get('action') == 'members_update' and payload.get('kicked')
+                and str(self.user_id) == payload.get('target')):
+            await self.send_json(payload)
+            await self.close(code=4403)
+            return
         # Историю доставляем ВСЕМ, включая автора (у него панель истории общая, а не
         # локальная). Обычные эхо-события себе не дублируем.
-        if event.get('sender') == self.channel_name and payload.get('action') != 'history':
+        # Историю и списки участников доставляем ВСЕМ, включая автора действия:
+        # у него панель должна показать результат сразу, а не после перезагрузки.
+        # Обычные эхо-события себе не дублируем.
+        if event.get('sender') == self.channel_name and payload.get('action') not in ('history', 'members_update'):
             return
         await self.send_json(payload)
 
@@ -254,7 +335,11 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         el_type = element.get('type')
         if not element_id or not el_type:
             return None, None
-        if not isinstance(element_id, str) or len(element_id) > 40 or len(str(el_type)) > 16:
+        # Длину типа сверяем с ЁМКОСТЬЮ ПОЛЯ в модели, а не с числом «на глаз»:
+        # иначе проверка и база расходятся, и слишком длинный тип падает уже
+        # при записи (на проде, где PostgreSQL, — а локально на SQLite молчит).
+        if (not isinstance(element_id, str) or len(element_id) > 40
+                or len(str(el_type)) > BoardElement.MAX_TYPE_LEN):
             return None, None
         data = element.get('data') or {}
         # Ограничение размера одного элемента (защита от раздувания БД/памяти).
@@ -267,6 +352,14 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         exists = BoardElement.objects.filter(board_id=board_id, element_id=element_id).exists()
         if not exists and BoardElement.objects.filter(board_id=board_id).count() >= _MAX_ELEMENTS:
             return None, None
+        # Встроенная страница: адрес обязан быть обычной веб-ссылкой. Адрес вида
+        # javascript:… выполнился бы в браузере ДРУГИХ участников от имени нашего
+        # сайта, поэтому отсекаем такие элементы ещё на входе, до записи в базу.
+        if el_type == 'embed':
+            url = (data or {}).get('url')
+            if not isinstance(url, str) or not url.lower().startswith(('http://', 'https://')):
+                return None, None
+
         # boardconfig — служебная настройка доски (фон), в историю не пишем.
         if el_type == 'boardconfig':
             obj, _c = BoardElement.objects.update_or_create(
@@ -288,6 +381,35 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             element_id, el_type, None,
         )
         return obj.to_payload(), hist
+
+    @database_sync_to_async
+    def _poll_vote(self, board_id, element_id, choice):
+        """Записать голос ЭТОГО пользователя в опрос. Возвращает элемент или None."""
+        if not element_id or self.user_id is None:
+            return None
+        obj = BoardElement.objects.filter(
+            board_id=board_id, element_id=element_id, type='poll',
+        ).first()
+        if obj is None:
+            return None
+        data = dict(obj.data or {})
+        options = data.get('options') or []
+        votes = dict(data.get('votes') or {})
+        key = str(self.user_id)
+        if choice is None:
+            votes.pop(key, None)          # снять свой голос
+        else:
+            try:
+                idx = int(choice)
+            except (TypeError, ValueError):
+                return None
+            if idx < 0 or idx >= len(options):
+                return None
+            votes[key] = idx
+        data['votes'] = votes
+        obj.data = data
+        obj.save(update_fields=['data', 'updated_at'])
+        return obj.to_payload()
 
     @database_sync_to_async
     def _delete_element(self, board_id, element_id):
@@ -327,6 +449,54 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         qs = list(BoardHistory.objects.filter(board_id=board_id)
                   .order_by('-id')[:BoardHistory.MAX_PER_BOARD])
         return [h.to_payload() for h in reversed(qs)]  # старые → новые
+
+    @database_sync_to_async
+    def _removed_people(self, board_id):
+        """Убранные с доски: [{id, label}] — чтобы владелец видел, кого вернуть."""
+        board = Board.objects.filter(id=board_id).first()
+        if board is None:
+            return []
+        ids = [str(x) for x in (board.banned or [])]
+        if not ids:
+            return []
+        users = get_user_model().objects.filter(pk__in=ids)
+        found = {str(u.pk): board.label_for(u) for u in users}
+        return [{'id': i, 'label': found.get(i, 'участник #' + i)} for i in ids]
+
+    @database_sync_to_async
+    def _set_member_removed(self, board_id, target, removed):
+        """Убрать участника с доски или вернуть его. Владельца трогать нельзя.
+        Возвращает {'removed': [...], 'roles': {...}} или None при неверных данных."""
+        board = Board.objects.filter(id=board_id).first()
+        if board is None or target is None:
+            return None
+        key = str(target)
+        if key == str(board.owner_id):
+            return None
+        ids = [str(x) for x in (board.banned or [])]
+        roles = dict(board.roles or {})
+        user = get_user_model().objects.filter(pk=key).first()
+        if removed:
+            if key not in ids:
+                ids.append(key)
+            roles.pop(key, None)          # личная роль убранному больше не нужна
+            if user is not None:
+                board.members.remove(user)
+        else:
+            ids = [i for i in ids if i != key]
+            if user is not None:
+                board.members.add(user)   # возвращаем в участники, а не только снимаем запрет
+        board.banned = ids
+        board.roles = roles
+        board.save(update_fields=['banned', 'roles', 'updated_at'])
+        found = {}
+        if ids:
+            found = {str(u.pk): board.label_for(u)
+                     for u in get_user_model().objects.filter(pk__in=ids)}
+        return {
+            'removed': [{'id': i, 'label': found.get(i, 'участник #' + i)} for i in ids],
+            'roles': roles,
+        }
 
     @database_sync_to_async
     def _apply_role(self, board_id, target, role):

@@ -14,7 +14,11 @@ server {
     server_name zenchenkoim.ru www.zenchenkoim.ru;
 
     # Размер загружаемых файлов (на случай больших PDF/картинок).
-    client_max_body_size 25M;
+    # Должен быть ЧУТЬ БОЛЬШЕ лимита в board/views.py (_UPLOAD_MAX = 30 МБ):
+    # тогда файл доходит до Django и пользователь видит понятное «Файл больше
+    # 30 МБ», а не молчаливый обрыв соединения на nginx. Запас — на служебную
+    # обвязку multipart-запроса.
+    client_max_body_size 32M;
 
     # ACME challenge для Let's Encrypt — ДОЛЖЕН отдаваться по http.
     location /.well-known/acme-challenge/ {

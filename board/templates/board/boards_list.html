@@ -6,17 +6,32 @@
 
     <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
         <h1 class="mb-0">Доски</h1>
-        <form method="post" action="{% url 'board:create' %}" class="d-flex gap-2 flex-wrap">
+        <form method="post" action="{% url 'board:create' %}" class="d-flex gap-2 flex-wrap align-items-center">
             {% csrf_token %}
-            <input type="text" name="title" class="form-control" placeholder="Название (необязательно)" style="min-width: 200px;">
-            <select name="template" class="form-select" style="max-width: 220px;" title="Что положить на новую доску">
+            <input type="text" name="title" class="form-control" placeholder="Название (необязательно)" style="min-width: 200px;" {% if not quota_left %}disabled{% endif %}>
+            <select name="template" class="form-select" style="max-width: 220px;" title="Что положить на новую доску" {% if not quota_left %}disabled{% endif %}>
                 <option value="blank">Чистый лист</option>
                 <option value="plane">Координатная плоскость</option>
                 <option value="plane2">Две плоскости рядом</option>
             </select>
+            {% if quota_left %}
             <button type="submit" class="btn btn-primary text-nowrap">+ Новая доска</button>
+            {% else %}
+            <button type="button" class="btn btn-secondary text-nowrap" disabled title="Достигнут потолок — удалите ненужную старую доску">+ Новая доска</button>
+            {% endif %}
         </form>
     </div>
+
+    <p class="text-muted small mb-3">
+        Своих досок: <strong>{{ owned_count }}</strong> из {{ board_limit }}.
+        {% if not quota_left %}
+        <span class="text-danger">Потолок достигнут — чтобы создать новую, удалите ненужную старую
+        (правая кнопка мыши по строке → «Удалить»).</span>
+        {% elif quota_left <= 5 %}
+        Осталось мест: {{ quota_left }}.
+        {% endif %}
+        Доски, куда вы зашли по чужой ссылке, место не занимают.
+    </p>
 
     <div class="card mb-4">
         <div class="card-body">

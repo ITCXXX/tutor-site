@@ -5,6 +5,7 @@
 | **[DEPLOY.md](DEPLOY.md)** | 📖 Главная пошаговая инструкция: от пустого VPS до `https://zenchenkoim.ru`. **Начни отсюда.** |
 | `setup_server.sh` | Bash-скрипт для первичной настройки Ubuntu 24.04. Запускается один раз под root: ставит python/postgres/nginx/certbot, создаёт пользователя `tutor`, БД, `.env`, копирует конфиги. |
 | `nginx.conf.example` | Шаблон конфига nginx (reverse proxy на gunicorn через unix-сокет, отдача `/media/`). Скрипт сам копирует в `/etc/nginx/sites-available/tutor`. После `certbot --nginx` он сам допишет SSL-блок. |
+| `coturn.conf.example` | Конфиг сервера-ретранслятора для голосовой связи. Нужен тем участникам, у кого роутер не пропускает прямое соединение. Ставится по части 10 в DEPLOY.md. |
 | `tutor.service.example` | systemd unit для gunicorn. Скрипт сам копирует в `/etc/systemd/system/tutor.service`. |
 
 ## Краткий план (без подробностей — детали в DEPLOY.md)

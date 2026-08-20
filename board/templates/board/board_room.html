@@ -54,6 +54,25 @@
     }
     #board-toolbar hr { margin: 4px 2px; border-color: #ececf0; }
     #board-toolbar .tool-dragging { opacity: .35; }
+    /* Перетаскивание инструмента на холст: за указателем летит «призрак»,
+       чтобы было видно, ЧТО и КУДА кладём. Сам объект создаётся при отпускании. */
+    #board-toolbar .tool-draggable { touch-action: none; }
+    .tool-ghost {
+        position: fixed; z-index: 3000; pointer-events: none;
+        transform: translate(-50%, -50%);
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 13px 8px 10px;
+        background: #fff; border: 1px solid #cfd6e8; border-radius: 11px;
+        box-shadow: 0 12px 30px rgba(0,0,0,.20);
+        color: #3a3a42; font-size: 13px; white-space: nowrap; opacity: .97;
+    }
+    .tool-ghost svg { width: 21px; height: 21px; display: block; }
+    .tool-ghost .tg-cap { color: #6b6b76; }
+    /* Указатель над холстом — рамка синеет: сюда положить можно. */
+    .tool-ghost.over { border-color: #4d7cfe; box-shadow: 0 12px 30px rgba(77,124,254,.34); }
+    .tool-ghost.over .tg-cap { color: #2b5bd7; }
+    body.tool-dragging-body { cursor: grabbing; }
+    body.tool-dragging-body #board-stage { cursor: copy; }
     #board-toolbar [draggable="true"] { cursor: grab; }
     #board-toolbar [draggable="true"]:active { cursor: grabbing; }
 
@@ -282,6 +301,265 @@
     #settings-menu button:hover:not([disabled]) { background: #f2f2f6; }
     #settings-menu button[disabled] { color: #c2c2ca; cursor: default; }
 
+
+    /* ── Телефон и планшет ──────────────────────────────────────────────
+       Вертикальная панель инструментов на узком экране занимает половину
+       полезной площади, поэтому там она прячется: инструменты выбираются в
+       листе, который поднимается по круглой кнопке «+» внизу слева.
+       На широких экранах этих элементов нет вовсе. */
+    #mobile-fab, #mobile-sheet, #mobile-backdrop { display: none; }
+
+    #mobile-fab {
+        position: fixed; left: 14px; bottom: 14px; z-index: 72;
+        width: 58px; height: 58px; border-radius: 50%; padding: 0;
+        align-items: center; justify-content: center;
+        border: none; background: #4d7cfe; color: #fff;
+        box-shadow: 0 8px 24px rgba(77,124,254,.45); cursor: pointer;
+    }
+    #mobile-fab:active { transform: scale(.94); }
+    #mobile-fab svg { width: 26px; height: 26px; display: block; }
+    #mobile-fab.on { background: #2b5bd7; }
+
+    #mobile-backdrop { position: fixed; inset: 0; z-index: 70; background: rgba(20,20,28,.38); }
+    #mobile-sheet {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 71;
+        flex-direction: column; max-height: 74vh;
+        background: #fff; border-radius: 18px 18px 0 0;
+        box-shadow: 0 -10px 40px rgba(0,0,0,.24);
+        transform: translateY(102%); transition: transform .22s ease;
+    }
+    #mobile-sheet.open { transform: translateY(0); }
+    .ms-grip { width: 42px; height: 4px; border-radius: 2px; background: #dcdce4; margin: 9px auto 2px; flex: none; }
+    .ms-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 16px 8px; flex: none; }
+    .ms-title { font-weight: 600; font-size: 15px; color: #2b2b33; }
+    .ms-close { border: none; background: #f0f0f4; color: #6b6b76; width: 32px; height: 32px; border-radius: 50%; font-size: 18px; line-height: 1; cursor: pointer; }
+    .ms-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 12px 20px; }
+    .ms-sec + .ms-sec { margin-top: 14px; }
+    .ms-sec-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #9a9aa4; padding: 0 4px 7px; }
+    .ms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr)); gap: 8px; }
+    .ms-item {
+        display: flex; flex-direction: column; align-items: center; gap: 5px;
+        padding: 11px 4px 9px; border: 1px solid #e6e6ec; border-radius: 12px;
+        background: #fafafc; color: #3a3a42; cursor: pointer;
+        font-size: 11px; line-height: 1.15; text-align: center;
+        touch-action: none;   /* иначе перетаскивание на холст уедет в прокрутку листа */
+    }
+    .ms-item:active { background: #eef1f7; }
+    .ms-item svg { width: 24px; height: 24px; display: block; }
+    .ms-item.active { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    .ms-cap { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ms-wide { display: flex; align-items: center; gap: 10px; padding: 4px; }
+    .ms-wide input[type=range] { flex: 1; }
+    .ms-swatch { width: 34px; height: 34px; border-radius: 9px; border: 1px solid #d5d5dc; box-shadow: inset 0 0 0 2px #fff; flex: none; }
+    .ms-hint { font-size: 11px; color: #9a9aa4; padding: 8px 4px 0; }
+
+    @media (max-width: 820px) {
+        #board-toolbar { display: none; }
+        #mobile-fab { display: flex; }
+        #mobile-sheet { display: flex; }
+        #mobile-backdrop:not([hidden]) { display: block; }
+
+        /* Верхняя плашка: на узком экране в строку влезают только связь и код.
+           Остальные кнопки продублированы в листе, разделом «Занятие». */
+        #board-topbar { top: 60px; right: 8px; gap: 8px; padding: 5px 11px; font-size: 13px; }
+        #board-topbar .tb-sep, #board-topbar #import-btn, #board-topbar #hide-selected,
+        #board-topbar #reveal-hidden, #board-topbar #present-btn, #board-topbar #follow-btn,
+        #board-topbar #viewonly-btn, #board-topbar #access-btn, #board-topbar #peers,
+        #board-topbar #screen-btn { display: none; }
+        #board-head { top: 60px; left: 8px; max-width: 42vw; }
+        #settings-btn { top: 106px; right: 8px; }
+        #zoom-control { bottom: 14px; right: 12px; }
+        /* Всплывающие панели не должны вылезать за край экрана. */
+        #board-menu, #history-panel, #access-panel, #voice-panel, .settings-panel, .conn-panel, #color-palette {
+            max-width: calc(100vw - 16px);
+        }
+        #history-panel { left: 8px; }
+        #board-menu { left: 8px; }
+        /* Крупнее цели для пальца в меню. */
+        .bm-item { padding: 10px 8px; font-size: 14px; }
+    }
+
+
+    /* Встроенная страница (iframe). Пока сверху «крышка», объект можно таскать;
+       нажали — работаете со страницей. Состояние крышки у каждого своё. */
+    .wgt-embed .wgt-body { padding: 0; }
+    .emb-wrap { position: relative; overflow: hidden; background: #fff; }
+    .emb-frame { display: block; border: 0; width: 100%; height: 100%; background: #fff; }
+    .emb-lock { position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 10px; cursor: pointer; }
+    .emb-lock span { background: rgba(43,43,51,.84); color: #fff; font-size: 11px; padding: 4px 11px; border-radius: 20px; opacity: 0; transition: opacity .15s; }
+    .emb-lock:hover span { opacity: 1; }
+    .wgt-embed.live .emb-lock { display: none; }
+    .wgt-embed.live { outline: 2px solid #4d7cfe; }
+    .emb-tools { display: flex; align-items: center; gap: 1px; }
+    .emb-tools button { border: none; background: transparent; color: #6b6b76; cursor: pointer; padding: 2px 6px; border-radius: 5px; font-size: 12px; line-height: 1.4; }
+    .emb-tools button:hover { background: #e4e8f5; color: #2b5bd7; }
+    .emb-grip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #c2c2ce 50%); }
+    .emb-note { font-size: 11px; color: #9a9aa4; padding: 5px 9px; border-top: 1px solid #f0f0f3; line-height: 1.35; }
+
+
+    /* Голосовая связь: кнопка в верхней плашке и панель с участниками. */
+    #voice-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+    #voice-btn:hover { background: #e4e8f5; }
+    #voice-btn.on { background: #e6f7ee; border-color: #2ec07c; color: #1f8f5b; }
+    #voice-panel { position: fixed; top: 104px; right: 16px; z-index: 60; width: 250px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    #voice-panel[hidden] { display: none; }
+    .vp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .vp-title { font-weight: 600; color: #2b2b33; flex: 1; }
+    .vp-head button { border: 1px solid #d9d9e0; background: #f7f7fa; color: #3a3a42; border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer; }
+    .vp-head button:hover { background: #ececf0; }
+    .vp-head button.off { background: #fdeef0; border-color: #ecc7cc; color: #d63333; }
+    .vp-person { display: flex; align-items: center; gap: 7px; padding: 5px 0; border-top: 1px solid #f0f0f3; }
+    .vp-person:first-child { border-top: none; }
+    .vp-dot { width: 9px; height: 9px; border-radius: 50%; background: #c8c8d0; flex: none; transition: background .12s, box-shadow .12s; }
+    .vp-person.talking .vp-dot { background: #2ec07c; box-shadow: 0 0 0 3px rgba(46,192,124,.25); }
+    .vp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vp-state { font-size: 11px; color: #9a9aa4; flex: none; }
+    .vp-empty { color: #9a9aa2; font-size: 12px; padding: 6px 0; }
+    .vp-hint { font-size: 11px; color: #8a8a94; margin-top: 8px; }
+
+
+    /* Голосование. Заливка варианта — это и есть столбик результата: отдельная
+       диаграмма заняла бы вдвое больше места при той же информации. */
+    .wgt-poll { min-width: 240px; }
+    .poll-q { font-weight: 600; font-size: 14px; color: #2b2b33; margin-bottom: 8px; outline: none; line-height: 1.3; }
+    .poll-q:empty:before { content: attr(data-ph); color: #b0b0ba; font-weight: 400; }
+    .poll-opts { display: flex; flex-direction: column; gap: 5px; }
+    .poll-opt {
+        position: relative; display: flex; align-items: center; gap: 8px;
+        width: 100%; text-align: left; padding: 7px 10px; cursor: pointer;
+        border: 1px solid #e3e3e8; border-radius: 8px; background: #fff;
+        font-size: 13px; color: #2b2b33; overflow: hidden;
+    }
+    .poll-opt:hover { border-color: #b9c6ea; }
+    .poll-opt.on { border-color: #4d7cfe; }
+    .poll-fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width .35s ease; }
+    .poll-mark {
+        position: relative; flex: none; width: 15px; height: 15px; border-radius: 50%;
+        border: 1.5px solid #c8c8d2; box-sizing: border-box;
+    }
+    .poll-opt.on .poll-mark { border-color: #4d7cfe; border-width: 5px; }
+    .poll-label { position: relative; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .poll-num { position: relative; flex: none; font-size: 11px; color: #8a8a94; }
+    .poll-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+    .poll-total { flex: 1; font-size: 11px; color: #9a9aa4; }
+    .poll-tools { display: flex; gap: 3px; }
+    .poll-tools button {
+        border: 1px solid #e3e3e8; background: #f7f7fa; color: #6b6b76;
+        border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer;
+    }
+    .poll-tools button:hover { background: #ececf0; color: #2b5bd7; }
+
+
+    /* Якоря для соединительных стрелок. Слой сквозной — ловят нажатия только
+       сами точки, всё остальное проходит на холст. */
+    #anchor-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 26; overflow: hidden; }
+    #anchor-layer .anch {
+        position: absolute; display: none; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
+        border-radius: 50%; background: #fff; border: 2px solid #4d7cfe;
+        cursor: crosshair; pointer-events: auto; box-shadow: 0 1px 3px rgba(0,0,0,.2);
+        transition: transform .1s;
+    }
+    #anchor-layer .anch:hover { transform: scale(1.35); background: #4d7cfe; }
+    /* Подсветка объекта, к которому целится стрелка. */
+    #anchor-layer .anch-halo {
+        position: absolute; display: none; pointer-events: none;
+        border: 2px solid #4d7cfe; border-radius: 5px; background: rgba(77,124,254,.08);
+    }
+    body.anchor-dragging { cursor: crosshair; }
+    body.anchor-dragging #board-stage { cursor: crosshair; }
+
+
+    /* Таблица: клетки — прямоугольники без заливки. Границы соседних клеток
+       накладываются друг на друга (отрицательные поля), поэтому линия везде
+       одинаковой толщины, а не двойная на стыках. */
+    .wgt-table-old { display: none; }
+    .tbl { position: relative; display: grid; }
+    .tcell {
+        position: relative; box-sizing: border-box;
+        border: 1px solid #d9d9e0; margin: 0 -1px -1px 0;
+        overflow: hidden; padding: 4px 6px; cursor: cell;
+    }
+    .tcell.sel { border-color: #4d7cfe; box-shadow: inset 0 0 0 1px #4d7cfe; z-index: 1; }
+    .tcell.editing { border-color: #4d7cfe; box-shadow: inset 0 0 0 2px rgba(77,124,254,.35); z-index: 2; cursor: text; }
+    .tcell-in { min-height: 1em; outline: none; font-size: 14px; line-height: 1.25; word-break: break-word; }
+    .tcell-in a { color: #1f6feb; text-decoration: underline; cursor: pointer; }
+    /* Ручки на границах: узкие полоски поверх линий сетки. */
+    .tbl-vh { position: absolute; top: 0; bottom: 0; width: 7px; margin-left: -3.5px; cursor: col-resize; z-index: 3; }
+    .tbl-hh { position: absolute; left: 0; right: 0; height: 7px; margin-top: -3.5px; cursor: row-resize; z-index: 3; }
+    .tbl-vh:hover, .tbl-hh:hover { background: rgba(77,124,254,.35); }
+    .tbl-tools { display: flex; gap: 4px; margin-top: 6px; }
+    .tbl-tools button {
+        border: 1px solid #e3e3e8; background: #f7f7fa; color: #6b6b76;
+        border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer;
+    }
+    .tbl-tools button:hover { background: #ececf0; color: #2b5bd7; }
+    /* Плашка заливки — появляется, когда выбраны клетки. */
+    #tbl-bar {
+        position: fixed; z-index: 62; display: flex; align-items: center; gap: 5px;
+        background: #fff; border: 1px solid #e0e0e6; border-radius: 9px;
+        padding: 6px 9px; box-shadow: 0 8px 24px rgba(0,0,0,.16);
+    }
+    #tbl-bar[hidden] { display: none; }
+    #tbl-bar .tb-lbl { font-size: 11px; color: #8a8a94; margin-right: 2px; }
+    #tbl-bar .tb-sw {
+        width: 20px; height: 20px; border-radius: 5px; cursor: pointer;
+        border: 1px solid rgba(0,0,0,.16); box-sizing: border-box; padding: 0;
+    }
+    #tbl-bar .tb-sw:hover { transform: scale(1.15); }
+    #tbl-bar .tb-sw.none { position: relative; }
+    #tbl-bar .tb-sw.none::after {
+        content: ''; position: absolute; left: 1px; right: 1px; top: 50%; height: 2px;
+        background: #ef4444; transform: translateY(-1px) rotate(-45deg);
+    }
+
+
+    /* Демонстрация экрана: объект с живой картинкой. Растягивается только
+       пропорционально — экран с искажёнными пропорциями читается хуже. */
+    #screen-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+    #screen-btn:hover { background: #e4e8f5; }
+    #screen-btn.on { background: #fff4e6; border-color: #e67e22; color: #b35c00; }
+    .wgt-screen .wgt-body { padding: 0; }
+    .scr-box { position: relative; background: #14141a; overflow: hidden; border-radius: 0 0 6px 6px; }
+    .scr-video { display: block; width: 100%; height: 100%; object-fit: contain; background: #14141a; }
+    .scr-wait { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; color: #b0b0ba; font-size: 12px; }
+    .wgt-screen.waiting .scr-wait { display: flex; }
+    .scr-grip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.65) 50%); }
+
+
+    /* Панель диаграммы Венна — тот же язык, что у таблицы. */
+    #venn-bar {
+        position: fixed; z-index: 62; display: flex; flex-direction: column; gap: 6px;
+        background: #fff; border: 1px solid #e0e0e6; border-radius: 10px;
+        padding: 8px 10px; box-shadow: 0 8px 26px rgba(0,0,0,.17); font-size: 12px;
+    }
+    #venn-bar[hidden] { display: none; }
+    .vn-row { display: flex; align-items: center; gap: 6px; }
+    .vn-lbl { color: #8a8a94; font-size: 11px; white-space: nowrap; }
+    .vn-seg { display: inline-flex; border: 1px solid #d3d6de; border-radius: 6px; overflow: hidden; }
+    .vn-seg button { border: none; background: #fff; color: #3a3a42; padding: 2px 9px; font-size: 12px; cursor: pointer; }
+    .vn-seg button + button { border-left: 1px solid #d3d6de; }
+    .vn-seg button.on { background: #4d7cfe; color: #fff; }
+    #vn-overlap { width: 96px; }
+    .vn-chk { display: inline-flex; align-items: center; gap: 4px; color: #6b6b76; cursor: pointer; }
+    #vn-text {
+        flex: 1; min-width: 90px; border: 1px solid #d9d9e0; border-radius: 6px;
+        padding: 3px 7px; font-size: 12px;
+    }
+    #vn-text:disabled { background: #f6f6f8; color: #b0b0ba; }
+    .vn-fills { display: flex; gap: 4px; }
+    .vn-sw { width: 18px; height: 18px; border-radius: 5px; cursor: pointer; border: 1px solid rgba(0,0,0,.16); padding: 0; }
+    .vn-sw:hover { transform: scale(1.15); }
+    .vn-sw.none { position: relative; }
+    .vn-sw.none::after {
+        content: ''; position: absolute; left: 1px; right: 1px; top: 50%; height: 2px;
+        background: #ef4444; transform: translateY(-1px) rotate(-45deg);
+    }
+    .vn-preset {
+        border: 1px solid #e3e3e8; background: #f7f7fa; color: #3a3a42;
+        border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+    }
+    .vn-preset:hover { background: #eef3ff; border-color: #4d7cfe; color: #2b5bd7; }
+
     /* Верхняя плашка: код доски + статус связи + участники. */
     #board-topbar {
         position: fixed;
@@ -377,6 +655,11 @@
     .ap-person { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px solid #f0f0f3; }
     .ap-person .ap-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #ap-people .ap-empty { color: #9a9aa2; font-size: 12px; padding: 6px 0; }
+    .ap-kick { flex: none; border: 1px solid #ecc7cc; background: #fff; color: #d63333; border-radius: 7px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+    .ap-kick:hover { background: #fdeef0; }
+    .ap-back { flex: none; border: 1px solid #cfd8ec; background: #fff; color: #2b5bd7; border-radius: 7px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+    .ap-back:hover { background: #eef3ff; }
+    #ap-removed .ap-person { color: #8a8a94; }
     .fe-eye { border: none; background: transparent; color: #b0b0ba; cursor: pointer; padding: 0 3px; display: inline-flex; align-items: center; }
     .fe-eye:hover { color: #4d7cfe; }
     .fe-eye.off { color: #c9ccd6; }
@@ -666,6 +949,17 @@
     .tbox.editing .tbox-edit { cursor: text; outline: 1px solid rgba(77,124,254,.55); }
     /* Рамка выделения для DOM-объектов (текст/виджеты) — трансформер их не оборачивает. */
     .tbox.wsel, .mtext.wsel, .wgt.wsel { outline: 2px solid #4d7cfe; outline-offset: 1px; border-radius: 4px; }
+    /* Ссылки в тексте настоящие и кликабельные — курсор это показывает.
+       Во время правки они не перехватывают нажатия, чтобы можно было спокойно
+       ставить курсор внутри строки с адресом. */
+    .mtext a.lnk, .tbox a.lnk, .shape-text a { cursor: pointer; }
+    .mtext a.lnk:hover, .tbox a.lnk:hover, .shape-text a:hover { text-decoration-thickness: 2px; }
+    .tbox.editing a.lnk, .mtext.moving a.lnk, .tbox.moving a.lnk { pointer-events: none; cursor: text; }
+    /* Панель у ВЫБРАННОГО поля: списки и фон за текстом — про кусок текста,
+       а не про поле целиком, поэтому в этом режиме их не показываем. */
+    #tbox-bar.tb-field [data-cmd="insertUnorderedList"],
+    #tbox-bar.tb-field [data-cmd="insertOrderedList"],
+    #tbox-bar.tb-field #tb-hilite-btn { display: none; }
     .tbox:not(.editing):hover .tbox-edit { outline: 1px dashed rgba(77,124,254,.4); }
     .tbox-edit:empty:before { content: attr(data-ph); color: #b0b0ba; }
     .tbox-edit ul, .tbox-edit ol { margin: .2em 0; padding-left: 1.4em; }
@@ -731,8 +1025,19 @@
     .kb-cardel:hover { color: #e7505a; }
     .kb-add { width: 100%; margin-top: 2px; }
     .tm-disp { font-size: 34px; font-variant-numeric: tabular-nums; text-align: center; color: #2b2b33; }
-    .wh-canvas { display: block; margin: 0 auto; }
-    .wh-result { text-align: center; font-weight: 600; min-height: 18px; margin-top: 4px; }
+    /* Колесо: холст и отбойник лежат в одной коробке, отбойник щёлкает поворотом. */
+    .wh-stage { position: relative; width: 240px; margin: 2px auto 0; }
+    .wh-canvas { display: block; }
+    .wh-pointer {
+        position: absolute; right: -3px; top: 50%; width: 0; height: 0;
+        margin-top: -10px; transform-origin: 90% 50%;
+        border-top: 10px solid transparent; border-bottom: 10px solid transparent;
+        border-right: 18px solid #2b2b33;
+        filter: drop-shadow(0 2px 3px rgba(0,0,0,.3));
+        transition: transform .07s ease-out;
+    }
+    .wh-result { text-align: center; font-weight: 600; min-height: 20px; margin-top: 6px; color: #6b6b76; font-size: 13px; transition: color .2s; }
+    .wh-result.on { color: #1f8f5b; font-size: 15px; }
     .wh-opts { width: 100%; margin-top: 6px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 4px 6px; font-size: 12px; resize: vertical; }
 
     /* Слой аплетов ГеоГебры (DOM поверх холста). */
@@ -774,6 +1079,9 @@
 <div id="board-version" title="Версия клиента доски"></div>
 <div id="ggb-layer"></div>
 <div id="widget-layer"></div>
+<div id="tbl-bar" hidden></div>
+<div id="venn-bar" hidden></div>
+<div id="anchor-layer"></div>
 <div id="cursor-layer"></div>
 
 <style>
@@ -1088,6 +1396,14 @@
                 </div>
             </div>
             <div class="flyout-section">
+                <div class="flyout-label">Множества</div>
+                <div class="flyout-grid">
+                    <div class="tool" data-tool="venn" title="Диаграмма Венна — 2 или 3 множества, с рамкой-универсумом. Клик по области — подпись и заливка">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9.5" cy="12" r="6"/><circle cx="14.5" cy="12" r="6"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="flyout-section">
                 <div class="flyout-label">Плоскость</div>
                 <div class="flyout-grid">
                     <div class="tool" data-tool="frame" title="Математическое окно (свои оси, зум колесом, панорама перетаскиванием; бесконечные объекты обрезаются границей)">
@@ -1119,6 +1435,15 @@
             <div class="tool" data-tool="sticky" title="Стикер — цветная заметка">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M5 4h14v10l-5 5H5z"/><path d="M19 14h-5v5"/></svg>
             </div>
+            <div class="tool" data-tool="screen" title="Показать свой экран участникам доски (с телефона недоступно)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="13" rx="1.5"/><path d="M9 20h6M12 17v3"/><path d="M10 8.5l4 2-4 2z" fill="currentColor" stroke="none"/></svg>
+            </div>
+            <div class="tool" data-tool="poll" title="Голосование — вопрос с вариантами, голосуют все участники">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
+            </div>
+            <div class="tool" data-tool="embed" title="Встроить страницу — по ссылке или по коду вставки (&lt;iframe&gt;): видео, документы, карты, задания">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18" opacity=".6"/><circle cx="6" cy="6.5" r=".8" fill="currentColor" stroke="none"/><circle cx="8.5" cy="6.5" r=".8" fill="currentColor" stroke="none"/><path d="M10 15.5l4-2.5-4-2.5z" fill="currentColor" stroke="none"/></svg>
+            </div>
             <div class="tool" data-tool="card" title="Карточка — двусторонняя (вопрос/ответ), переворачивается">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="6" width="14" height="12" rx="1.5"/><path d="M8 10.5l-2 2 2 2" transform="translate(11 0)"/><path d="M7 9h6M7 12h4"/></svg>
             </div>
@@ -1132,7 +1457,7 @@
             <div id="macro-list"></div>
         </div>
     </div>
-    <div class="tool" data-tool="select" title="Выделение / перемещение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift — добавить, Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
+    <div class="tool" data-tool="select" title="Выделение / перемещение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift или Ctrl — добавить, Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3l7 17 2.5-6.5L20 11z"/></svg>
     </div>
     <hr>
@@ -1162,6 +1487,16 @@
     </div>
 </div>
 
+<div id="mobile-backdrop" hidden></div>
+<div id="mobile-sheet">
+    <div class="ms-grip"></div>
+    <div class="ms-head">
+        <span class="ms-title">Инструменты</span>
+        <button type="button" class="ms-close" title="Закрыть">&times;</button>
+    </div>
+    <div class="ms-body"></div>
+</div>
+<button type="button" id="mobile-fab" title="Инструменты" aria-label="Инструменты"></button>
 <div id="board-topbar">
     <span class="dot" id="conn-dot" title="Связь"></span>
     <span>Код: <code>{{ board.code }}</code></span>
@@ -1174,6 +1509,8 @@
     <button id="present-btn" title="Вести: транслировать свой вид (панораму/зум) участникам">Вести</button>
     <button id="follow-btn" title="Следовать: подстраивать вид под ведущего">Следовать</button>
     <button id="viewonly-btn" title="Только просмотр: заблокировать правки у себя (чтобы не задеть чертёж)">Просмотр</button>
+    <button id="screen-btn" title="Показать свой экран участникам. Работает независимо от голоса">Показать экран</button>
+    <button id="voice-btn" title="Голосовая связь с участниками доски. Звук идёт напрямую между браузерами">Голос</button>
     <span class="tb-sep"></span>
     <button id="access-btn" title="Доступ: роль по ссылке и роли участников" hidden>Доступ</button>
     <span id="role-badge" hidden></span>
@@ -1216,6 +1553,7 @@
     </div>
     <label class="bm-toggle"><input type="checkbox" id="cursors-toggle" checked> Курсоры участников</label>
     <label class="bm-toggle"><input type="checkbox" id="guides-toggle" checked> Направляющие (выравнивание)</label>
+    <label class="bm-toggle" id="finger-draw-row" hidden title="Обычно пером рисуют, а пальцем двигают доску. Включите, если пера сейчас нет под рукой."><input type="checkbox" id="finger-draw"> Рисовать пальцем</label>
     <div class="bm-sep"></div>
     <button class="bm-item" id="export-pdf-btn">Экспорт в PDF…</button>
     <button class="bm-item" id="history-btn">История доски…</button>
@@ -1237,6 +1575,16 @@
     <div id="history-list"></div>
     <div class="ap-hint">Последние действия всех участников (сохраняется). Клик по добавлению — показать объект; у удалённого — «Восстановить».</div>
 </div>
+<div id="voice-panel" hidden>
+    <div class="vp-head">
+        <span class="vp-title">Голос</span>
+        <button type="button" id="vp-mute" title="Выключить микрофон, оставаясь в разговоре">Выключить микрофон</button>
+        <button type="button" id="vp-leave" title="Выйти из разговора">Выйти</button>
+    </div>
+    <div id="vp-list"></div>
+    <div class="vp-hint">Звук идёт напрямую между браузерами, минуя сервер. Если кого-то не слышно — проверьте, что браузер разрешил микрофон.</div>
+</div>
+<div id="voice-audio" hidden></div>
 <div id="access-panel" hidden>
     <div class="ap-title">Все, кто по ссылке</div>
     <div class="ap-seg" id="ap-default">
@@ -1246,10 +1594,21 @@
     <div class="ap-hint">Роль по умолчанию для каждого, кому не назначена личная.</div>
     <div class="ap-title">Участники сейчас</div>
     <div id="ap-people"></div>
+    <div id="ap-removed-wrap" hidden>
+        <div class="ap-title">Убранные с доски</div>
+        <div id="ap-removed"></div>
+        <div class="ap-hint">Они не войдут даже по ссылке, пока вы не вернёте доступ.</div>
+    </div>
 </div>
 <style>
-    #board-pw-dialog, #pdf-export-dialog { position: fixed; inset: 0; z-index: 3000; background: rgba(20,20,28,.35); display: flex; align-items: center; justify-content: center; }
-    #board-pw-dialog[hidden], #pdf-export-dialog[hidden] { display: none; }
+    #board-pw-dialog, #pdf-export-dialog, #embed-dialog { position: fixed; inset: 0; z-index: 3000; background: rgba(20,20,28,.35); display: flex; align-items: center; justify-content: center; }
+    #board-pw-dialog[hidden], #pdf-export-dialog[hidden], #embed-dialog[hidden] { display: none; }
+    #embed-dialog .bpw-card { width: 460px; }
+    #emb-input { width: 100%; box-sizing: border-box; border: 1px solid #d9d9e0; border-radius: 8px;
+        padding: 9px 11px; font-size: 13px; font-family: ui-monospace, Menlo, Consolas, monospace;
+        resize: vertical; min-height: 84px; }
+    #emb-input:focus { outline: none; border-color: #4d7cfe; }
+    .emb-error { color: #d63333; font-size: 12px; margin: 6px 0 0; }
     .pdf-modes { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 12px; }
     .pdf-mode { text-align: left; border: 1px solid #d9d9e0; background: #fff; border-radius: 9px; padding: 9px 11px; cursor: pointer; display: block; }
     .pdf-mode:hover { background: #f5f7ff; border-color: #4d7cfe; }
@@ -1279,6 +1638,19 @@
             <button class="pdf-mode" data-mode="selection"><b>Только выделенное</b><span>одна страница из выбранных объектов</span></button>
         </div>
         <div class="bpw-actions"><button id="pdf-x-cancel" class="bpw-btn">Отмена</button></div>
+    </div>
+</div>
+<div id="embed-dialog" hidden>
+    <div class="bpw-card">
+        <div class="bpw-head">Вставить страницу на доску</div>
+        <div class="bpw-state">Подойдёт и обычная ссылка, и готовый код для вставки — тот, что сайты дают под кнопкой «Поделиться» или «Встроить».</div>
+        <textarea id="emb-input" spellcheck="false" placeholder="https://…&#10;или&#10;&lt;iframe src=&quot;https://…&quot; width=&quot;560&quot; height=&quot;315&quot;&gt;&lt;/iframe&gt;"></textarea>
+        <div class="bpw-hint">Видео, документы, карты, интерактивные задания. У видео появятся общие кнопки «включить / пауза» для всех участников. Enter — вставить, Shift+Enter — перенос строки.</div>
+        <div id="emb-error" class="emb-error"></div>
+        <div class="bpw-actions">
+            <button id="emb-cancel" class="bpw-btn">Отмена</button>
+            <button id="emb-ok" class="bpw-btn primary">Вставить</button>
+        </div>
     </div>
 </div>
 <div id="board-pw-dialog" hidden>
@@ -1570,20 +1942,33 @@
 </div>
 
 {{ board.code|json_script:"board-code" }}
+{{ ice_servers|json_script:"ice-servers" }}
 <script>
 window.BOARD_CONFIG = {
     code: JSON.parse(document.getElementById('board-code').textContent),
     wsScheme: (location.protocol === 'https:') ? 'wss' : 'ws',
+    // Серверы для голосовой связи: их состав решает сервер, поэтому смена
+    // схемы связи в будущем не потребует править браузерную часть.
+    iceServers: JSON.parse(document.getElementById('ice-servers').textContent),
+    // Версию считает сервер по времени правки board.js — руками её не задают.
+    ver: "{{ board_ver }}",
+    // Адреса библиотек отдаёт шаблон: на проде {% templatetag openblock %} static {% templatetag closeblock %}
+    // подставляет имена с хешем, поэтому собирать эти пути в JS нельзя.
+    pdfWorker: "{% static 'vendor/pdfjs-3.11.174/pdf.worker.min.js' %}",
+    pdfFonts: "{{ pdf_fonts_url }}",
+    html2canvas: "{% static 'vendor/html2canvas-1.4.1.min.js' %}",
+    jspdf: "{% static 'vendor/jspdf-2.5.2.umd.min.js' %}",
 };
 </script>
 {% endblock %}
 
 {% block extra_js %}
-<!-- Konva: движок холста (vanilla, через CDN jsdelivr — зеркало npm). -->
-<script src="https://cdn.jsdelivr.net/npm/konva@9.3.16/konva.min.js"></script>
+<!-- Konva: движок холста. Лежит у нас в static/vendor — если у ученика провайдер
+     режет чужие CDN, доска всё равно откроется. -->
+<script src="{% static 'vendor/konva-9.3.16.min.js' %}"></script>
 <!-- pdf.js: просмотр и извлечение страниц PDF. -->
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-<script src="{% static 'board/board.js' %}?v=20260614z55"></script>
+<script src="{% static 'vendor/pdfjs-3.11.174/pdf.min.js' %}"></script>
+<script src="{% static 'board/board.js' %}?v={{ board_ver }}"></script>
 <script>
 (function () {
     const code = "{{ board.code }}";

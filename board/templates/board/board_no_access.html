@@ -1,0 +1,18 @@
+{% extends 'users/visitor_base.html' %}
+{% block title %}Нет доступа к доске — Иван Зенченко{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 110px; padding-bottom: 40px; max-width: 460px;">
+    <div class="card">
+        <div class="card-body text-center">
+            <h1 class="h4 mb-2">Доступ к доске закрыт</h1>
+            <p class="text-muted small mb-3">
+                {{ board.title|default:"Без названия" }} · код <code>{{ board.code }}</code>
+            </p>
+            <p class="mb-0">Владелец доски убрал вас из участников. Если это недоразумение —
+            попросите его вернуть вам доступ.</p>
+        </div>
+    </div>
+    <p class="text-center mt-3"><a href="{% url 'board:list' %}" class="text-muted small">← К моим доскам</a></p>
+</div>
+{% endblock %}
