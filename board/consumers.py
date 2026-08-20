@@ -360,6 +360,21 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             if not isinstance(url, str) or not url.lower().startswith(('http://', 'https://')):
                 return None, None
 
+        # Голосование: итоги живут в data['votes'] и меняются ТОЛЬКО отдельным
+        # действием poll_vote, где сервер записывает голос за отправителя.
+        # Обычная правка объекта (подвинули, переименовали вопрос, сменили
+        # варианты) поле голосов не трогает — берём прежнее значение из базы.
+        # Иначе любой участник переписывал бы итоги целиком, отправив
+        # element_update с готовым списком.
+        if el_type == 'poll' and exists:
+            prev = BoardElement.objects.filter(
+                board_id=board_id, element_id=element_id,
+            ).values_list('data', flat=True).first() or {}
+            data = dict(data)
+            data['votes'] = (prev or {}).get('votes') or {}
+            element = dict(element)
+            element['data'] = data
+
         # boardconfig — служебная настройка доски (фон), в историю не пишем.
         if el_type == 'boardconfig':
             obj, _c = BoardElement.objects.update_or_create(

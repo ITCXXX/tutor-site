@@ -226,6 +226,19 @@ async def main():
     row = await BoardElement.objects.filter(board=b, element_id='poll1').afirst()
     check((row.data.get('votes') or {}) == {str(student.pk): 0}, 'переголосование заменяет голос')
 
+    # Итоги нельзя переписать обычной правкой объекта. Голоса меняет только
+    # действие poll_vote; element_update их не трогает, даже от редактора.
+    await c8.send_json_to({'action': 'element_update', 'element': {
+        'id': 'poll1', 'type': 'poll', 'z': 0,
+        'data': {'x': 5, 'y': 5, 'options': ['да', 'нет'],
+                 'votes': {'901': 0, '902': 0, '903': 0}}}})
+    await recv(c9)   # правка разошлась — вычитываем, чтобы не сдвинуть очередь
+    row = await BoardElement.objects.filter(board=b, element_id='poll1').afirst()
+    check((row.data.get('votes') or {}) == {str(student.pk): 0},
+          'итоги голосования нельзя подделать правкой объекта')
+    check(round(row.data.get('x') or 0) == 5,
+          'при этом остальные поля объекта правятся как обычно')
+
     b.default_role = 'editor'
     await b.asave(update_fields=['default_role'])
 
