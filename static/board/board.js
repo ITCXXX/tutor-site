@@ -1272,26 +1272,30 @@
   const VENN_KEYS2 = ['A', 'B', 'AB'];
   const VENN_KEYS3 = ['A', 'B', 'C', 'AB', 'AC', 'BC', 'ABC'];
   const VENN_FILLS = ['', '#ffd8a8', '#b2f2bb', '#a5d8ff', '#eebefa', '#ffc9c9', '#ffec99', '#c3fae8'];
-  const VENN_PAD = 18;   // отступ кругов от рамки-универсума
+  const VENN_PAD = 16;        // отступ от рамки-универсума
+  const VENN_LABEL = 32;      // полоса снаружи кругов под буквы A, B, C
+  const VENN_OVERLAP = 0.5;   // классическое пересечение; круги статичны
 
   function vennKeys(d) { return (d.sets === 2) ? VENN_KEYS2 : VENN_KEYS3; }
 
   // Геометрия: радиус и центры кругов внутри рамки.
   function vennGeom(d) {
     const W = Math.max(40, d.width || 0), H = Math.max(40, d.height || 0);
-    const aw = W - 2 * VENN_PAD, ah = H - 2 * VENN_PAD;
-    const s = Math.max(0, Math.min(1, d.overlap == null ? 0.5 : d.overlap));
+    // Из доступной площади вычитаем полосу под буквы — иначе они налезают
+    // на круги, как только диаграмму уменьшат.
+    const aw = W - 2 * VENN_PAD - 2 * VENN_LABEL, ah = H - 2 * VENN_PAD - 2 * VENN_LABEL;
+    const s = VENN_OVERLAP;   // круги статичны: расположение классическое
     const cx = W / 2, cy = H / 2;
     if (d.sets === 2) {
       // Ширина рисунка = расстояние между центрами + два радиуса = 2R(2−s).
-      const R = Math.min(aw / (2 * (2 - s)), ah / 2);
+      const R = Math.max(12, Math.min(aw / (2 * (2 - s)), ah / 2));
       const dd = 2 * R * (1 - s);
       return { W: W, H: H, R: R, cs: [{ x: cx - dd / 2, y: cy }, { x: cx + dd / 2, y: cy }] };
     }
     // Три круга — вершины равностороннего треугольника со стороной dd.
     const Rw = aw / (2 * (2 - s));
     const Rh = ah / (2 + Math.sqrt(3) * (1 - s));
-    const R = Math.min(Rw, Rh);
+    const R = Math.max(12, Math.min(Rw, Rh));
     const dd = 2 * R * (1 - s);
     const m = dd / Math.sqrt(3);              // расстояние от центра до вершины
     return {
@@ -1322,7 +1326,7 @@
   // пришлось бы писать отдельно для каждого случая, а это работает всегда,
   // включая разъехавшиеся круги (тогда область пуста — подписи просто нет).
   function vennLabelPoints(d, g) {
-    const sig = [d.sets, Math.round(g.W), Math.round(g.H), Math.round(g.R), Math.round(d.overlap * 100)].join('|');
+    const sig = [d.sets, Math.round(g.W), Math.round(g.H), Math.round(g.R)].join('|');
     if (d._labSig === sig && d._lab) return d._lab;
     const n = (d.sets === 2) ? 2 : 3;
     const best = {};
@@ -1383,7 +1387,10 @@
     const pts = vennLabelPoints(d, g);
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = d.textColor || '#2b2b33';
-    ctx.font = '600 ' + (d.fontSize || 15) + 'px system-ui, sans-serif';
+    // Кегль привязан к радиусу, а не задан числом: иначе при уменьшении
+    // диаграммы цифры остаются прежними и вылезают за края зон.
+    const fs = Math.max(9, Math.min(30, Math.round(g.R * 0.17)));
+    ctx.font = '600 ' + fs + 'px system-ui, sans-serif';
     vennKeys(d).concat(d.universe === false ? [] : ['U']).forEach((k) => {
       const t = labels[k]; if (!t) return;
       const p = pts[k]; if (!p || p.room < 6) return;
@@ -1391,7 +1398,7 @@
     });
 
     // Имена множеств — над кругами, снаружи.
-    ctx.font = '600 ' + Math.round((d.fontSize || 15) * 1.15) + 'px system-ui, sans-serif';
+    ctx.font = '700 ' + Math.round(fs * 1.1) + 'px system-ui, sans-serif';
     ctx.fillStyle = col;
     const names = d.names || ['A', 'B', 'C'];
     for (let i = 0; i < n; i++) {
@@ -1399,9 +1406,22 @@
       // Отводим подпись от центра диаграммы наружу.
       const vx = c.x - g.W / 2, vy = c.y - g.H / 2;
       const len = Math.hypot(vx, vy) || 1;
-      const ox = c.x + (vx / len) * (g.R + 12), oy = c.y + (vy / len) * (g.R + 12);
-      ctx.fillText(names[i] || 'ABC'[i], Math.max(10, Math.min(g.W - 10, ox)), Math.max(10, Math.min(g.H - 10, oy)));
+      const off = g.R + VENN_LABEL * 0.45;
+      const ox = c.x + (vx / len) * off, oy = c.y + (vy / len) * off;
+      ctx.fillText(names[i] || 'ABC'[i], ox, oy);
     }
+    // Отметка зоны, выбранной для подписи: заливка сама себя показывает, а вот
+    // «куда попадёт число» иначе не видно.
+    if (vennSel.id === el.id && vennSel.key) {
+      const mp = pts[vennSel.key];
+      if (mp && mp.room > 5) {
+        ctx.beginPath();
+        ctx.arc(mp.x, mp.y, Math.min(mp.room - 1, fs * 1.1), 0, 2 * Math.PI);
+        ctx.setLineDash([4, 3]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#4d7cfe';
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+
     // Подпись универсума в углу.
     if (d.universe !== false) {
       ctx.textAlign = 'left'; ctx.textBaseline = 'top';
@@ -1413,20 +1433,59 @@
   // Тот же язык, что у таблицы: выбрал часть — появилась плашка с подписью и
   // палитрой. Ctrl-клик добавляет области к выбору, поэтому «залить A∪B» — это
   // два клика и цвет.
-  let vennSel = { id: null, keys: new Set() };
+  // Выбранный цвет — «кисть». Нажатие на зону красит её этим цветом; нажатие
+  // на зону, уже закрашенную ИМЕННО ЭТИМ цветом, снимает заливку. Отдельного
+  // шага «сначала выдели, потом закрась» нет — так меньше действий и не бывает
+  // непонятного состояния «что сейчас выделено».
+  let vennBrush = VENN_FILLS[3];             // цвет по умолчанию
+  let vennSel = { id: null, key: null };     // последняя нажатая зона — для подписи
+
+  // Названия зон. Для трёх кругов важно писать «без C»: иначе «A и B» читается
+  // как «всё пересечение A и B», хотя это только часть без центра.
+  function vennZoneName(d, k) {
+    if (k === 'U') return 'вне кругов';
+    const three = (d.sets !== 2);
+    const map2 = { A: 'только A', B: 'только B', AB: 'A и B' };
+    const map3 = {
+      A: 'только A', B: 'только B', C: 'только C',
+      AB: 'A и B, без C', AC: 'A и C, без B', BC: 'B и C, без A',
+      ABC: 'все три',
+    };
+    return (three ? map3 : map2)[k] || k;
+  }
 
   function vennElAt(id) { const e = elements.get(id); return (e && e.type === 'venn') ? e : null; }
-  function vennPickRegion(el, wx, wy, additive) {
+  function vennPickRegion(el, wx, wy) {
     const d = el.data, g = vennGeom(d);
     const p = { x: wx - (d.x || 0), y: wy - (d.y || 0) };
     if (p.x < 0 || p.y < 0 || p.x > g.W || p.y > g.H) return false;
     const k = vennKeyAt(d, g, p);
     if (k === 'U' && d.universe === false) return false;
-    if (vennSel.id !== el.id) { vennSel = { id: el.id, keys: new Set() }; }
-    if (additive) { if (vennSel.keys.has(k)) vennSel.keys.delete(k); else vennSel.keys.add(k); }
-    else { vennSel.keys = new Set([k]); }
+    const before = clone(el);
+    d.fills = d.fills || {};
+    // Тем же цветом — снимаем заливку; «без заливки» — просто выбираем зону.
+    if (!vennBrush || d.fills[k] === vennBrush) delete d.fills[k];
+    else d.fills[k] = vennBrush;
+    vennSel = { id: el.id, key: k };
+    upsertNode(el);
+    send({ action: 'element_update', element: stripPrivate(el) });
+    histUpd(stripPrivate(before), stripPrivate(el));
     showVennBar(el);
     return true;
+  }
+  function vennPaintKeys(el, keys) {
+    const before = clone(el);
+    el.data.fills = el.data.fills || {};
+    // Если все зоны уже этого цвета — снимаем; иначе красим все.
+    const allSame = vennBrush && keys.every((k) => el.data.fills[k] === vennBrush);
+    keys.forEach((k) => {
+      if (!vennBrush || allSame) delete el.data.fills[k];
+      else el.data.fills[k] = vennBrush;
+    });
+    upsertNode(el);
+    send({ action: 'element_update', element: stripPrivate(el) });
+    histUpd(stripPrivate(before), stripPrivate(el));
+    showVennBar(el);
   }
   // Панель следует за выделением: выбрали диаграмму — она появилась, ушли — скрылась.
   function syncVennBar() {
@@ -1434,7 +1493,7 @@
     if (selected.size === 1) {
       const el = elements.get(Array.from(selected)[0]);
       if (el && el.type === 'venn') {
-        if (vennSel.id !== el.id) vennSel = { id: el.id, keys: new Set() };
+        if (vennSel.id !== el.id) vennSel = { id: el.id, key: null };
         showVennBar(el);
         return;
       }
@@ -1442,7 +1501,7 @@
     clearVennSel();
   }
   function clearVennSel() {
-    vennSel = { id: null, keys: new Set() };
+    vennSel = { id: null, key: null };
     const b = document.getElementById('venn-bar'); if (b) b.hidden = true;
   }
 
@@ -1461,14 +1520,16 @@
       '<div class="vn-row">'
       + '<span class="vn-lbl">Множеств</span>'
       + '<span class="vn-seg" id="vn-sets"><button data-n="2">2</button><button data-n="3">3</button></span>'
-      + '<span class="vn-lbl">Пересечение</span>'
-      + '<input type="range" id="vn-overlap" min="0" max="90" step="1">'
       + '<label class="vn-chk"><input type="checkbox" id="vn-universe"> рамка</label>'
       + '</div>'
       + '<div class="vn-row">'
-      + '<span class="vn-lbl" id="vn-what">область</span>'
-      + '<input type="text" id="vn-text" placeholder="число или подпись" maxlength="24">'
+      + '<span class="vn-lbl">Цвет</span>'
       + '<span class="vn-fills" id="vn-fills"></span>'
+      + '<span class="vn-lbl vn-tip">нажимайте на зоны; тем же цветом — снять</span>'
+      + '</div>'
+      + '<div class="vn-row">'
+      + '<span class="vn-lbl" id="vn-what">зона</span>'
+      + '<input type="text" id="vn-text" placeholder="число или подпись" maxlength="24">'
       + '</div>'
       + '<div class="vn-row" id="vn-presets"><span class="vn-lbl">Закрасить</span></div>';
 
@@ -1483,16 +1544,14 @@
 
     bar.querySelector('#vn-fills').addEventListener('click', (e) => {
       const b = e.target.closest('.vn-sw'); if (!b) return;
-      const el = vennElAt(vennSel.id); if (!el || !vennSel.keys.size) return;
-      const before = clone(el);
-      el.data.fills = el.data.fills || {};
-      vennSel.keys.forEach((k) => { if (b.dataset.c) el.data.fills[k] = b.dataset.c; else delete el.data.fills[k]; });
-      vennCommit(el, before);
+      vennBrush = b.dataset.c || '';
+      const el = vennElAt(vennSel.id);
+      if (el) showVennBar(el);
     });
     bar.querySelector('#vn-text').addEventListener('input', (e) => {
-      const el = vennElAt(vennSel.id); if (!el || vennSel.keys.size !== 1) return;
+      const el = vennElAt(vennSel.id); if (!el || !vennSel.key) return;
       el.data.labels = el.data.labels || {};
-      const k = Array.from(vennSel.keys)[0];
+      const k = vennSel.key;
       const v = e.target.value.trim();
       if (v) el.data.labels[k] = v; else delete el.data.labels[k];
       upsertNode(el); vennSyncSoon(el);
@@ -1503,14 +1562,8 @@
       const before = clone(el);
       el.data.sets = +b.dataset.n;
       el.data._labSig = null;
-      vennSel.keys.clear();
+      vennSel.key = null;
       vennCommit(el, before);
-    });
-    bar.querySelector('#vn-overlap').addEventListener('input', (e) => {
-      const el = vennElAt(vennSel.id); if (!el) return;
-      el.data.overlap = (+e.target.value) / 100;
-      el.data._labSig = null;
-      upsertNode(el); vennSyncSoon(el);
     });
     bar.querySelector('#vn-universe').addEventListener('change', (e) => {
       const el = vennElAt(vennSel.id); if (!el) return;
@@ -1521,8 +1574,7 @@
     bar.querySelector('#vn-presets').addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       const el = vennElAt(vennSel.id); if (!el) return;
-      vennSel.keys = new Set(JSON.parse(b.dataset.keys));
-      showVennBar(el);
+      vennPaintKeys(el, JSON.parse(b.dataset.keys));
     });
     return bar;
   }
@@ -1543,11 +1595,10 @@
     bar.hidden = false;
     const d = el.data;
     bar.querySelectorAll('#vn-sets button').forEach((b) => b.classList.toggle('on', +b.dataset.n === (d.sets || 3)));
-    bar.querySelector('#vn-overlap').value = Math.round((d.overlap == null ? 0.5 : d.overlap) * 100);
     bar.querySelector('#vn-universe').checked = (d.universe !== false);
-    const one = (vennSel.keys.size === 1) ? Array.from(vennSel.keys)[0] : null;
-    const names = { A: 'только A', B: 'только B', C: 'только C', AB: 'A и B', AC: 'A и C', BC: 'B и C', ABC: 'все три', U: 'вне кругов' };
-    bar.querySelector('#vn-what').textContent = one ? names[one] : (vennSel.keys.size ? 'областей: ' + vennSel.keys.size : 'область');
+    bar.querySelectorAll('.vn-sw').forEach((b) => b.classList.toggle('on', (b.dataset.c || '') === vennBrush));
+    const one = vennSel.key;
+    bar.querySelector('#vn-what').textContent = one ? vennZoneName(d, one) : 'зона';
     const inp = bar.querySelector('#vn-text');
     inp.disabled = !one;
     inp.value = one ? ((d.labels || {})[one] || '') : '';
@@ -1559,7 +1610,7 @@
       VENN_PRESETS2.forEach((p) => {
         const b = document.createElement('button');
         b.className = 'vn-preset'; b.textContent = p.t; b.dataset.keys = JSON.stringify(p.keys);
-        b.title = 'Выбрать эти области — дальше нажмите цвет';
+        b.title = 'Закрасить эти зоны текущим цветом (повторно — снять)';
         pr.appendChild(b);
       });
     }
@@ -1577,8 +1628,8 @@
       id: uuid(), type: 'venn', z: 0,
       data: {
         x: p.x - W / 2, y: p.y - H / 2, width: W, height: H,
-        sets: 3, overlap: 0.5, universe: true,
-        stroke: strokeColor, strokeWidth: 2, fontSize: 15,
+        sets: 3, universe: true,
+        stroke: strokeColor, strokeWidth: 2,
         names: ['A', 'B', 'C'], labels: {}, fills: {},
       },
     };
@@ -5745,11 +5796,8 @@
     // а не только сам объект: заливать и подписывать надо именно области.
     if (rel && rel.type === 'venn' && !isAddKey(e.evt)) {
       const wp = stage.getRelativePointerPosition();
-      if (wp) vennPickRegion(rel, wp.x, wp.y, false);
-    } else if (rel && rel.type === 'venn') {
-      const wp = stage.getRelativePointerPosition();
-      if (wp && vennPickRegion(rel, wp.x, wp.y, true)) { dragStart = null; return; }
-    } else if (vennSel.id) {
+      if (wp) vennPickRegion(rel, wp.x, wp.y);
+    } else if (vennSel.id && (!rel || rel.type !== 'venn')) {
       clearVennSel();
     }
 
@@ -6552,6 +6600,7 @@
     else if (el.type === 'latex' || el.type === 'text') { d.width = Math.max(2, start.width * s); d.height = Math.max(2, start.height * s); node.width(d.width); node.height(d.height); }
     else if (el.type === 'line' || el.type === 'freehand') { d.points = start.points.map((v) => v * s); node.points(d.points); }
     else if (el.type === 'shape') { d.width = Math.max(1, start.width * s); d.height = Math.max(1, start.height * s); }
+    else if (el.type === 'venn') { d.width = Math.max(120, start.width * s); d.height = Math.max(90, start.height * s); d._labSig = null; }
     else if (el.type === 'image' || el.type === 'pdf') { d.width = Math.max(8, start.width * s); d.height = Math.max(8, start.height * s); node.width(d.width); node.height(d.height); if (el.type === 'pdf') { node._pdfKey = null; renderPdfInto(node, el); } }
   }
   let _txtRenderAt = 0;

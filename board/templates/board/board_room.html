@@ -549,6 +549,9 @@
     .vn-fills { display: flex; gap: 4px; }
     .vn-sw { width: 18px; height: 18px; border-radius: 5px; cursor: pointer; border: 1px solid rgba(0,0,0,.16); padding: 0; }
     .vn-sw:hover { transform: scale(1.15); }
+    /* Выбранный цвет-кисть: им красятся зоны при нажатии. */
+    .vn-sw.on { outline: 2px solid #4d7cfe; outline-offset: 2px; }
+    .vn-tip { font-size: 10px; color: #b0b0ba; }
     .vn-sw.none { position: relative; }
     .vn-sw.none::after {
         content: ''; position: absolute; left: 1px; right: 1px; top: 50%; height: 2px;
