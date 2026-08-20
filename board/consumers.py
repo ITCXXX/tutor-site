@@ -37,9 +37,7 @@ from .models import Board, BoardElement, BoardHistory
 
 # Какие действия меняют сохраняемое состояние холста.
 _PERSIST_ACTIONS = {'element_add', 'element_update', 'element_delete'}
-# Голос в опросе — тоже запись в базу, поэтому попадает под общий троттлинг.
-# Но НЕ под проверку роли: наблюдателю правки запрещены, а голосовать он должен.
-_RATE_ACTIONS = _PERSIST_ACTIONS | {'poll_vote'}
+# Ограничитель применяется ко ВСЕМ действиям — см. начало receive_json.
 
 # Лимиты защиты (DoS / раздувание БД). Обычное рисование шлёт ~33 правки/с и
 # элементы небольшие — эти пороги заведомо выше нормы, но режут злоупотребления.
@@ -117,6 +115,21 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
 
     async def receive_json(self, content, **kwargs):
         action = content.get('action')
+
+        # Ограничитель частоты стоит ПЕРВЫМ и покрывает все действия. Раньше он
+        # стоял ниже, и всё, что обрабатывалось выше — курсоры, лазер, вид и
+        # служебные сообщения голоса — лимита не знало вовсе. Голос опаснее
+        # прочих: одно сообщение весит до 64 КБ и рассылается всей комнате.
+        now = time.monotonic()
+        rate = getattr(self, '_rate', None)
+        if rate is None:
+            self._rate = rate = []
+        cutoff = now - _RATE_WINDOW
+        while rate and rate[0] < cutoff:
+            rate.pop(0)
+        if len(rate) >= _RATE_MAX:
+            return
+        rate.append(now)
 
         if action == 'cursor':
             # Эфемерно: просто пересылаем соседям, в БД не пишем.
@@ -213,19 +226,6 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         # отказывает (клиент и так блокирует UI — это защита от обхода).
         if action in _PERSIST_ACTIONS and getattr(self, 'role', None) != Board.ROLE_EDITOR:
             return
-
-        # Троттлинг правок: тихо отбрасываем всё сверх порога (защита от флуда).
-        if action in _RATE_ACTIONS:
-            now = time.monotonic()
-            rate = getattr(self, '_rate', None)
-            if rate is None:
-                self._rate = rate = []
-            cutoff = now - _RATE_WINDOW
-            while rate and rate[0] < cutoff:
-                rate.pop(0)
-            if len(rate) >= _RATE_MAX:
-                return
-            rate.append(now)
 
         # Голос в опросе. Отдельное действие, а не обычная правка: голосовать
         # должны все, включая наблюдателей, а трогать при этом можно ТОЛЬКО свой
@@ -348,8 +348,17 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
                 return None, None
         except (TypeError, ValueError):
             return None, None
-        # Потолок числа объектов на доску — только для НОВЫХ (существующие правим всегда).
-        exists = BoardElement.objects.filter(board_id=board_id, element_id=element_id).exists()
+        # Тип и прежние данные существующего объекта читаем из базы одним
+        # запросом. Тип клиент задаёт ТОЛЬКО при создании: позволить менять его
+        # правкой — значит позволить обойти любую проверку, привязанную к типу.
+        # Так и было с итогами голосования: правка под видом карточки проносила
+        # поддельные голоса, а следующая правка возвращала тип обратно.
+        prev = BoardElement.objects.filter(
+            board_id=board_id, element_id=element_id,
+        ).values('type', 'data').first()
+        exists = prev is not None
+        if exists:
+            el_type = prev['type']
         if not exists and BoardElement.objects.filter(board_id=board_id).count() >= _MAX_ELEMENTS:
             return None, None
         # Встроенная страница: адрес обязан быть обычной веб-ссылкой. Адрес вида
@@ -367,11 +376,8 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         # Иначе любой участник переписывал бы итоги целиком, отправив
         # element_update с готовым списком.
         if el_type == 'poll' and exists:
-            prev = BoardElement.objects.filter(
-                board_id=board_id, element_id=element_id,
-            ).values_list('data', flat=True).first() or {}
             data = dict(data)
-            data['votes'] = (prev or {}).get('votes') or {}
+            data['votes'] = (prev.get('data') or {}).get('votes') or {}
             element = dict(element)
             element['data'] = data
 

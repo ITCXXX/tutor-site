@@ -10601,10 +10601,17 @@
     pendingOps.push(obj);
     if (pendingOps.length > 5000) pendingOps.shift();
   }
+  // Досылаем накопленное ЧАСТЯМИ. Сервер принимает не больше 250 сообщений в
+  // секунду и лишнее молча отбрасывает: залп из тысяч правок после долгой
+  // работы без сети означал бы тихую потерю части нарисованного.
+  const FLUSH_CHUNK = 100, FLUSH_PAUSE = 500;   // 200 сообщений/сек — с запасом
+  let flushTimer = null;
   function flushPending() {
+    clearTimeout(flushTimer);
     if (!pendingOps.length || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const q = pendingOps.splice(0, pendingOps.length);
-    q.forEach((o) => ws.send(JSON.stringify(o)));
+    const q = pendingOps.splice(0, FLUSH_CHUNK);
+    q.forEach((o) => { try { ws.send(JSON.stringify(o)); } catch (e) { pendingOps.unshift(o); } });
+    if (pendingOps.length) flushTimer = setTimeout(flushPending, FLUSH_PAUSE);
   }
 
   function sendCursor() {

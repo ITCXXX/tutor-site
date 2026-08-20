@@ -331,7 +331,12 @@ class BoardHistory(models.Model):
     )
     action = models.CharField('Действие', max_length=8, choices=ACTION_CHOICES)
     element_id = models.CharField('ID элемента', max_length=40, db_index=True)
-    element_type = models.CharField('Тип элемента', max_length=16, blank=True, default='')
+    # Та же ёмкость, что у типа самого элемента. Иначе тип длиной 17–24
+    # символа проходит проверку сервера, элемент сохраняется, а запись в
+    # историю падает — и только на PostgreSQL: SQLite длину не проверяет,
+    # локально такое не воспроизводится.
+    element_type = models.CharField('Тип элемента', max_length=BoardElement.MAX_TYPE_LEN,
+                                    blank=True, default='')
     # Полный payload элемента — нужен для ВОССТАНОВЛЕНИЯ удалённого (для add/update null).
     payload = models.JSONField('Снимок (для восстановления)', null=True, blank=True)
     by = models.IntegerField('Кто (user id)', null=True, blank=True)

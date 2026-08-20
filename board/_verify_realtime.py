@@ -239,6 +239,19 @@ async def main():
     check(round(row.data.get('x') or 0) == 5,
           'при этом остальные поля объекта правятся как обычно')
 
+    # Тип существующего объекта менять нельзя. Через это обходилась защита
+    # голосов: правка под видом другого типа проносила поддельные итоги, а
+    # следующая правка возвращала тип обратно.
+    await c8.send_json_to({'action': 'element_update', 'element': {
+        'id': 'poll1', 'type': 'card', 'z': 0,
+        'data': {'x': 7, 'y': 7, 'options': ['да', 'нет'],
+                 'votes': {'801': 1, '802': 1}}}})
+    await recv(c9)
+    row = await BoardElement.objects.filter(board=b, element_id='poll1').afirst()
+    check(row.type == 'poll', 'тип существующего объекта сменить нельзя')
+    check((row.data.get('votes') or {}) == {str(student.pk): 0},
+          'подмена типа не проносит поддельные итоги')
+
     b.default_role = 'editor'
     await b.asave(update_fields=['default_role'])
 
