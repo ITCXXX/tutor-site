@@ -87,8 +87,17 @@ whois zenchenkoim.ru | grep -E "state|paid-till"
 С локалки (Windows: PowerShell или Git Bash):
 
 ```bash
-ssh root@<IP>
+ssh root@zenchenkoim.ru
 ```
+
+Домен указывает на сервер, поэтому IP помнить не нужно. Если DNS ещё не
+настроен (часть 2) или домен почему-то не отзывается — по адресу:
+
+```bash
+ssh root@200.165.231.148
+```
+
+Спросит пароль root — тот, что дал хостинг при создании сервера.
 
 На сервере:
 
