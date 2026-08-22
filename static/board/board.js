@@ -39,22 +39,18 @@
   const GRID_SUB = 4;
   // Насколько видны мелкие и крупные линии.
   const GRID_A_MINOR = 0.38, GRID_A_MAJOR = 1;
-  // Прозрачность линии по её шагу НА ЭКРАНЕ. Только по нему — в этом весь смысл:
-  // экранный шаг меняется вместе с масштабом непрерывно, значит и прозрачность
-  // тоже, и переход между уровнями сетки происходит без скачка.
-  //   меньше половины порога — линии нет;
-  //   до порога               — проявляется;
-  //   от порога до трёх       — мелкая клетка (широкая полка: обычно видно
-  //                             ровно два уровня);
-  //   от трёх до четырёх      — набирает силу до крупной;
-  //   дальше                  — крупная.
-  function gridAlphaFor(px) {
-    const a = GRID_MIN_PX;
-    if (px < a * 0.5) return 0;
-    if (px < a) return GRID_A_MINOR * (px / (a * 0.5) - 1);
-    if (px < a * 3) return GRID_A_MINOR;
-    if (px < a * 4) return GRID_A_MINOR + (GRID_A_MAJOR - GRID_A_MINOR) * (px - a * 3) / a;
-    return GRID_A_MAJOR;
+  // Доля видимости МЕЛКОЙ сетки внутри текущего уровня.
+  // Экранный шаг мелкой клетки гуляет от порога до двойного порога; здесь это
+  // приведено к 0…1. У обоих краёв возвращаем ноль — и вот почему это
+  // обязательно: при отдалении шаг съезжает к нижнему краю, а в момент удвоения
+  // скачком возвращается к верхнему. Будь мелкая видна у верхнего края, она бы
+  // в этот миг вспыхивала. Ноль с обеих сторон — вспышки нет, а смена крупной
+  // сетки происходит, когда мелкой на экране уже не осталось.
+  const GRID_FADE = 0.2;   // на какой доле уровня у каждого края идёт затухание
+  function gridMinorFade(px) {
+    const u = px / GRID_MIN_PX - 1;              // 0 у нижнего края, 1 у верхнего
+    if (u <= 0 || u >= 1) return 0;
+    return Math.min(1, Math.min(u, 1 - u) / GRID_FADE);
   }
   // Шаг мелкой клетки под текущий масштаб. Ряд ×2 (40 → 80 → 160 → 320 → 640):
   // при делении на 4 каждый следующий крупный шаг кратен предыдущему, поэтому
@@ -116,25 +112,27 @@
     // ложились поверх слабых в тех же местах.
     ctx.lineWidth = lw;
     ctx.strokeStyle = gc;
+    // Ровно два ряда: мелкий и крупный (вчетверо реже). Третьего уровня быть
+    // не должно — глазу это читается как грязь.
+    const ряды = [
+      { step: GRID, alpha: GRID_A_MINOR * gridMinorFade(GRID * scale), own: true },
+      { step: GRID * GRID_SUB, alpha: GRID_A_MAJOR, own: false },
+    ];
     ctx.save();
-    for (let k = 0; k < 4; k++) {
-      const stepK = GRID * Math.pow(2, k - 1);      // шаг/2, шаг, шаг×2, шаг×4
-      const alpha = gridAlphaFor(stepK * scale);
-      if (alpha < 0.02) continue;                   // невидимый ряд не рисуем
-      ctx.globalAlpha = alpha;
-      // Ряд рисует только СВОИ линии — нечётные кратные своего шага. Чётные
-      // принадлежат следующему, более редкому ряду и будут нарисованы им, со
-      // своей прозрачностью. Иначе линия рисовалась бы дважды, прозрачности
-      // складывались, и вместо двух уровней получалось четыре разной силы.
-      const own = (k < 3);
+    for (let k = 0; k < ряды.length; k++) {
+      const R = ряды[k];
+      if (R.alpha < 0.02) continue;                 // мелкая погасла — не рисуем
+      ctx.globalAlpha = R.alpha;
       ctx.beginPath();
-      for (let i = Math.floor(x0 / stepK); i * stepK <= x1; i++) {
-        if (own && i % 2 === 0) continue;
-        const x = i * stepK; ctx.moveTo(x, y0); ctx.lineTo(x, y1);
+      // Мелкий ряд рисует только СВОИ линии: те, что не попадают на крупные.
+      // Иначе линия рисовалась бы дважды и прозрачности складывались.
+      for (let i = Math.floor(x0 / R.step); i * R.step <= x1; i++) {
+        if (R.own && i % GRID_SUB === 0) continue;
+        const x = i * R.step; ctx.moveTo(x, y0); ctx.lineTo(x, y1);
       }
-      for (let j = Math.floor(y0 / stepK); j * stepK <= y1; j++) {
-        if (own && j % 2 === 0) continue;
-        const y = j * stepK; ctx.moveTo(x0, y); ctx.lineTo(x1, y);
+      for (let j = Math.floor(y0 / R.step); j * R.step <= y1; j++) {
+        if (R.own && j % GRID_SUB === 0) continue;
+        const y = j * R.step; ctx.moveTo(x0, y); ctx.lineTo(x1, y);
       }
       ctx.stroke();
     }
