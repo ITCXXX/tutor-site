@@ -53,12 +53,28 @@ def login_view(request):
 
     error = None
     if request.method == 'POST':
-        username = request.POST.get('username')
-        password = request.POST.get('password')
+        # Логин обрезаем: с телефона он приходит с пробелом на конце — клавиатура
+        # добавляет его вслед за подсказкой, а сравнение точное, и вход
+        # отвергался. Пароль НЕ трогаем: пробелы в нём могут быть значащими.
+        username = (request.POST.get('username') or '').strip()
+        password = request.POST.get('password') or ''
         if not username or not password:
             error = "Пожалуйста, заполните все поля"
         else:
             user = authenticate(request, username=username, password=password)
+            if user is None:
+                # Вторая попытка — без учёта регистра (телефон делает первую
+                # букву заглавной). Только если такой логин РОВНО ОДИН: если в
+                # базе есть и «аня», и «Аня», угадывать за человека нельзя.
+                # Сравниваем в Python, а не через __iexact: SQLite приводит
+                # регистр только у латиницы, и локально логин «Полина» вёл бы
+                # себя не так, как на боевом PostgreSQL. Перебор недорог —
+                # учеников на таком сайте десятки, и только при неудачном входе.
+                folded = username.casefold()
+                same = [u for u in User.objects.only('id', 'username')
+                        if u.username.casefold() == folded]
+                if len(same) == 1:
+                    user = authenticate(request, username=same[0].username, password=password)
             if user is not None:
                 if user.is_active:
                     login(request, user)

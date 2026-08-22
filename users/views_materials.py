@@ -9,6 +9,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q
 from django.http import JsonResponse
+from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
@@ -139,8 +140,14 @@ def save_material_settings(request):
 
 
 @login_required
+@require_POST
 def toggle_material_access(request, material_id):
-    """Переключение доступа к материалу (для администраторов)."""
+    """Переключение доступа к материалу (для администраторов).
+
+    Только POST: по ссылке (GET) это делалось бы одним переходом. Достаточно
+    было бы открыть под своей учёткой чужую страницу с таким адресом внутри
+    картинки — и платный материал молча стал бы бесплатным.
+    """
     if not request.user.is_superuser:
         messages.error(request, 'Доступ только для администраторов')
         return redirect('material_category_detail', slug='all')

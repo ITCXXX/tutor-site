@@ -1,0 +1,21 @@
+# Резервное копирование tutor_site. Запускается таймером, не вручную.
+# Установка:
+#   cp /opt/tutor/deploy/tutor-backup.service.example /etc/systemd/system/tutor-backup.service
+#   cp /opt/tutor/deploy/tutor-backup.timer.example   /etc/systemd/system/tutor-backup.timer
+#   chmod +x /opt/tutor/deploy/backup.sh
+#   systemctl daemon-reload && systemctl enable --now tutor-backup.timer
+
+[Unit]
+Description=Резервная копия базы и файлов tutor_site
+# Базу дампим через postgres — без неё копировать нечего.
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+# От root: pg_dump вызывается через sudo -u postgres, а писать надо в /var/backups.
+User=root
+ExecStart=/opt/tutor/deploy/backup.sh
+# Копия не должна мешать занятию: отдаём ей низкий приоритет по процессору и диску.
+Nice=10
+IOSchedulingClass=idle

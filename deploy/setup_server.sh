@@ -11,7 +11,7 @@
 #   4. Создаёт PostgreSQL базу + пользователя
 #   5. Клонирует репо в /opt/tutor (если не клонировано)
 #   6. Создаёт venv, ставит зависимости
-#   7. Копирует .env.example в .env (НУЖНО ОТРЕДАКТИРОВАТЬ)
+#   7. Создаёт .env с готовыми значениями (ключ и пароль БД — случайные)
 #   8. Копирует systemd unit и nginx conf
 #   9. Открывает фаервол
 #   10. ПРОПУСКАЕТ certbot и migrate — это делается вручную
@@ -56,6 +56,10 @@ if ! id -u "${APP_USER}" &>/dev/null; then
 fi
 
 echo "=== 4/9. Создание PostgreSQL базы ==="
+# Существует ли пользователь БД УЖЕ. Важно при повторном запуске: пароль ему
+# менять не станем, значит и записывать новый в файл с реквизитами нельзя —
+# иначе там окажется пароль, которого в базе нет.
+DB_USER_EXISTED="$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_user WHERE usename = '${DB_USER}'" || true)"
 sudo -u postgres psql <<EOF
 DO \$\$
 BEGIN
@@ -69,12 +73,19 @@ ALTER DATABASE ${DB_NAME} OWNER TO ${DB_USER};
 GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
 EOF
 
-# Сохраним пароль для пользователя — пригодится для .env.
-echo "DB_NAME=${DB_NAME}" > /root/tutor_db_credentials.txt
-echo "DB_USER=${DB_USER}" >> /root/tutor_db_credentials.txt
-echo "DB_PASS=${DB_PASS}" >> /root/tutor_db_credentials.txt
-chmod 600 /root/tutor_db_credentials.txt
-echo "  → Пароль БД сохранён в /root/tutor_db_credentials.txt"
+# Сохраним пароль — пригодится для .env. Только если пользователя завели
+# ПРЯМО СЕЙЧАС: у существующего пароль остался прежним, и перезапись файла
+# случайной строкой сделала бы реквизиты враньём.
+if [[ -z "${DB_USER_EXISTED}" ]]; then
+    echo "DB_NAME=${DB_NAME}" > /root/tutor_db_credentials.txt
+    echo "DB_USER=${DB_USER}" >> /root/tutor_db_credentials.txt
+    echo "DB_PASS=${DB_PASS}" >> /root/tutor_db_credentials.txt
+    chmod 600 /root/tutor_db_credentials.txt
+    echo "  → Пароль БД сохранён в /root/tutor_db_credentials.txt"
+else
+    echo "  → Пользователь БД уже был; пароль не меняем, файл с реквизитами не трогаем."
+    echo "    Действующий пароль — в /opt/tutor/.env (строка DATABASE_URL)."
+fi
 
 echo "=== 5/9. Клонирование репозитория ==="
 if [[ ! -d "${APP_DIR}/.git" ]]; then

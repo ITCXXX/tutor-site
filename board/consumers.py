@@ -26,6 +26,7 @@ WebSocket-«потребитель» одной доски. На каждое с
 """
 
 import json
+from urllib.parse import urlparse
 import secrets
 import time
 
@@ -42,6 +43,57 @@ _PERSIST_ACTIONS = {'element_add', 'element_update', 'element_delete'}
 # Лимиты защиты (DoS / раздувание БД). Обычное рисование шлёт ~33 правки/с и
 # элементы небольшие — эти пороги заведомо выше нормы, но режут злоупотребления.
 _MAX_ELEMENT_BYTES = 256 * 1024   # один элемент (data) не больше 256 КБ
+
+# Сервисы, которые разрешено встраивать в доску. Тот же список, что в board.js:
+# держим его в двух местах сознательно — клиентская проверка объясняет человеку
+# причину отказа, серверная защищает от обхода в обход интерфейса.
+_EMBED_HOSTS = (
+    'youtube.com', 'youtu.be', 'youtube-nocookie.com',
+    'vimeo.com', 'rutube.ru',
+    'docs.google.com', 'drive.google.com',
+    'desmos.com', 'geogebra.org',
+    'wikipedia.org',
+)
+
+
+def _num(value, limit=1000000.0):
+    """Число из клиентского сообщения. Не число — ноль; слишком большое —
+    подрезаем. Значения идут другим участникам, поэтому пересылать что попало
+    нельзя."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f or f in (float('inf'), float('-inf')):   # NaN и бесконечности
+        return 0.0
+    return max(-limit, min(limit, f))
+
+
+def _safe_z(value):
+    """Слой объекта из клиентского сообщения.
+
+    Значение шло в целое поле базы как есть: строка роняла обработчик, а
+    огромное число не влезало в integer и валило запись — на PostgreSQL это
+    обрывало соединение, а локально на SQLite даже не воспроизводилось.
+    """
+    try:
+        z = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(-1000000, min(1000000, z))
+
+
+def _embed_host_allowed(url):
+    """Разрешён ли источник встраиваемой страницы. Поддомены разрешаем, но
+    только настоящие: сравниваем по границе точки, иначе «notyoutube.com»
+    прошёл бы как «youtube.com»."""
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except ValueError:
+        return False
+    if host.startswith('www.'):
+        host = host[4:]
+    return any(host == d or host.endswith('.' + d) for d in _EMBED_HOSTS)
 _MAX_ELEMENTS = 20000             # потолок объектов на доску
 _RATE_MAX = 250                   # не больше N правок в окне
 _RATE_WINDOW = 1.0                # окно троттлинга, сек
@@ -87,9 +139,13 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             'role': self.role,
             'is_owner': self.is_owner,
             'default_role': board.default_role,
-            'roles': board.roles or {},
+            # Чужие роли и список убранных — только владельцу: он их и назначает.
+            'roles': (board.roles or {}) if self.is_owner else (
+                {str(self.user_id): (board.roles or {}).get(str(self.user_id))}
+                if (board.roles or {}).get(str(self.user_id)) else {}
+            ),
             'password_enabled': board.password_enabled,
-            'removed': await self._removed_people(self.board_id),
+            'removed': await self._removed_people(self.board_id) if self.is_owner else [],
             'history': history,
         })
 
@@ -135,8 +191,8 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             # Эфемерно: просто пересылаем соседям, в БД не пишем.
             await self._broadcast({
                 'action': 'cursor',
-                'x': content.get('x'),
-                'y': content.get('y'),
+                'x': _num(content.get('x')),
+                'y': _num(content.get('y')),
                 'user': self.user_id,
                 'label': self.label,
             })
@@ -168,6 +224,10 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             if not getattr(self, 'is_owner', False):
                 return
             target = content.get('target')
+            # Значение приходит от клиента. Нечисловое роняло соединение
+            # ВЛАДЕЛЬЦА необработанной ошибкой при поиске пользователя.
+            if not str(target).isdigit():
+                return
             state = await self._set_member_removed(
                 self.board_id, target, action == 'member_remove')
             if state is None:
@@ -212,13 +272,15 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
                 'action': action,
                 'user': self.user_id,
                 'label': self.label,
-                'x': content.get('x'),
-                'y': content.get('y'),
+                'x': _num(content.get('x')),
+                'y': _num(content.get('y')),
             }
             if action == 'laser':
                 payload['s'] = 1 if content.get('s') else 0
             else:
-                payload['scale'] = content.get('scale')
+                # Масштаб: за пределами этого диапазона доска всё равно не
+                # рисует, а огромное значение у ведомых вызвало бы зависание.
+                payload['scale'] = _num(content.get('scale'), 100.0)
             await self._broadcast(payload)
             return
 
@@ -243,6 +305,20 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
 
         if action in ('element_add', 'element_update'):
             element = content.get('element') or {}
+            # Слишком большой объект мы не примем. Раньше отказ был МОЛЧАЛИВЫМ:
+            # автор видел на своей доске «сохранено», а после перезагрузки
+            # правки не было — так пропадали кадры окна.
+            try:
+                oversize = len(json.dumps(element.get('data') or {})) > _MAX_ELEMENT_BYTES
+            except (TypeError, ValueError):
+                oversize = True
+            if oversize:
+                await self.send_json({
+                    'action': 'rejected',
+                    'id': element.get('id'),
+                    'reason': 'too_big',
+                })
+                return
             saved, hist = await self._upsert_element(self.board_id, element, self.user_id)
             if saved is None:
                 return
@@ -281,6 +357,23 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             'sender': self.channel_name,
         })
 
+    def _visible_access(self, payload):
+        """Что из настроек доступа можно показать ИМЕННО ЭТОМУ соединению.
+
+        Владелец видит всё — он этим и управляет. Остальным чужие роли и тем
+        более имена убранных с доски знать незачем: на общей доске это выдало бы
+        одному ученику, что случилось с другим.
+        """
+        if getattr(self, 'is_owner', False):
+            return payload
+        out = dict(payload)
+        out.pop('removed', None)
+        roles = out.get('roles')
+        if isinstance(roles, dict):
+            mine = roles.get(str(self.user_id))
+            out['roles'] = {str(self.user_id): mine} if mine else {}
+        return out
+
     async def board_event(self, event):
         """Хендлер group_send: доставляем сообщение клиенту.
         Свои же события не эхоим (клиент уже применил их локально)."""
@@ -303,6 +396,10 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         # Обычные эхо-события себе не дублируем.
         if event.get('sender') == self.channel_name and payload.get('action') not in ('history', 'members_update'):
             return
+        # Роль этого соединения выше уже пересчитана по ПОЛНОЙ карте — наружу
+        # отдаём урезанную.
+        if payload.get('action') in ('roles_update', 'members_update'):
+            payload = self._visible_access(payload)
         await self.send_json(payload)
 
     def _role_from(self, default_role, roles):
@@ -368,6 +465,11 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             url = (data or {}).get('url')
             if not isinstance(url, str) or not url.lower().startswith(('http://', 'https://')):
                 return None, None
+            # Мало проверить схему: чужой сайт, встроенный в урок, видят все
+            # участники, и грузится он сразу. Пускаем только те сервисы,
+            # которые доска и так умеет показывать.
+            if not _embed_host_allowed(url):
+                return None, None
 
         # Голосование: итоги живут в data['votes'] и меняются ТОЛЬКО отдельным
         # действием poll_vote, где сервер записывает голос за отправителя.
@@ -386,14 +488,14 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             obj, _c = BoardElement.objects.update_or_create(
                 board_id=board_id, element_id=element_id,
                 defaults={'type': el_type, 'data': element.get('data') or {},
-                          'z_index': int(element.get('z') or 0), 'author_id': author_id})
+                          'z_index': _safe_z(element.get('z')), 'author_id': author_id})
             return obj.to_payload(), None
         obj, created = BoardElement.objects.update_or_create(
             board_id=board_id, element_id=element_id,
             defaults={
                 'type': el_type,
                 'data': element.get('data') or {},
-                'z_index': int(element.get('z') or 0),
+                'z_index': _safe_z(element.get('z')),
                 'author_id': author_id,
             },
         )

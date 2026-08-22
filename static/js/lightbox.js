@@ -20,6 +20,9 @@
     }
 
     document.addEventListener('click', function (e) {
+        // e.target на уровне документа не обязательно элемент — у документа
+        // метода closest нет, и обработчик падал бы с ошибкой.
+        if (!e.target || !e.target.closest) return;
         const trigger = e.target.closest('[data-lightbox-src]');
         if (trigger) {
             e.preventDefault();

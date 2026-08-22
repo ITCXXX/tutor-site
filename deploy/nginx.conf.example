@@ -21,15 +21,67 @@ server {
     client_max_body_size 32M;
 
     # ACME challenge для Let's Encrypt — ДОЛЖЕН отдаваться по http.
+    # Стоит ВЫШЕ канонического редиректа: certbot обязан достучаться по любому
+    # из имён, иначе выпуск сертификата на www сорвётся.
     location /.well-known/acme-challenge/ {
         root /var/www/letsencrypt;
     }
 
-    # Медиа-файлы (картинки заданий) — отдаём напрямую, минуя Django.
+    # Канонический адрес — без www.
+    # Django привязывает куку сессии к точному имени хоста (SESSION_COOKIE_DOMAIN
+    # не задан), поэтому вход на www.zenchenkoim.ru НЕ действует на
+    # zenchenkoim.ru и наоборот: человека снова встречает страница входа. Ссылку
+    # на доску кнопка «копировать» берёт из адресной строки как есть, так что
+    # преподаватель с www легко раздаёт ученикам «другой» сайт.
+    # $scheme, а не https: до certbot сайт работает по http, и жёсткий https
+    # здесь увёл бы на ещё не существующий адрес.
+    if ($host ~* ^www\.(.+)$) {
+        return 301 $scheme://$1$request_uri;
+    }
+
+    # ── Загруженные файлы ────────────────────────────────────────────────
+    # Обложки, картинки заданий и файлы досок отдаём напрямую, минуя Django.
+    # Сданные работы и методические материалы — только после проверки прав.
+
+    # Служебная проверка прав: сюда nginx ходит сам, снаружи она не нужна.
+    location = /media-guard/ {
+        internal;
+        proxy_pass http://unix:/run/tutor/tutor.sock;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        # Какой файл спрашивают — Django берёт адрес отсюда.
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Сданные работы учеников и методические материалы — только по праву.
+    # Сначала спрашиваем Django, потом отдаём файл сами: проверка стоит один
+    # лёгкий запрос, а раздачу по-прежнему делает nginx.
+    location ~ ^/media/(hw/submissions|materials/files)/ {
+        auth_request /media-guard/;
+        root /opt/tutor;
+        # Приватное не кэшируем у посредников: иначе прокси отдаст файл
+        # следующему, уже не спрашивая разрешения.
+        expires -1;
+        add_header Cache-Control "private, no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        # Отказ показываем понятной строкой. error_page держим ВНУТРИ блока:
+        # на уровне сервера он перехватывал бы и отказы самого Django.
+        error_page 401 403 = @media_denied;
+    }
+    location @media_denied {
+        default_type text/plain; charset utf-8;
+        return 403 "Нет доступа к этому файлу";
+    }
+
     location /media/ {
         alias /opt/tutor/media/;
         expires 30d;
         add_header Cache-Control "public, immutable";
+        # Тот же заголовок, что Django ставит на всё остальное: браузер не
+        # должен угадывать тип файла по содержимому.
+        add_header X-Content-Type-Options "nosniff" always;
         access_log off;
     }
 

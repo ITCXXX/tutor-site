@@ -11,6 +11,7 @@ HTTP-страницы раздела досок. Сам realtime идёт по W
 """
 
 import os
+import shutil
 import secrets
 import string
 import time
@@ -30,6 +31,15 @@ from .turn import ice_servers
 # Разрешённые к загрузке файлы (картинки + PDF) и лимит размера.
 _UPLOAD_EXT = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'}  # .svg исключён: может нести скрипт
 _UPLOAD_MAX = 30 * 1024 * 1024  # 30 МБ
+# Потолок на доску целиком. Диск сервера — 15 ГБ, и на нём же живёт база, так
+# что без потолка десяток досок со сканами учебников выбирает всё место, а
+# кончившееся место роняет весь сайт, а не только загрузку.
+_BOARD_FILES_MAX = 60               # файлов на одну доску
+# 150 МБ: досок у одного человека может быть до 50 (Board.MAX_PER_OWNER), и
+# каждую можно скопировать вместе с файлами — потолок повыше в пределе съел бы
+# весь диск. Это защита от накопления и оплошности, а не от злого умысла:
+# аккаунты здесь заводятся вручную.
+_BOARD_BYTES_MAX = 150 * 1024 * 1024
 
 # Версия клиента доски. Берём из времени последней правки board.js, а не пишем
 # руками: тогда при любом изменении файла сама меняется и метка в адресе (?v=…),
@@ -197,7 +207,12 @@ def board_delete(request, code):
     board = get_object_or_404(Board, code=code)
     if board.owner_id != request.user.id and not request.user.is_superuser:
         return JsonResponse({'error': 'Удалить может только владелец'}, status=403)
+    code_to_drop = board.code
     board.delete()
+    # Файлы за доской не удалялись никогда: сигналов удаления в проекте нет.
+    # Копия доски получает собственные файлы (см. board_duplicate), поэтому
+    # осиротить её этим нельзя.
+    _drop_board_media(code_to_drop)
     return JsonResponse({'ok': True})
 
 
@@ -220,18 +235,73 @@ def board_duplicate(request, code):
     board = get_object_or_404(Board, code=code)
     if not board.can_access(request.user):
         raise Http404('Нет доступа к доске.')
+    # Наблюдателю копия не положена: иначе тот, кому доску дали «только
+    # посмотреть», забирает себе весь разбор урока и становится его владельцем.
+    if board.role_for(request.user) != Board.ROLE_EDITOR:
+        return JsonResponse({'error': 'Копировать доску может только участник '
+                                      'с правом правки'}, status=403)
     if Board.quota_left(request.user) <= 0:
         return JsonResponse({'error': 'Достигнут потолок в %d досок — удалите '
                                       'ненужную старую.' % Board.MAX_PER_OWNER}, status=400)
     new = Board.create_for(owner=request.user, title=(board.title or 'Доска') + ' (копия)')
-    els = [
-        BoardElement(board=new, element_id=e.element_id, type=e.type,
-                     data=e.data, z_index=e.z_index, author=request.user)
-        for e in board.elements.all()
-    ]
+    # Картинки и PDF копируем ФИЗИЧЕСКИ, а не ссылками на файлы оригинала:
+    # иначе удаление исходной доски оставило бы копию с битыми картинками.
+    src_dir = _board_media_dir(board.code)
+    dst_dir = _board_media_dir(new.code)
+    src_prefix = settings.MEDIA_URL + 'board/' + board.code + '/'
+    els = []
+    for e in board.elements.all():
+        data = e.data
+        url = data.get('url') if isinstance(data, dict) else None
+        if url and src_dir and dst_dir and url.startswith(src_prefix):
+            name = os.path.basename(url)
+            src = os.path.join(src_dir, name)
+            if os.path.isfile(src):
+                os.makedirs(dst_dir, exist_ok=True)
+                shutil.copy2(src, os.path.join(dst_dir, name))
+                data = dict(data)
+                data['url'] = settings.MEDIA_URL + 'board/' + new.code + '/' + name
+        els.append(BoardElement(board=new, element_id=e.element_id, type=e.type,
+                                data=data, z_index=e.z_index, author=request.user))
     if els:
         BoardElement.objects.bulk_create(els)
     return JsonResponse({'ok': True, 'code': new.code})
+
+
+def _board_media_dir(code):
+    """Каталог с файлами доски. code приходит из адреса, поэтому берём только
+    само имя папки — иначе подставленные «..» увели бы нас в чужой каталог."""
+    safe = os.path.basename((code or '').strip())
+    if not safe or safe in ('.', '..'):
+        return None
+    return os.path.join(settings.MEDIA_ROOT, 'board', safe)
+
+
+def _board_files_usage(code):
+    """Сколько файлов у доски и сколько они весят."""
+    d = _board_media_dir(code)
+    if not d or not os.path.isdir(d):
+        return 0, 0
+    n = total = 0
+    for name in os.listdir(d):
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            n += 1
+            total += os.path.getsize(p)
+    return n, total
+
+
+def _drop_board_media(code):
+    """Убрать каталог доски. Вызывается только при удалении самой доски."""
+    d = _board_media_dir(code)
+    if not d or not os.path.isdir(d):
+        return
+    # Страховка от ошибки в вычислении пути: удаляем только то, что лежит
+    # внутри media/board/, и ничего выше.
+    root = os.path.join(settings.MEDIA_ROOT, 'board')
+    if os.path.commonpath([os.path.abspath(d), os.path.abspath(root)]) != os.path.abspath(root):
+        return
+    shutil.rmtree(d, ignore_errors=True)
 
 
 @login_required
@@ -243,11 +313,25 @@ def board_upload(request, code):
     board = get_object_or_404(Board, code=code)
     if not board.can_access(request.user):
         raise Http404('Нет доступа к доске.')
+    # Наблюдателю рисовать нельзя — значит и приносить на доску файлы тоже.
+    # Клиент кнопку прячет, но на неё можно не смотреть, а слать запрос напрямую.
+    if board.role_for(request.user) != Board.ROLE_EDITOR:
+        return JsonResponse({'error': 'Только участники с правом правки могут '
+                                      'загружать файлы'}, status=403)
     f = request.FILES.get('file')
     if f is None:
         return JsonResponse({'error': 'Файл не передан'}, status=400)
     if f.size > _UPLOAD_MAX:
         return JsonResponse({'error': 'Файл больше 30 МБ'}, status=400)
+    used_n, used_b = _board_files_usage(board.code)
+    if used_n >= _BOARD_FILES_MAX:
+        return JsonResponse({'error': 'На доске уже %d файлов — это предел. '
+                                      'Удалите ненужные или заведите новую доску.'
+                                      % _BOARD_FILES_MAX}, status=400)
+    if used_b + f.size > _BOARD_BYTES_MAX:
+        return JsonResponse({'error': 'Файлы этой доски заняли бы больше %d МБ — '
+                                      'это предел.' % (_BOARD_BYTES_MAX // (1024 * 1024))},
+                            status=400)
     ext = os.path.splitext(f.name)[1].lower()
     if ext not in _UPLOAD_EXT:
         return JsonResponse({'error': 'Неподдерживаемый тип файла'}, status=400)

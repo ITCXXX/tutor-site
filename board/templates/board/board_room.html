@@ -126,6 +126,18 @@
     .ctx-item.danger { color: #e7505a; }
     .ctx-item.danger:hover { background: #fdecec; }
     .ctx-key { color: #b0b0ba; font-size: 11px; }
+    /* Код доски в меню «три точки»: раньше он занимал место в верхней строке
+       постоянно, хотя нужен один раз за занятие — когда зовёшь ученика. */
+    .bm-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 2px 8px; font-size: 13px; color: #3a3a42; }
+    .bm-row #color-btn { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #d9d9e0; cursor: pointer; padding: 0; }
+    .bm-code { display: flex; align-items: center; gap: 8px; padding: 2px 2px 6px; font-size: 13px; color: #3a3a42; }
+    .bm-code code { font-size: 13px; background: #f0f0f4; border-radius: 5px; padding: 1px 6px; }
+    .bm-code button { border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+    .bm-code button:hover { background: #e4e8f5; }
+    /* Галочка у переключателей. Место под неё занято всегда, иначе подписи
+       прыгали бы влево-вправо при включении. */
+    .ctx-tick { flex: 0 0 14px; color: #4d7cfe; font-size: 12px; }
+    .ctx-item.accent { color: #2b5bd7; }
     .ctx-align { display: flex; gap: 2px; padding: 2px 6px 4px; }
     .ctx-al { flex: 1; border: 1px solid #e3e3e8; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 4px 0; font-size: 15px; line-height: 1; color: #3a3a42; }
     .ctx-al:hover { background: #eef3ff; border-color: #4d7cfe; }
@@ -570,6 +582,11 @@
     body.board-pan #board-stage,
     body.board-pan #widget-layer,
     body.board-pan #ggb-layer { cursor: grab; }
+    /* Режим скрытия: щелчок прячет объект или возвращает его, а не рисует и не
+       выделяет — курсор должен об этом предупреждать. */
+    body.board-hidemode #board-stage,
+    body.board-hidemode #widget-layer,
+    body.board-hidemode #ggb-layer { cursor: cell; }
     body.board-pan.panning #board-stage,
     body.board-pan.panning #widget-layer,
     body.board-pan.panning #ggb-layer { cursor: grabbing; }
@@ -720,6 +737,10 @@
     .dp-preset:hover { background: #ececf0; }
     .dp-preset.on { border-color: #4d7cfe; box-shadow: 0 0 0 2px rgba(77,124,254,.28); }
     .dp-preset .dp-dot { border-radius: 50%; display: block; }
+    /* Значки наборов для линий и фигур: у линии показываем её толщину и
+       цвет полоской, у фигуры — контуром квадратика. */
+    .dp-preset .dp-line { display: block; width: 22px; border-radius: 2px; }
+    .dp-preset .dp-sq { display: block; width: 18px; height: 18px; border-style: solid; border-radius: 3px; }
     .dp-preset .dp-ring { border-radius: 50%; border: 2px dashed #ff5a5a; box-sizing: border-box; display: block; }
     #dp-pop {
         position: fixed; z-index: 46; display: flex; flex-direction: column; gap: 10px; width: 200px;
@@ -960,6 +981,18 @@
     #widget-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 23; overflow: hidden; }
     /* На время протяжки рамки выделения DOM-объекты «прозрачны» для мыши. */
     #widget-layer.marquee-thru, #widget-layer.marquee-thru * { pointer-events: none !important; }
+    /* Инструмент рисования в руке — текст и тела виджетов пропускают штрих на
+       холст. Иначе обвести слово или клетку таблицы невозможно: нажатие
+       достаётся тексту. Кнопки виджетов (Старт, Крутить, ×) остаются живыми,
+       чтобы ради них не приходилось переключаться на стрелку. */
+    body.board-draw #widget-layer .tbox,
+    body.board-draw #widget-layer .mtext,
+    body.board-draw #widget-layer .wgt,
+    body.board-draw #widget-layer .wgt-body { pointer-events: none; }
+    body.board-draw #widget-layer .wgt-bar,
+    body.board-draw #widget-layer .wgt-bar *,
+    body.board-draw #widget-layer .wgt-actions,
+    body.board-draw #widget-layer .wgt-actions * { pointer-events: auto; }
     /* Обычный текст — живой HTML-элемент на доске (без картинки/рамок). */
     .tbox { position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: auto; }
     .tbox-edit {
@@ -1488,11 +1521,6 @@
     <div class="tool" data-action="redo" title="Шаг вперёд (Ctrl+Shift+Z)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7l5 5-5 5"/><path d="M20 12H9a5 5 0 0 0 0 10h1"/></svg>
     </div>
-    <hr>
-    <div id="board-style">
-        <button id="color-btn" title="Цвет — палитра (выделено — перекрасить, иначе цвет по умолчанию)"></button>
-        <input type="range" id="stroke-width" min="1" max="24" value="3" title="Толщина">
-    </div>
     <div id="color-palette" class="cp-hidden">
         <div class="cp-scope" id="cp-scope">Цвет по умолчанию</div>
         <div class="cp-grid" id="cp-base"></div>
@@ -1501,10 +1529,6 @@
         <button class="cp-add" id="cp-add">+ добавить свой</button>
         <button class="cp-all" id="cp-all">Применить ко всем точкам</button>
         <input type="color" id="cp-native" value="#3b82f6">
-    </div>
-    <hr>
-    <div class="tool" data-action="clear" title="Очистить всё">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 12h10l1-12"/></svg>
     </div>
 </div>
 
@@ -1520,17 +1544,13 @@
 <button type="button" id="mobile-fab" title="Инструменты" aria-label="Инструменты"></button>
 <div id="board-topbar">
     <span class="dot" id="conn-dot" title="Связь"></span>
-    <span>Код: <code>{{ board.code }}</code></span>
-    <button id="copy-code" title="Скопировать ссылку">копировать</button>
-    <span class="tb-sep"></span>
     <button id="import-btn" title="Импорт картинки или PDF (PDF можно листать и извлекать страницы)">Импорт</button>
-    <button id="hide-selected" title="Скрыть выделенные объекты (то же — клавиша H). Вернуть — кнопкой «Скрытые»">Скрыть</button>
-    <button id="reveal-hidden" title="Показать скрытые объекты (полупрозрачно), чтобы вернуть их. H — скрыть выделенное, Shift+H — этот режим">Скрытые</button>
+    <button id="hide-selected" title="Скрыть выделенные объекты (то же — клавиша H). Вернуть — режимом «Скрытые»">Скрыть</button>
+    <button id="reveal-hidden" title="Режим скрытия: скрытое проступает полупрозрачным, щелчок по объекту прячет его или возвращает. Можно обводить рамкой. Shift+H — включить">Скрытые</button>
     <span class="tb-sep"></span>
     <button id="present-btn" title="Вести: транслировать свой вид (панораму/зум) участникам">Вести</button>
     <button id="follow-btn" title="Следовать: подстраивать вид под ведущего">Следовать</button>
     <button id="viewonly-btn" title="Только просмотр: заблокировать правки у себя (чтобы не задеть чертёж)">Просмотр</button>
-    <button id="screen-btn" title="Показать свой экран участникам. Работает независимо от голоса">Показать экран</button>
     <button id="voice-btn" title="Голосовая связь с участниками доски. Звук идёт напрямую между браузерами">Голос</button>
     <span class="tb-sep"></span>
     <button id="access-btn" title="Доступ: роль по ссылке и роли участников" hidden>Доступ</button>
@@ -1544,6 +1564,15 @@
     </button>
 </div>
 <div id="board-menu" hidden>
+    <div class="bm-sec">Доска</div>
+    <div class="bm-code">
+        <span>Код: <code>{{ board.code }}</code></span>
+        <button id="copy-code" title="Скопировать ссылку на доску">копировать</button>
+    </div>
+    <div class="bm-row">
+        <span>Цвет по умолчанию</span>
+        <button id="color-btn" title="Палитра: перекрасить выделенное, задать цвет по умолчанию, добавить свои цвета"></button>
+    </div>
     <div class="bm-sec">Вид</div>
     <div class="bm-label">Фон — рисунок</div>
     <div class="ap-seg" id="bg-seg">
@@ -1806,6 +1835,30 @@
 </div>
 
 <!-- Всплывающая горизонтальная панель у выделённой фигуры (прямоугольник/эллипс/фигура). -->
+<div id="stroke-panel" class="conn-panel ps-hidden">
+    <div class="cn-bar">
+        <button type="button" class="cn-tool" id="st-color-btn" title="Цвет штриха">
+            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M4 18c4-9 12-9 16 0"/></svg>
+            <span class="cn-dot" id="st-color-dot"></span>
+        </button>
+        <button type="button" class="cn-tool" id="st-width-btn" title="Толщина штриха">
+            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M4 8h16" stroke-width="1.2"/><path d="M4 13h16" stroke-width="2.4"/><path d="M4 18.5h16" stroke-width="4"/></svg>
+        </button>
+    </div>
+    <div class="cn-pop ps-hidden" id="st-color-pop">
+        <div class="cp-grid" id="st-colors"></div>
+    </div>
+    <div class="cn-pop ps-hidden" id="st-width-pop">
+        <div class="cn-wrow"><span class="cn-wlbl">Толщина</span>
+            <input type="range" id="st-width-range" class="cn-range" min="1" max="40">
+            <input type="number" id="st-width-num" class="cn-num" min="1" max="40">
+        </div>
+        <div class="cn-wrow" id="st-opacity-row"><span class="cn-wlbl">Прозрачность</span>
+            <input type="range" id="st-opacity-range" class="cn-range" min="10" max="100">
+            <input type="number" id="st-opacity-num" class="cn-num" min="10" max="100">
+        </div>
+    </div>
+</div>
 <div id="shape-panel" class="conn-panel ps-hidden">
     <div class="cn-bar">
         <button type="button" class="cn-tool" id="sp-border-btn" title="Граница: цвет и толщина">

@@ -73,8 +73,12 @@ class Board(models.Model):
     password_hash = models.CharField('Пароль (хеш)', max_length=256, blank=True, default='')
     password_enabled = models.BooleanField('Требовать пароль при входе', default=False)
 
+    # PROTECT, а не CASCADE: удаление учётки уносило вместе с ней ВСЕ её доски
+    # со всем содержимым, молча и без спроса. Достаточно было отчислить старого
+    # ученика, который когда-то сам создал доску. Теперь админка сначала
+    # покажет, что мешает, и удаление придётся сделать осознанно.
     owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name='boards_owned', verbose_name='Владелец',
     )
     members = models.ManyToManyField(

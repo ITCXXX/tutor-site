@@ -39,6 +39,12 @@ async def recv(c):
 async def main():
     app = URLRouter(board.routing.websocket_urlpatterns)
 
+    # Уборка ПЕРЕД началом: если прошлый прогон упал, его данные остались, и
+    # следующий запуск падал бы на занятом имени, маскируя настоящую ошибку.
+    await BoardElement.objects.filter(board__code='vrt123').adelete()
+    await Board.objects.filter(code='vrt123').adelete()
+    await U.objects.filter(username__startswith='_vrt_').adelete()
+
     # Временные пользователи и доска.
     teacher = await U.objects.acreate(username='_vrt_teacher', role='teacher')
     student = await U.objects.acreate(username='_vrt_student', role='student')
@@ -121,7 +127,12 @@ async def main():
     check(await embed_saved('javascript:alert(1)', 'emb1') == 0, 'встроенная страница: javascript: отвергнут')
     check(await embed_saved('data:text/html,x', 'emb2') == 0, 'встроенная страница: data: отвергнут')
     check(await embed_saved(12345, 'emb3') == 0, 'встроенная страница: нестроковый адрес отвергнут')
-    check(await embed_saved('https://example.org/', 'emb4') == 1, 'встроенная страница: обычная ссылка принята')
+    # Встраивать разрешено только известные сервисы: чужой сайт внутри урока
+    # видят все участники, и грузится он сразу.
+    check(await embed_saved('https://example.org/', 'emb4') == 0,
+          'встроенная страница: посторонний сайт отвергнут')
+    check(await embed_saved('https://www.youtube.com/embed/abc', 'emb5') == 1,
+          'встроенная страница: разрешённый сервис принят')
     # Принятый элемент разошёлся ученику — вычитываем и добавление, и удаление,
     # иначе эти сообщения сдвинут очередь следующим проверкам.
     await recv(c2)
@@ -274,6 +285,19 @@ async def main():
     await c8.send_json_to({'action': 'rtc', 'kind': 'ready', 'to': None, 'data': None})
     got = await recv(c9)
     check(got.get('kind') == 'ready', 'раздутое служебное сообщение отброшено')
+
+    # Слишком большой объект сервер не примет — но обязан СКАЗАТЬ об этом.
+    # Молчаливый отказ выглядел для человека как успешное сохранение.
+    # Шлём от c8: роль вычисляется при подключении, и правки принимаются
+    # только от редактора — у c9 их нет.
+    await c8.send_json_to({'action': 'element_update', 'element': {
+        'id': 'big1', 'type': 'frame', 'z': 0,
+        'data': {'x': 0, 'y': 0, 'sb': [{'img': 'd' * 300000}]}}})
+    got = await recv(c8)
+    check(got.get('action') == 'rejected' and got.get('reason') == 'too_big',
+          'об отказе по размеру автор узнаёт')
+    saved = await BoardElement.objects.filter(board=b, element_id='big1').afirst()
+    check(saved is None, 'слишком большой объект в базу не попал')
 
     await c8.disconnect(); await c9.disconnect()
 

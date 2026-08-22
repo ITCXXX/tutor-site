@@ -26,5 +26,8 @@ sudo -u tutor git pull
 sudo -u tutor venv/bin/pip install -r requirements.txt
 sudo -u tutor venv/bin/python manage.py migrate
 sudo -u tutor venv/bin/python manage.py collectstatic --noinput
-systemctl restart tutor
+# Оба сервиса: tutor — сайт, tutor-ws — сервер доски (daphne).
+# Без tutor-ws доска останется работать на СТАРОМ коде, и вести она себя
+# будет несогласованно: браузер уже новый, а сервер ещё нет.
+systemctl restart tutor tutor-ws
 ```

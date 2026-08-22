@@ -132,7 +132,9 @@
   // ── Состояние редактора ───────────────────────────────────────────────
   let tool = 'pen';
   let strokeColor = '#1f2937';
-  let strokeWidth = parseInt(document.getElementById('stroke-width').value, 10);
+  // Начальное значение. Общего ползунка толщины больше нет — как только берут
+  // инструмент, applyDrawPreset подставляет толщину из его набора.
+  let strokeWidth = 3;
   // Дефолты по типам: новые объекты создаются с настройками, заданными в панели
   // «для типа» (режим «все …»). Пусто = базовые значения. point: size/shape/
   // labelMode/labelSize/labelHidden; line/circle: strokeWidth/style/color.
@@ -685,7 +687,18 @@
     layer.batchDraw();
   }
 
+  // Погасить отложенную отправку для объекта. Зовём при удалении: иначе
+  // сработавший позже таймер создаст объект заново.
+  function cancelPendingSync(id) {
+    if (typeof tboxSyncTimers !== 'undefined' && tboxSyncTimers[id]) {
+      clearTimeout(tboxSyncTimers[id]); delete tboxSyncTimers[id];
+    }
+    if (typeof frameSyncTimers !== 'undefined' && frameSyncTimers[id]) {
+      clearTimeout(frameSyncTimers[id]); delete frameSyncTimers[id];
+    }
+  }
   function removeNode(id) {
+    cancelPendingSync(id);
     if (shapeTextItems.has(id)) removeShapeText(id);
     if (ggbItems.has(id)) { removeGGB(id); elements.delete(id); return; }
     if (widgetItems.has(id)) { removeWidget(id); return; }
@@ -1315,7 +1328,6 @@
     };
   }
   // Порядок кругов: A сверху, B справа-снизу, C слева-снизу (для двух — слева/справа).
-  function vennIdx(letter) { return { A: 0, B: 1, C: 2 }[letter]; }
   function vennInside(g, i, p) {
     const c = g.cs[i];
     return (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) <= g.R * g.R;
@@ -1757,7 +1769,6 @@
   // Равенство отрезков/углов и шевроны переехали в настройки объектов; из отдельных
   // инструментов-пометок остался только знак прямого угла.
   const MARK_PICKS = { mark_right: 3 };
-  function markKindOf(t) { return { mark_right: 'right' }[t]; }
   // Габарит построения-линии (для рамки/marquee — у Konva.Shape нет своего selfRect).
   function lineSelfRect(el) {
     return function () {
@@ -1940,8 +1951,16 @@
   let revealHidden = false;
   function nodeVisible(el) { return !((el.data && el.data.hidden) || el._condHide) || revealHidden; }
   function applyElVisibility(el) {
-    const n = nodes.get(el.id); if (!n || typeof n.visible !== 'function') return;
     const hid = !!((el.data && el.data.hidden) || el._condHide);
+    // Таблицы, страницы, голосования и экран живут в DOM-слое, а не на холсте,
+    // и до сих пор не скрывались вовсе: флаг ставился, а на экране ничего не
+    // менялось. В режиме скрытия это выглядело бы как сломанная кнопка.
+    const wi = widgetItems.get(el.id);
+    if (wi && wi.wrapper) {
+      wi.wrapper.style.display = (hid && !revealHidden) ? 'none' : '';
+      wi.wrapper.style.opacity = (hid && revealHidden) ? '0.3' : '';
+    }
+    const n = nodes.get(el.id); if (!n || typeof n.visible !== 'function') return;
     n.visible(!hid || revealHidden);
     const baseOp = (el.data && el.data.marker) ? (el.data.opacity != null ? el.data.opacity : 0.4) : 1; // маркер — полупрозрачный, не затирать
     if (typeof n.opacity === 'function') n.opacity(hid && revealHidden ? 0.3 : baseOp);
@@ -1956,12 +1975,54 @@
     });
     refreshTransformer(); syncAlgebra(); layer.batchDraw();
   }
+  // Режим скрытия. Включён — скрытое проступает призраком, а щелчок по любому
+  // объекту прячет его или возвращает. Выделение при входе сбрасываем: в этом
+  // режиме щелчок означает «спрятать», а не «выбрать», и подсвеченная рамка
+  // вокруг объектов только путала бы.
+  let hideModeBackTool = null;
   function toggleRevealHidden() {
     revealHidden = !revealHidden;
+    if (revealHidden) {
+      clearSelection();
+      // Щелчок прячет объект только инструментом «выделение»: с карандашом в
+      // руке нажатие рисует линию. Берём инструмент сами, иначе человек жмёт
+      // на объекты, а не происходит ничего.
+      hideModeBackTool = tool;
+      if (tool !== 'select') setTool('select');
+    } else {
+      // Возвращаем прежний инструмент — но только если человек сам его не
+      // сменил, пока был в режиме.
+      if (hideModeBackTool && tool === 'select') setTool(hideModeBackTool);
+      hideModeBackTool = null;
+    }
     elements.forEach((el) => applyElVisibility(el));
     const btn = document.getElementById('reveal-hidden'); if (btn) btn.classList.toggle('on', revealHidden);
+    document.body.classList.toggle('board-hidemode', revealHidden);
     layer.batchDraw();
-    boardHint(revealHidden ? 'Скрытые объекты показаны (полупрозрачно)' : 'Скрытые объекты спрятаны');
+    boardHint(revealHidden
+      ? 'Режим скрытия: нажимайте на объекты или обводите рамкой — прячем и возвращаем'
+      : 'Обычный режим: скрытое снова не видно');
+  }
+  // Рамка в этом режиме переключает всё пойманное РАЗОМ: есть хоть один видимый
+  // — прячем всё, иначе возвращаем всё. Иначе рамка половину прятала бы, а
+  // половину возвращала, и предсказать результат было бы нельзя.
+  function toggleHiddenInBox(box) {
+    const ids = [];
+    nodes.forEach((node, id) => {
+      const el = elements.get(id);
+      if (!el || el.type === 'frame') return;   // окно — не объект, а вместилище
+      const b = node.getClientRect({ relativeTo: layer });
+      if (rectsIntersect(box, b)) ids.push(id);
+    });
+    widgetItems.forEach((it, id) => {
+      const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0;
+      if (!w && !h) return;
+      if (rectsIntersect(box, { x: d.x || 0, y: d.y || 0, width: w, height: h })) ids.push(id);
+    });
+    if (!ids.length) return;
+    const anyVisible = ids.some((id) => { const el = elements.get(id); return el && !(el.data && el.data.hidden); });
+    setHidden(ids, anyVisible);
+    boardHint((anyVisible ? 'Скрыто объектов: ' : 'Возвращено объектов: ') + ids.length);
   }
 
   function recomputeGeometry() {
@@ -2180,17 +2241,6 @@
     return inside;
   }
   // Многоугольник (обычный/правильный) под курсором — по заливке (клик внутри).
-  function polygonAtWorld(w) {
-    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
-    const lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
-    let found = null;
-    elements.forEach((el) => {
-      if (el.data.frame !== fr.id || !isFilledPoly(el.type)) return;
-      const outline = shapeOutline(el);
-      if (outline && pointInPolygon(lw, outline)) found = el; // последний = верхний
-    });
-    return found;
-  }
   function distToPolyEdges(p, flat) {
     let best = Infinity; const n = flat.length / 2;
     for (let i = 0, j = n - 1; i < n; j = i++) { const d = distPointToSeg(p, { x: flat[2 * j], y: flat[2 * j + 1] }, { x: flat[2 * i], y: flat[2 * i + 1] }); if (d < best) best = d; }
@@ -2490,16 +2540,6 @@
   }
   // ── Преобразования: образы точек и фигур (связаны с источником через on:{xform}) ──
   // Опорные точки фигуры (какие переносим/образуем).
-  function definingPoints(el) {
-    const d = el.data;
-    if (el.type === 'point') return [el.id];
-    if (el.type === 'polygon') return (d.pts || []).slice();
-    if (el.type === 'regpoly') return (d.kind === 'center' ? [d.center, d.vertex] : [d.a, d.b]).filter(Boolean);
-    if (el.type === 'circ') return [d.center, d.through, d.a, d.b, d.c].filter(Boolean);
-    if ((el.type === 'perp' || el.type === 'parallel') && d.line) return [d.through].filter(Boolean);
-    if (isConstruction(el.type)) return [d.a, d.b, d.c].filter(Boolean);
-    return [];
-  }
   // Образ точки src под преобразованием xf (переиспользуем через pmap).
   function imagePointOf(srcId, xf, pmap) {
     if (pmap[srcId]) return pmap[srcId];
@@ -2686,7 +2726,6 @@
     return { p: p, t: t, s: s };
   }
   // ── Окружности по точкам (5 построений) и кривые для пересечений ────────
-  function isCircle(t) { return t === 'circ'; }
   function isCurveType(t) { return CONSTRUCT_LINES.indexOf(t) >= 0 || t === 'circ'; }
   // Центр описанной окружности треугольника ABC (или null, если точки коллинеарны).
   function circumcenter(A, B, C) {
@@ -3065,6 +3104,8 @@
   function removeWidget(id) {
     const it = widgetItems.get(id);
     if (!it) return;
+    cancelPendingSync(id);
+    if (it.saveTimer) { clearTimeout(it.saveTimer); it.saveTimer = null; }
     const tb = document.getElementById('tbl-bar');
     if (tb && tb._owner === it) { tb.hidden = true; tb._owner = null; }
     if (it.timer) clearInterval(it.timer);
@@ -3360,7 +3401,13 @@
     pop('tb-color-btn', 'tb-color-pop'); pop('tb-hilite-btn', 'tb-hilite-pop'); pop('tb-boxbg-btn', 'tb-boxbg-pop');
     tbFontSel.addEventListener('change', () => { if (!activeTbox) return; activeTbox.el.data.font = tbFontSel.value; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); if (!tbFieldMode()) activeTbox.ed.focus(); });
     tbSizeInp.addEventListener('change', () => { if (!activeTbox) return; const v = Math.max(8, Math.min(200, parseInt(tbSizeInp.value, 10) || 20)); tbSizeInp.value = v; activeTbox.el.data.fontSize = v; applyTboxStyle(activeTbox.ed, activeTbox.el.data); tboxSyncSoon(activeTbox); if (!tbFieldMode()) activeTbox.ed.focus(); });
-    document.addEventListener('mousedown', (e) => { if (!tboxBar.classList.contains('ps-hidden') && !e.target.closest('#tbox-bar')) tbCloseP(); }, true);
+    // e.target на уровне документа не обязательно элемент (бывает сам
+    // document), а у него нет closest — без проверки обработчик падал.
+    document.addEventListener('mousedown', (e) => {
+      if (tboxBar.classList.contains('ps-hidden')) return;
+      const t = e.target;
+      if (!t || !t.closest || !t.closest('#tbox-bar')) tbCloseP();
+    }, true);
   }
   function positionTboxBar(it) {
     const r = it.wrapper.getBoundingClientRect();
@@ -3760,8 +3807,11 @@
       it.body.querySelector('[data-act="reset"]').addEventListener('click', () => { const d = it.el.data; d.running = false; d.startedAt = 0; d.remaining = d.duration; syncWidget(it); render(); });
       it.body.querySelector('[data-act="m1"]').addEventListener('click', () => { const d = it.el.data; d.duration = Math.max(0, d.duration - 60); d.remaining = Math.max(0, calcRemaining() - 60); d.startedAt = d.running ? Date.now() : 0; syncWidget(it); render(); });
       it.body.querySelector('[data-act="p1"]').addEventListener('click', () => { const d = it.el.data; d.duration += 60; d.remaining = calcRemaining() + 60; d.startedAt = d.running ? Date.now() : 0; syncWidget(it); render(); });
-      if (it.timer) clearInterval(it.timer);
-      it.timer = setInterval(tick, 250);
+      // Тикаем ТОЛЬКО пока таймер идёт: на паузе и в покое показания не
+      // меняются, а перерисовка четыре раза в секунду сажает батарею планшета.
+      // render() зовётся при каждом изменении, поэтому отсчёт возобновится сам.
+      if (it.timer) { clearInterval(it.timer); it.timer = null; }
+      if (it.el.data.running) it.timer = setInterval(tick, 250);
     };
     it.update = render; render();
   }
@@ -4110,9 +4160,28 @@
   // Разрешаем только настоящие веб-адреса. Проверка нужна ИМЕННО при отрисовке:
   // данные приходят от других участников, а адрес вида javascript:… во фрейме
   // выполнился бы уже в контексте нашей страницы — это была бы дыра.
+  // Разрешённые для встраивания сервисы. Ровно те, которые доска умеет
+  // распознавать ниже по коду; чужой сайт внутри урока участникам не нужен, а
+  // грузится он у всех сразу, без спроса.
+  const EMBED_HOSTS = [
+    'youtube.com', 'youtu.be', 'youtube-nocookie.com',
+    'vimeo.com', 'rutube.ru',
+    'docs.google.com', 'drive.google.com',
+    'desmos.com', 'geogebra.org',
+    'wikipedia.org',
+  ];
+  function embedHostAllowed(host) {
+    const h = String(host || '').toLowerCase().replace(/^www\./, '');
+    // Поддомены разрешаем (m.youtube.com, player.vimeo.com, ru.wikipedia.org),
+    // но только настоящие: проверяем по границе точки, иначе «notyoutube.com»
+    // прошёл бы как «youtube.com».
+    return EMBED_HOSTS.some((d) => h === d || h.endsWith('.' + d));
+  }
   function safeEmbedUrl(u) {
     const s = String(u == null ? '' : u).trim();
-    return /^https?:\/\//i.test(s) ? s : '';
+    if (!/^https?:\/\//i.test(s)) return '';
+    try { return embedHostAllowed(new URL(s).hostname) ? s : ''; }
+    catch (e) { return ''; }
   }
 
   // Приводим ссылку к встраиваемому виду: обычная ссылка на YouTube во фрейме
@@ -4242,6 +4311,16 @@
     const info = parseEmbedInput(ta.value);
     if (!info || !info.url) {
       if (err) err.textContent = (info && info.error) || 'Не удалось разобрать вставку.';
+      return;
+    }
+    // Источник не из списка разрешённых. Отказать молча нельзя: человек будет
+    // жать кнопку и не понимать, почему ничего не происходит.
+    if (!safeEmbedUrl(info.url)) {
+      if (err) {
+        err.textContent = 'Такой сайт встраивать нельзя. Доступны: YouTube, '
+          + 'Vimeo, Rutube, Google Документы, Desmos, GeoGebra и Википедия. '
+          + 'Для остального дайте обычную ссылку в тексте.';
+      }
       return;
     }
     const cb = embedDlgCb;
@@ -4782,7 +4861,6 @@
     funcVarsOf(expr, exclude).forEach((v) => { if (!fr.data.params[v]) { fr.data.params[v] = { v: 1, min: -5, max: 5 }; changed = true; } });
     return changed;
   }
-  function funcParamEnv() { const env = {}; elements.forEach((e) => { if (e.type === 'slider' && e.data.name) env[e.data.name] = Number(e.data.value); }); return env; }
   // Перерисовать все графики (после изменения параметра-ползунка).
   function redrawFuncs() { layer.batchDraw(); }
   function drawFuncShape(ctx, shape) {
@@ -5518,7 +5596,10 @@
 
   function moveDraw(shift) {
     if (!drawing) return;
-    const p = worldPoint();
+    // Указателя может не быть вовсе: Konva забывает его позицию, когда курсор
+    // покинул сцену. Без этой проверки обработчик движения падал с ошибкой, а
+    // вместе с ним переставала работать вся остальная обработка движения.
+    const p = worldPoint(); if (!p) return;
     const d = drawing.data;
     if (drawing.type === 'freehand') {
       d.points.push(p.x - d.x, p.y - d.y);
@@ -5745,7 +5826,19 @@
   stageEl.addEventListener('pointerup', onPointerGone, true);
   stageEl.addEventListener('pointercancel', onPointerGone, true);
   // Перо могло уйти за край экрана — иначе penDown завис бы включённым.
-  window.addEventListener('pointerup', (ev) => { if (ev.pointerType === 'pen') penDown = false; }, true);
+  // То же самое и с пальцем: pointerup слушался только на сцене, поэтому палец,
+  // отпущенный за её краем, навсегда оставался в списке касаний. Следующее
+  // касание считалось вторым, начинался «щипок» — и доска переставала рисовать.
+  window.addEventListener('pointerup', (ev) => {
+    if (ev.pointerType === 'pen') { penDown = false; return; }
+    if (ev.pointerType === 'touch' && touchPts.has(ev.pointerId)) onPointerGone(ev);
+  }, true);
+  // То же и для отмены: системный жест у края экрана шлёт pointercancel, и он
+  // тоже приходит мимо сцены.
+  window.addEventListener('pointercancel', (ev) => {
+    if (ev.pointerType === 'pen') { penDown = false; return; }
+    if (ev.pointerType === 'touch' && touchPts.has(ev.pointerId)) onPointerGone(ev);
+  }, true);
 
   // Переключатель «Рисовать пальцем» в меню доски: нужен, если перо на устройстве
   // есть, но сейчас его нет под рукой. Показываем только там, где он осмыслен.
@@ -5791,6 +5884,15 @@
       const wpp = stage.getRelativePointerPosition();
       const g = wpp ? pickObjectAtWorld(wpp) : null;
       if (g) { id = g.id; rel = g; }
+    }
+
+    // Режим скрытия: щелчок прячет объект или возвращает его. Окна пропускаем —
+    // щелчок по пустому месту внутри окна должен начинать рамку, а не прятать
+    // окно целиком вместе со всем построением.
+    if (revealHidden && !viewOnly && rel && rel.type !== 'frame') {
+      setHidden([rel.id], !(rel.data && rel.data.hidden));
+      dragStart = null;
+      return;
     }
 
     // Под курсором окно (его фон/сетка) или пусто → панорама плоскости/активация.
@@ -5974,8 +6076,35 @@
     if (resizeState) doResize();
     if (tool === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
   });
-  stage.on('mouseup touchend', (e) => { if (touchBlocked(e)) return; endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); });
-  stage.on('mouseleave', () => { endDraw(); endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp(); if (eraserRing) eraserRing.style.display = 'none'; });
+  stage.on('mouseup touchend', (e) => { if (touchBlocked(e)) return; abortActiveInput(); });
+  stage.on('mouseleave', () => { abortActiveInput(); });
+
+  // Закрыть любое начатое действие. Вызывается и со сцены, и из страховки на
+  // уровне окна, поэтому все end-функции внутри устроены так, что повторный
+  // вызов ничего не делает.
+  function abortActiveInput() {
+    endDraw(); endMarquee(); endFrameDrag(); endResize();
+    laserUp(); eraserUp(); lassoUp();
+    if (eraserRing) eraserRing.style.display = 'none';
+  }
+
+  // СТРАХОВКА НА УРОВНЕ ОКНА. Сцена узнаёт об отпускании кнопки только если оно
+  // случилось над ней. Стоит увести указатель за край окна и отпустить там —
+  // и штрих остаётся незавершённым, а доска перестаёт слушаться: карандаш
+  // больше не рисует, пока что-нибудь случайно не сбросит состояние.
+  // Слушаем на окне, в фазе перехвата, чтобы поймать событие где угодно.
+  window.addEventListener('mouseup', abortActiveInput, true);
+  window.addEventListener('pointerup', abortActiveInput, true);
+  window.addEventListener('pointercancel', abortActiveInput, true);
+  // Окно потеряло фокус (переключились в другую программу прямо во время
+  // штриха) — отпускания мы уже не увидим никогда.
+  window.addEventListener('blur', () => {
+    abortActiveInput();
+    // Пробел-панорама: клавиша могла быть отпущена в другом окне, и тогда
+    // доска навсегда осталась бы в режиме перемещения — рисование в нём
+    // выключено, что выглядит ровно как «карандаш не рисует».
+    if (spaceHeld) { spaceHeld = false; setPanMode(panBeforeSpace); }
+  });
 
   function doFrameMove() {
     const el = elements.get(frameMove.id); if (!el) return;
@@ -6194,6 +6323,11 @@
     if (!isEraser(name)) eraserActive = false;
     if (name !== 'lasso') { lassoActive = false; if (lassoLine) lassoLine.visible(false); }
     toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === name));
+    // Рисующие инструменты пропускают нажатие сквозь текст и виджеты на холст.
+    // Инструменты установки текста сюда НЕ входят: там щелчок по существующему
+    // блоку должен попадать в него, а не создавать новый блок поверх.
+    document.body.classList.toggle('board-draw',
+      name !== 'select' && name !== 'text' && name !== 'text_plain' && name !== 'latex');
     // В режиме выделения перетаскивание по пустому месту рисует рамку выделения,
     // а не панорамирует, поэтому stage.draggable выключен везде. Панорама — на
     // стрелках и колесе (зум).
@@ -6774,6 +6908,9 @@
     // Панель фигуры — у одиночной фигуры (прямоугольник/эллипс/фигура).
     const shapeEl = (el && SHAPE_TYPES_PANEL.indexOf(el.type) >= 0 && tool === 'select' && !(el.data && el.data.locked) && !(el.data && el.data.hidden)) ? el : null;
     if (shapeEl) showShapePanel(shapeEl); else hideShapePanel();
+    // Штрихи карандаша и маркера — своя панель с цветом и толщиной.
+    const strokeEls = strokeSelectedEls();
+    if (strokeEls.length) showStrokePanel(strokeEls[0]); else hideStrokePanel();
     const node = el && RESIZABLE.includes(el.type) ? nodes.get(ids[0]) : null;
     if (!node) {
       if (handlesGroup.visible()) { handlesGroup.hide(); }
@@ -6862,11 +6999,6 @@
   const feList = document.getElementById('fe-list');
   let activeFrameId = null;
 
-  function singleSelectedFrame() {
-    if (selected.size !== 1) return null;
-    const el = elements.get(Array.from(selected)[0]);
-    return (el && el.type === 'frame') ? el : null;
-  }
   let _feFrame = null;
   function updateFuncEditor() {
     updateStoryboard(); // раскадровка обновляется в тех же точках, что и редактор функций
@@ -7547,14 +7679,50 @@
     elements.forEach((e) => { if (e.id !== frameId && e.data && e.data.frame === frameId) out.push(e); });
     return out;
   }
-  function windowImage(fr) { const node = nodes.get(fr.id); if (!node) return ''; try { return node.toDataURL({ pixelRatio: 1 }); } catch (e) { return ''; } }
+  // Сколько кадров помещается в одно окно и каким должен быть их размер.
+  // Сервер принимает элемент не больше 256 КБ (board/consumers.py), поэтому
+  // держимся с запасом: лучше честно отказать заранее, чем потерять молча.
+  const SB_MAX_FRAMES = 24;
+  // 360 пикселей по длинной стороне. Замеры на окне 640×460: PNG в полном
+  // размере — 20.7 КБ и всего 11 кадров до предела, PNG на 360 — около 8 КБ и
+  // почти 30. JPEG даёт тот же выигрыш, но оставляет ореолы вокруг тонких
+  // линий и формул, а снимают здесь именно их.
+  const SB_IMG_MAX = 360;              // длинная сторона миниатюры, пикселей
+  const EL_SAFE_BYTES = 240 * 1024;    // запас под служебную обвязку сообщения
+  // Картинка кадра нужна ТОЛЬКО для показа в полоске и предпросмотре: сам кадр
+  // восстанавливается из snap, где лежат настоящие элементы. Поэтому берём
+  // миниатюру, а не снимок в полном размере — из-за него окно и переполнялось.
+  function windowImage(fr) {
+    const node = nodes.get(fr.id); if (!node) return '';
+    const w = fr.data.width || 1, h = fr.data.height || 1;
+    const ratio = Math.min(1, SB_IMG_MAX / Math.max(w, h));
+    try { return node.toDataURL({ pixelRatio: ratio }); }
+    catch (e) { return ''; }
+  }
+  // Влезет ли элемент в то, что примет сервер. Проверяем ДО отправки.
+  function elementFits(el) {
+    try { return JSON.stringify((stripPrivate(el) || {}).data || {}).length <= EL_SAFE_BYTES; }
+    catch (e) { return false; }
+  }
   function frameSnap(fr) { return frameContentEls(fr.id).map((e) => clone({ id: e.id, type: e.type, z: e.z || 0, data: e.data })); }
   function captureFrame(fr) {
+    const list = sbList(fr);
+    if (list.length >= SB_MAX_FRAMES) {
+      boardHint('В окне уже ' + SB_MAX_FRAMES + ' кадров — удалите лишние');
+      return;
+    }
     const before = clone(fr);
-    sbList(fr).push({ cap: '', img: windowImage(fr), snap: frameSnap(fr) });
+    list.push({ cap: '', img: windowImage(fr), snap: frameSnap(fr) });
+    // Не влезли — откатываем и говорим словами. Раньше кадр «снимался», доска
+    // рапортовала об успехе, а сервер молча его не принимал.
+    if (!elementFits(fr)) {
+      list.pop();
+      boardHint('Кадр не помещается: удалите несколько прежних или уменьшите окно');
+      return;
+    }
     histUpd(before, fr); send({ action: 'element_update', element: fr });
     renderStrip(fr); if (sbStrip) sbStrip.scrollLeft = sbStrip.scrollWidth;
-    boardHint('Кадр ' + sbList(fr).length + ' снят');
+    boardHint('Кадр ' + list.length + ' снят');
   }
   function renderStrip(fr) {
     if (!sbStrip) return;
@@ -7619,7 +7787,13 @@
   function sbUpdateFrame(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
     const before = clone(fr);
-    list[i] = { cap: list[i].cap || '', img: windowImage(fr), snap: frameSnap(fr) };
+    const prev = list[i];
+    list[i] = { cap: prev.cap || '', img: windowImage(fr), snap: frameSnap(fr) };
+    if (!elementFits(fr)) {
+      list[i] = prev;
+      boardHint('Обновлённый кадр не помещается — удалите несколько прежних');
+      return;
+    }
     histUpd(before, fr); send({ action: 'element_update', element: fr });
     renderStrip(fr); sbOpenPreview(fr, i);
     boardHint('Кадр ' + (i + 1) + ' обновлён');
@@ -7698,7 +7872,9 @@
     marquee = null;
     marqueeRect.visible(false);
     if (m.moved) {
-      applyMarquee({ x: marqueeRect.x(), y: marqueeRect.y(), width: marqueeRect.width(), height: marqueeRect.height() }, m.additive);
+      const box = { x: marqueeRect.x(), y: marqueeRect.y(), width: marqueeRect.width(), height: marqueeRect.height() };
+      if (revealHidden && !viewOnly) toggleHiddenInBox(box);
+      else applyMarquee(box, m.additive);
     } else if (!m.additive) {
       clearSelection(); // клик по пустому без движения — снять выделение
     }
@@ -7831,8 +8007,22 @@
     pen: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 5, c: '#ef4444' }, { w: 10, c: '#3b82f6' }] },
     marker: { active: 0, presets: [{ w: 16, c: '#ffe14a', o: 0.4 }, { w: 24, c: '#8ef58e', o: 0.4 }, { w: 30, c: '#7cc4ff', o: 0.4 }] },
     eraser: { active: 0, presets: [{ r: 10 }, { r: 22 }, { r: 40 }] },
+    // Линия, стрелка, разделитель — один общий набор: рисуют они одним и тем же
+    // пером, и держать им разные настройки значило бы путать самого себя.
+    line: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 4, c: '#ef4444' }, { w: 6, c: '#3b82f6' }] },
+    // Прямоугольник, эллипс и все фигуры — контур.
+    shape: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 3, c: '#ef4444' }, { w: 5, c: '#3b82f6' }] },
   };
-  function loadDrawCfg() { try { const s = JSON.parse(localStorage.getItem(DP_STORE)); if (s && s.pen && s.marker && s.eraser) return s; } catch (e) {} return clone(DP_DEFAULTS); }
+  // Сохранённые настройки могли быть записаны до появления новых групп —
+  // недостающие ключи добираем из умолчаний, а не сбрасываем всё.
+  function loadDrawCfg() {
+    const out = clone(DP_DEFAULTS);
+    try {
+      const s = JSON.parse(localStorage.getItem(DP_STORE));
+      if (s) Object.keys(out).forEach((k) => { if (s[k] && s[k].presets) out[k] = s[k]; });
+    } catch (e) {}
+    return out;
+  }
   let drawCfg = loadDrawCfg();
   function saveDrawCfg() { try { localStorage.setItem(DP_STORE, JSON.stringify(drawCfg)); } catch (e) {} }
   let markerColor = drawCfg.marker.presets[drawCfg.marker.active].c;
@@ -7841,8 +8031,24 @@
   const DP_SW = {
     pen: ['#1f2937', '#6b7280', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff'],
     marker: ['#ffe14a', '#ffb14a', '#8ef58e', '#7cc4ff', '#ff9ecb', '#c9a7ff'],
+    line: ['#1f2937', '#6b7280', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff'],
+    shape: ['#1f2937', '#6b7280', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff'],
   };
-  function drawKey(t) { return t === 'pen' ? 'pen' : t === 'marker' ? 'marker' : isEraser(t) ? 'eraser' : null; }
+  function drawKey(t) {
+    if (t === 'pen') return 'pen';
+    if (t === 'marker') return 'marker';
+    if (isEraser(t)) return 'eraser';
+    if (t === 'line' || t === 'arrow' || t === 'divider') return 'line';
+    if (t === 'rect' || t === 'ellipse' || SHAPE_TOOLS[t]) return 'shape';
+    return null;
+  }
+  // Группа на панели, к которой относится текущий инструмент — туда и
+  // переезжает блок настроек.
+  function cfgGroupEl() {
+    if (!drawKey(tool)) return null;
+    const b = document.querySelector('#board-toolbar .tool-flyout .tool[data-tool="' + tool + '"]');
+    return b ? b.closest('.tool-group') : null;
+  }
   function dpActive(key) { const c = drawCfg[key]; return c.presets[c.active]; }
   function applyDrawPreset(key) {
     const p = dpActive(key);
@@ -7850,11 +8056,25 @@
       strokeColor = p.c; strokeWidth = p.w;
       if (colorBtn) colorBtn.style.background = p.c;
       const sw = document.getElementById('stroke-width'); if (sw) sw.value = p.w;
+    } else if (key === 'line' || key === 'shape') {
+      // Линии и фигуры рисуются теми же двумя глобальными значениями, что и
+      // карандаш, — поэтому больше нигде править ничего не нужно.
+      strokeColor = p.c; strokeWidth = p.w;
+      const cb = document.getElementById('color-btn'); if (cb) cb.style.background = p.c;
+      const sw2 = document.getElementById('stroke-width'); if (sw2) sw2.value = p.w;
     } else if (key === 'marker') { markerColor = p.c; markerWidth = p.w; markerOpacity = p.o; }
     else if (key === 'eraser') { eraserRadius = p.r; }
   }
   function dpDemoHtml(key, p) {
     if (key === 'eraser') { const d = Math.max(8, Math.min(30, Math.round(p.r * 0.7))); return '<span class="dp-ring" style="width:' + d + 'px;height:' + d + 'px"></span>'; }
+    if (key === 'line') {
+      const h = Math.max(2, Math.min(10, p.w));
+      return '<span class="dp-line" style="height:' + h + 'px;background:' + p.c + '"></span>';
+    }
+    if (key === 'shape') {
+      const b = Math.max(1, Math.min(5, p.w));
+      return '<span class="dp-sq" style="border-width:' + b + 'px;border-color:' + p.c + '"></span>';
+    }
     const d = Math.max(4, Math.min(28, p.w)), op = key === 'marker' ? p.o : 1;
     return '<span class="dp-dot" style="width:' + d + 'px;height:' + d + 'px;background:' + p.c + ';opacity:' + op + '"></span>';
   }
@@ -7876,6 +8096,7 @@
     const thick = document.getElementById('dp-thick'), tval = document.getElementById('dp-thick-val'), tlbl = document.getElementById('dp-thick-lbl');
     if (key === 'eraser') { tlbl.textContent = 'Радиус'; thick.min = 5; thick.max = 80; thick.value = p.r; tval.textContent = p.r; }
     else { tlbl.textContent = 'Толщина'; thick.min = 1; thick.max = (key === 'marker' ? 40 : 24); thick.value = p.w; tval.textContent = p.w; }
+    // Прозрачность есть только у маркера; у остальных строку прячем ниже.
     const orow = document.getElementById('dp-opacity-row'); orow.style.display = key === 'marker' ? 'flex' : 'none';
     if (key === 'marker') { const o = document.getElementById('dp-opacity'), ov = document.getElementById('dp-opacity-val'); o.value = Math.round(p.o * 100); ov.textContent = Math.round(p.o * 100) + '%'; }
     const colorsEl = document.getElementById('dp-colors'); colorsEl.style.display = key === 'eraser' ? 'none' : 'flex';
@@ -7897,7 +8118,10 @@
   }
   function openDpPop(circleEl, key) { const pop = document.getElementById('dp-pop'); renderDpPop(key); pop.hidden = false; positionDpPop(circleEl); }
   function closeDpPop() { const pop = document.getElementById('dp-pop'); if (pop) pop.hidden = true; }
-  function drawGroupEls() { const g = document.querySelector('.tool-group[data-group="draw"]'); return g ? { g, fly: g.querySelector('.tool-flyout') } : null; }
+  function drawGroupEls() {
+    const g = cfgGroupEl() || document.querySelector('.tool-group[data-group="draw"]');
+    return g ? { g, fly: g.querySelector('.tool-flyout') } : null;
+  }
   function isDrawToolActive() { return !!drawKey(tool) || tool === 'laser' || tool === 'lasso'; }
   function positionDrawFlyout(g, fly) {
     const r = g.getBoundingClientRect();
@@ -7911,9 +8135,17 @@
   // #draw-cfg показываем под лассо для карандаша/маркера/ластика.
   function syncDrawFlyout() {
     closeDpPop(); // при смене инструмента панель настроек закрываем
-    const e = drawGroupEls(); if (!e) return; const cfg = document.getElementById('draw-cfg'); const key = drawKey(tool);
+    const cfg = document.getElementById('draw-cfg');
+    const key = drawKey(tool);
+    const e = drawGroupEls(); if (!e) return;
     if (isDrawToolActive()) {
-      if (cfg) { cfg.hidden = !key; if (key) { applyDrawPreset(key); renderDrawPanel(key); } }
+      if (cfg) {
+        cfg.hidden = !key;
+        // Блок настроек ОДИН на всю панель и переезжает к активной группе:
+        // открыта всегда одна, так что второго не требуется.
+        if (key && cfg.parentElement !== e.fly) e.fly.appendChild(cfg);
+        if (key) { applyDrawPreset(key); renderDrawPanel(key); }
+      }
       positionDrawFlyout(e.g, e.fly);
     } else {
       if (cfg) cfg.hidden = true;
@@ -7948,8 +8180,8 @@
   let lassoActive = false, lassoPts = null;
   const lassoLine = new Konva.Line({ stroke: '#4d7cfe', strokeWidth: 1, dash: [4, 4], closed: true, fill: 'rgba(77,124,254,0.10)', listening: false, visible: false });
   layer.add(lassoLine);
-  function lassoDown() { lassoActive = true; const w = worldPoint(); lassoPts = [w.x, w.y]; lassoLine.points(lassoPts); lassoLine.visible(true); lassoLine.moveToTop(); layer.batchDraw(); }
-  function lassoMove() { if (!lassoActive) return; const w = worldPoint(); lassoPts.push(w.x, w.y); lassoLine.points(lassoPts); lassoLine.strokeWidth(1 / stage.scaleX()); layer.batchDraw(); }
+  function lassoDown() { const w = worldPoint(); if (!w) return; lassoActive = true; lassoPts = [w.x, w.y]; lassoLine.points(lassoPts); lassoLine.visible(true); lassoLine.moveToTop(); layer.batchDraw(); }
+  function lassoMove() { if (!lassoActive) return; const w = worldPoint(); if (!w) return; lassoPts.push(w.x, w.y); lassoLine.points(lassoPts); lassoLine.strokeWidth(1 / stage.scaleX()); layer.batchDraw(); }
   function lassoUp() {
     if (!lassoActive) return; lassoActive = false; lassoLine.visible(false);
     const poly = lassoPts; lassoPts = null; layer.batchDraw();
@@ -8002,6 +8234,16 @@
     activeFrameId = (el && el.type === 'frame') ? id : null; // активное окно
     refreshTransformer();
   }
+  // Выделить всё: скрытое берём только когда включён режим скрытия (иначе
+  // человек «выделит» то, чего не видит), окна пропускаем — это вместилища.
+  function selectAllElements() {
+    selected.clear();
+    const takeable = (el) => el && el.type !== 'frame' && !(el.data && el.data.hidden && !revealHidden);
+    nodes.forEach((node, id) => { if (takeable(elements.get(id))) selected.add(id); });
+    widgetItems.forEach((it, id) => { if (takeable(it.el)) selected.add(id); });
+    refreshTransformer();
+    boardHint(selected.size ? ('Выделено объектов: ' + selected.size) : 'Выделять нечего');
+  }
   function toggleSelect(id) {
     const members = groupMembers(id).filter(selectable);
     if (!members.length) return;
@@ -8039,7 +8281,10 @@
     refreshTransformer();
   }
   // ── Дублирование ───────────────────────────────────────────────────────
-  const DUP_TYPES = ['shape', 'image', 'rect', 'ellipse', 'line', 'arrow', 'freehand', 'text', 'latex', 'sticky'];
+  // Таблицы, голосования и таймеры сюда НЕ входят намеренно: у них живое
+  // состояние (ход голосования, отсчёт), и копия сбивала бы с толку.
+  const DUP_TYPES = ['shape', 'image', 'rect', 'ellipse', 'line', 'arrow', 'freehand',
+    'text', 'textbox', 'latex', 'sticky', 'card'];
   function canDuplicate(el) { return DUP_TYPES.indexOf(el.type) >= 0 || (el.type === 'point' && !el.data.on); }
   function duplicateSelected() {
     const news = [];
@@ -8056,6 +8301,82 @@
     if (news.length) { selected.clear(); news.forEach((i) => selected.add(i)); refreshTransformer(); layer.batchDraw(); boardHint('Дублировано: ' + news.length); }
     else boardHint('Эти объекты нельзя дублировать');
   }
+  // ── Копирование и вставка ──────────────────────────────────────────────
+  // Свой буфер нужен потому, что системный не умеет хранить объекты доски —
+  // только текст и файлы. Картинки же, наоборот, приходят именно из системного,
+  // событием paste: снимок экрана или картинку из переписки иначе пришлось бы
+  // сначала сохранять в файл и потом импортировать кнопкой.
+  let boardClip = [];
+  function copySelected(cut) {
+    if (!selected.size) { boardHint('Сначала выделите объекты'); return; }
+    boardClip = Array.from(selected)
+      .map((id) => elements.get(id))
+      .filter((el) => el && canDuplicate(el))
+      .map((el) => ({ type: el.type, z: el.z || 0, data: clone(el.data) }));
+    if (!boardClip.length) { boardHint('Эти объекты нельзя скопировать'); return; }
+    boardHint((cut ? 'Вырезано: ' : 'Скопировано: ') + boardClip.length);
+    if (cut) deleteSelected();
+  }
+  function pasteBoardClip(at) {
+    if (!boardClip.length) return false;
+    // Всю пачку сдвигаем как целое: её левый верхний угол встаёт под курсор,
+    // взаимное расположение объектов сохраняется.
+    const xs = boardClip.map((c) => c.data.x).filter((v) => v != null);
+    const ys = boardClip.map((c) => c.data.y).filter((v) => v != null);
+    const ox = xs.length ? Math.min.apply(null, xs) : 0;
+    const oy = ys.length ? Math.min.apply(null, ys) : 0;
+    const news = [];
+    boardClip.forEach((c) => {
+      const data = clone(c.data);
+      delete data.hidden;
+      if (data.x != null) data.x = at.x + (data.x - ox);
+      if (data.y != null) data.y = at.y + (data.y - oy);
+      if (c.type === 'point') { data.label = nextPointLabel(); data.idx = undefined; }
+      const nel = { id: uuid(), type: c.type, z: c.z, data: data };
+      upsertNode(nel); send({ action: 'element_add', element: nel }); histAdd(nel);
+      news.push(nel.id);
+    });
+    selected.clear(); news.forEach((i) => selected.add(i));
+    refreshTransformer(); layer.batchDraw();
+    boardHint('Вставлено: ' + news.length);
+    return true;
+  }
+  function pasteTextAt(text, at) {
+    const el = { id: uuid(), type: 'textbox', z: 0, data: {
+      // Переносы строк — в <br>. Коды символов вместо регулярного
+      // выражения: так в исходнике нет обратных слешей, которые легко
+      // теряются при переносе правок между инструментами.
+      x: at.x, y: at.y,
+      html: escapeHtml(text)
+        .split(String.fromCharCode(13)).join('')
+        .split(String.fromCharCode(10)).join('<br>'),
+      color: strokeColor, fontSize: 20, font: TEXT_FONT, align: 'left' } };
+    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    boardHint('Текст вставлен');
+  }
+  function ctxWorldOrCentre() { return worldPoint() || viewportCenterWorld(); }
+
+  window.addEventListener('paste', (e) => {
+    if (viewOnly) return;
+    // Внутри поля ввода вставка — дело самого поля, не доски.
+    const t = e.target;
+    if (t && t.matches && t.matches('input, textarea, [contenteditable], [contenteditable] *')) return;
+    const dt = e.clipboardData; if (!dt) return;
+    const at = ctxWorldOrCentre();
+
+    const files = [];
+    if (dt.files && dt.files.length) Array.prototype.push.apply(files, Array.from(dt.files));
+    else if (dt.items) Array.from(dt.items).forEach((it) => {
+      if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
+    });
+    if (files.length) { e.preventDefault(); importFiles(files); return; }
+
+    const text = dt.getData && dt.getData('text/plain');
+    if (text && text.trim()) { e.preventDefault(); pasteTextAt(text, at); return; }
+
+    if (pasteBoardClip(at)) e.preventDefault();
+  });
+
   // ── Порядок слоёв ──────────────────────────────────────────────────────
   function moveElZ(ids, dir) {
     let mz = 0, minz = 0; elements.forEach((e) => { const z = e.z || 0; if (z > mz) mz = z; if (z < minz) minz = z; });
@@ -8105,6 +8426,8 @@
   // ── Контекстное меню (правый клик) ─────────────────────────────────────
   const ctxMenu = document.createElement('div'); ctxMenu.id = 'ctx-menu'; ctxMenu.style.display = 'none'; document.body.appendChild(ctxMenu);
   const CTX_ITEMS = [
+    { label: 'Копировать', key: 'Ctrl+C', act: function () { copySelected(false); } },
+    { label: 'Вырезать', key: 'Ctrl+X', act: function () { copySelected(true); } },
     { label: 'Дублировать', key: 'Ctrl+D', act: duplicateSelected },
     { label: 'Скрыть', key: 'H', act: () => { if (selected.size) setHidden(Array.from(selected), true); } },
     { label: 'На передний план', act: () => moveElZ(Array.from(selected), 'front') },
@@ -8112,9 +8435,119 @@
     { sep: true },
     { label: 'Удалить', key: 'Del', danger: true, act: deleteSelected },
   ];
+  // «Показать всё»: вписываем в экран прямоугольник по всем видимым объектам.
+  function fitAllToView() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const take = (x, y, w, h) => {
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+    };
+    nodes.forEach((node, id) => {
+      const el = elements.get(id);
+      if (!el || (el.data && el.data.hidden && !revealHidden)) return;
+      const b = node.getClientRect({ relativeTo: layer });
+      if (b && (b.width || b.height)) take(b.x, b.y, b.width, b.height);
+    });
+    widgetItems.forEach((it) => {
+      const d = it.el.data;
+      if (d && d.hidden && !revealHidden) return;
+      const w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0;
+      if (w || h) take(d.x || 0, d.y || 0, w, h);
+    });
+    if (!isFinite(minX)) { boardHint('На доске пока пусто'); return; }
+    const pad = 60;
+    const sc = Math.max(0.05, Math.min(4, Math.min(
+      (stage.width() - pad * 2) / Math.max(1, maxX - minX),
+      (stage.height() - pad * 2) / Math.max(1, maxY - minY))));
+    stage.scale({ x: sc, y: sc });
+    stage.position({
+      x: (stage.width() - (maxX - minX) * sc) / 2 - minX * sc,
+      y: (stage.height() - (maxY - minY) * sc) / 2 - minY * sc,
+    });
+    redrawGrid(); repositionWidgets(); positionHandles();
+    layer.batchDraw(); updateZoomLabel();
+  }
+
+  // Точка мира по экранным координатам. Считаем из них напрямую, а не через
+  // указатель Konva: меню открывается и с DOM-слоя, где указатель сцены
+  // остаётся от прошлого события и врёт.
+  function worldFromClient(cx, cy) {
+    const r = stage.container().getBoundingClientRect(), sc = stage.scaleX();
+    return { x: (cx - r.left - stage.x()) / sc, y: (cy - r.top - stage.y()) / sc };
+  }
+  let ctxWorld = null;   // где именно нажали правой кнопкой
+
+  // Вставка ИЗ МЕНЮ. Браузер не даёт читать системный буфер по нажатию пункта
+  // без разрешения, поэтому честно объясняем и предлагаем Ctrl+V.
+  function pasteFromMenu() {
+    const at = ctxWorld || viewportCenterWorld();
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      if (!pasteBoardClip(at)) boardHint('Нажмите Ctrl+V — из меню буфер прочитать нельзя');
+      return;
+    }
+    navigator.clipboard.read().then((items) => {
+      const files = [];
+      let chain = Promise.resolve();
+      items.forEach((it) => {
+        const imgType = (it.types || []).filter((t) => t.indexOf('image/') === 0)[0];
+        if (!imgType) return;
+        chain = chain.then(() => it.getType(imgType))
+          .then((blob) => { files.push(new File([blob], 'вставка.png', { type: blob.type })); });
+      });
+      return chain.then(() => {
+        if (files.length) { importFiles(files); return null; }
+        return navigator.clipboard.readText().then((txt) => {
+          if (txt && txt.trim()) pasteTextAt(txt, at);
+          else if (!pasteBoardClip(at)) boardHint('Буфер пуст');
+        });
+      });
+    }).catch(() => {
+      if (!pasteBoardClip(at)) boardHint('Нажмите Ctrl+V — браузер не дал прочитать буфер');
+    });
+  }
+
+  // Меню по ПУСТОМУ месту — то, чего не было совсем.
+  function ctxEmptyItems() {
+    const gridOn = (boardBg === 'grid');
+    return [
+      { label: 'Вставить', key: 'Ctrl+V', accent: true, act: pasteFromMenu },
+      { sep: true },
+      { label: 'Добавить текст', act: function () { insertTextbox(); } },
+      { label: 'Добавить стикер', act: function () { insertSticky(); } },
+      { sep: true },
+      { label: 'Выделить всё', key: 'Ctrl+A', act: selectAllElements },
+      { label: 'Показать всё', act: fitAllToView },
+      { label: 'Масштаб 100%', key: 'Ctrl+0', act: function () { zoomTo(1); } },
+      { sep: true },
+      { label: 'Сетка', tick: gridOn, act: function () { setBoardBg(gridOn ? 'blank' : 'grid'); } },
+      { label: 'Привязка к объектам', tick: guidesEnabled, act: function () {
+          guidesEnabled = !guidesEnabled;
+          const g = document.getElementById('guides-toggle'); if (g) g.checked = guidesEnabled;
+          boardHint(guidesEnabled ? 'Привязка включена' : 'Привязка выключена');
+        } },
+      { label: 'Показать скрытое', key: 'Shift+H', tick: revealHidden, act: toggleRevealHidden },
+    ];
+  }
   function hideCtxMenu() { ctxMenu.style.display = 'none'; }
-  function showCtxMenu(x, y) {
+  function showCtxMenu(x, y, onEmpty) {
     ctxMenu.innerHTML = '';
+    const put = (it) => {
+      if (it.sep) { const sp = document.createElement('div'); sp.className = 'ctx-sep'; ctxMenu.appendChild(sp); return; }
+      const b = document.createElement('button');
+      b.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.accent ? ' accent' : '');
+      b.innerHTML = '<span class="ctx-tick">' + (it.tick ? '✓' : '') + '</span>'
+        + '<span style="flex:1;text-align:left">' + it.label + '</span>'
+        + (it.key ? '<span class="ctx-key">' + it.key + '</span>' : '');
+      b.addEventListener('click', () => { hideCtxMenu(); it.act(); });
+      ctxMenu.appendChild(b);
+    };
+    if (onEmpty) {
+      ctxEmptyItems().forEach(put);
+      ctxMenu.style.left = Math.min(x, window.innerWidth - 230) + 'px';
+      ctxMenu.style.top = Math.min(y, window.innerHeight - 330) + 'px';
+      ctxMenu.style.display = 'block';
+      return;
+    }
     if (selected.size === 1) {
       const el = elements.get(Array.from(selected)[0]);
       if (el && el.type === 'point') {
@@ -8124,27 +8557,43 @@
         const s = document.createElement('div'); s.className = 'ctx-sep'; ctxMenu.appendChild(s);
       }
     }
-    CTX_ITEMS.forEach((it) => {
-      if (it.sep) { const s = document.createElement('div'); s.className = 'ctx-sep'; ctxMenu.appendChild(s); return; }
-      const b = document.createElement('button'); b.className = 'ctx-item' + (it.danger ? ' danger' : '');
-      b.innerHTML = '<span>' + it.label + '</span>' + (it.key ? '<span class="ctx-key">' + it.key + '</span>' : '');
-      b.addEventListener('click', () => { hideCtxMenu(); it.act(); });
-      ctxMenu.appendChild(b);
-    });
-    ctxMenu.style.left = Math.min(x, window.innerWidth - 190) + 'px';
-    ctxMenu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+    CTX_ITEMS.forEach(put);
+    ctxMenu.style.left = Math.min(x, window.innerWidth - 210) + 'px';
+    ctxMenu.style.top = Math.min(y, window.innerHeight - 260) + 'px';
     ctxMenu.style.display = 'block';
   }
   document.addEventListener('click', hideCtxMenu);
-  document.addEventListener('contextmenu', (e) => { if (!e.target.closest || !e.target.closest('#board-stage')) hideCtxMenu(); });
+  // Сторож закрывает меню при нажатии мимо доски. Слой виджетов сюда тоже
+  // входит — иначе меню, открытое на тексте, тут же закрывалось бы само.
+  document.addEventListener('contextmenu', (e) => {
+    const inBoard = e.target.closest && (e.target.closest('#board-stage') || e.target.closest('#widget-layer'));
+    if (!inBoard) hideCtxMenu();
+  });
+
+  // Тексты, стикеры, таблицы и прочие виджеты — это HTML поверх холста, и
+  // правая кнопка на них до сцены не доходила. Вешаем меню и на них.
+  widgetLayerEl.addEventListener('contextmenu', (e) => {
+    const wrap = e.target.closest && e.target.closest('.wgt, .tbox, .mtext');
+    if (!wrap) return;
+    let id = null;
+    widgetItems.forEach((it, wid) => { if (it.wrapper === wrap) id = wid; });
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    ctxWorld = worldFromClient(e.clientX, e.clientY);
+    if (!selected.has(id)) selectOnly(id);
+    showCtxMenu(e.clientX, e.clientY, false);
+  });
   stage.on('contextmenu', (e) => {
     if (e.evt) e.evt.preventDefault();
     const w = worldPoint(); let id = null;
     const g = w ? pickObjectAtWorld(w) : null;
     if (g) id = g.id; else { const t = e.target; if (t && t !== stage && elements.get(t.id())) id = t.id(); }
+    ctxWorld = worldFromClient(e.evt.clientX, e.evt.clientY);
     if (id && !selected.has(id)) selectOnly(id);
-    if (!selected.size) { hideCtxMenu(); return; }
-    showCtxMenu(e.evt.clientX, e.evt.clientY);
+    // По пустому месту — меню доски, как в Miro. Раньше здесь не появлялось
+    // ничего, и правая кнопка казалась несуществующей.
+    showCtxMenu(e.evt.clientX, e.evt.clientY, !id || !selected.size);
   });
 
 
@@ -8374,6 +8823,17 @@
     if (!groups.length) return;
     const defIcon = new Map();
     groups.forEach((g) => defIcon.set(g, g.querySelector('.grp-icon').innerHTML));
+    // Чем в группе пользовались в последний раз. Нажатие на саму группу
+    // включает именно его: человек, который рисует ластиком, ждёт ластик, а не
+    // карандаш только потому, что тот в списке первый.
+    const lastInGroup = new Map();
+    groups.forEach((g) => {
+      const act = g.querySelector('.tool[data-tool].active') || g.querySelector('.tool[data-tool]');
+      if (act) lastInGroup.set(g.dataset.group, act.dataset.tool);
+      g.querySelectorAll('.tool[data-tool]').forEach((b) => {
+        b.addEventListener('click', () => lastInGroup.set(g.dataset.group, b.dataset.tool));
+      });
+    });
     function closeAll(except) {
       groups.forEach((g) => { if (g !== except) g.querySelector('.tool-flyout').classList.remove('open'); });
     }
@@ -8382,7 +8842,21 @@
       g.addEventListener('click', (e) => {
         if (e.target.closest('.tool-flyout')) return; // клик по под-инструменту — не трогаем
         e.stopPropagation();
-        const open = !fly.classList.contains('open');
+        // Состояние панели запоминаем ДО переключения инструмента: взяв в руку
+        // карандаш, syncDrawFlyout сам открывает панель рисования (там толщина
+        // и цвет), и проверка «была ли открыта» иначе видела бы уже открытую —
+        // нажатие закрывало бы только что открытое.
+        const wasOpen = fly.classList.contains('open');
+        // Сразу берём инструмент группы в руки. Если он уже активен (в группе
+        // есть подсвеченный под-инструмент), ничего не переключаем — нажатие
+        // тогда просто открывает и закрывает панель.
+        if (!g.querySelector('.tool[data-tool].active')) {
+          const want = lastInGroup.get(g.dataset.group);
+          const sub = (want && g.querySelector('.tool[data-tool="' + want + '"]'))
+            || g.querySelector('.tool[data-tool]');
+          if (sub) setTool(sub.dataset.tool);
+        }
+        const open = !wasOpen;
         closeAll(g);
         if (open) {
           const r = g.getBoundingClientRect();
@@ -8400,7 +8874,12 @@
       if (g.dataset.group !== 'draw') fly.querySelectorAll('.tool[data-tool]').forEach((b) => b.addEventListener('click', () => fly.classList.remove('open')));
     });
     // Клик по пустому месту/холсту закрывает меню — кроме меню рисования, пока активен его инструмент.
-    document.addEventListener('click', (e) => { if (!(e.target && e.target.closest && e.target.closest('.tool-group'))) closeAll(isDrawToolActive() ? document.querySelector('.tool-group[data-group="draw"]') : null); });
+    // Панель группы держим открытой, пока в руке её инструмент: там живут
+    // толщина и цвет, и закрывать её на каждый щелчок по холсту неудобно.
+    document.addEventListener('click', (e) => {
+      const inGroup = e.target && e.target.closest && e.target.closest('.tool-group');
+      if (!inGroup) closeAll(isDrawToolActive() ? (cfgGroupEl() || document.querySelector('.tool-group[data-group="draw"]')) : null);
+    });
     // Отразить активный под-инструмент на кнопке группы (иконка + подсветка).
     function syncGroups() {
       groups.forEach((g) => {
@@ -8624,7 +9103,9 @@
   }
   enableToolDragToCanvas(document.getElementById('board-toolbar'));
 
-  document.getElementById('stroke-width').addEventListener('input', (e) => { strokeWidth = parseInt(e.target.value, 10); });
+  // Ползунок убран с панели; привязку оставляем на случай, если он вернётся.
+  const swInput = document.getElementById('stroke-width');
+  if (swInput) swInput.addEventListener('input', (e) => { strokeWidth = parseInt(e.target.value, 10); });
 
   // ── Палитра цветов ─────────────────────────────────────────────────────
   // 16 базовых цветов + свои (в localStorage). Выделены объекты → перекрашиваем
@@ -9092,6 +9573,119 @@
   // ── Панель фигуры: граница (цвет/толщина) + заливка (цвет/прозрачность) ──
   const SHAPE_TYPES_PANEL = ['rect', 'ellipse', 'shape'];
   const shapePanel = document.getElementById('shape-panel');
+  // ── Панель нарисованного штриха (карандаш и маркер) ────────────────────
+  const strokePanel = document.getElementById('stroke-panel');
+  const ST_POPS = { color: 'st-color-pop', width: 'st-width-pop' };
+  const ST_BTNS = { color: 'st-color-btn', width: 'st-width-btn' };
+  // Все выделенные штрихи. Если среди выделенного есть что-то ещё — панели нет:
+  // иначе непонятно, к чему относится толщина.
+  function strokeSelectedEls() {
+    if (!selected.size || tool !== 'select') return [];
+    const out = [];
+    let ok = true;
+    selected.forEach((id) => {
+      const el = elements.get(id);
+      if (!el || el.type !== 'freehand' || (el.data && (el.data.locked || el.data.hidden))) { ok = false; return; }
+      out.push(el);
+    });
+    return ok ? out : [];
+  }
+  function strokeIsMarker(els) { return els.length > 0 && els.every((e) => e.data && e.data.marker); }
+  function strokeApply(mutator) {
+    const els = strokeSelectedEls(); if (!els.length) return;
+    els.forEach((el) => {
+      const before = clone(el);
+      mutator(el);
+      upsertNode(el); histUpd(before, el); send({ action: 'element_update', element: el });
+    });
+    layer.batchDraw(); renderStrokePanel();
+  }
+  function closeStrokePops() {
+    Object.values(ST_POPS).forEach((id) => { const e = document.getElementById(id); if (e) e.classList.add('ps-hidden'); });
+    Object.values(ST_BTNS).forEach((id) => { const e = document.getElementById(id); if (e) e.classList.remove('cn-open'); });
+  }
+  function toggleStrokePop(which) {
+    const pop = document.getElementById(ST_POPS[which]); if (!pop) return;
+    const wasHidden = pop.classList.contains('ps-hidden');
+    closeStrokePops();
+    if (wasHidden) { pop.classList.remove('ps-hidden'); document.getElementById(ST_BTNS[which]).classList.add('cn-open'); }
+  }
+  function renderStrokePanel() {
+    const els = strokeSelectedEls(); if (!els.length) return;
+    const d = els[0].data || {};
+    const dot = document.getElementById('st-color-dot');
+    if (dot) dot.style.background = d.stroke || d.color || '#1f2937';
+    const w = d.strokeWidth == null ? 3 : d.strokeWidth;
+    const range = document.getElementById('st-width-range'), num = document.getElementById('st-width-num');
+    if (range) range.value = w; if (num) num.value = w;
+    // Прозрачность — только у маркера: у карандаша её нет вовсе.
+    const orow = document.getElementById('st-opacity-row');
+    const marker = strokeIsMarker(els);
+    if (orow) orow.style.display = marker ? '' : 'none';
+    if (marker) {
+      const o = Math.round((d.opacity == null ? 0.4 : d.opacity) * 100);
+      const orange = document.getElementById('st-opacity-range'), onum = document.getElementById('st-opacity-num');
+      if (orange) orange.value = o; if (onum) onum.value = o;
+    }
+    const box = document.getElementById('st-colors');
+    if (box && !box.childElementCount) {
+      BASE_COLORS.forEach((c) => {
+        const sw = document.createElement('div'); sw.className = 'cp-sw'; sw.style.background = c; sw.title = c;
+        sw.addEventListener('click', () => strokeApply((e) => { e.data.stroke = c; e.data.color = c; }));
+        box.appendChild(sw);
+      });
+    }
+  }
+  function positionStrokePanel(el) {
+    const node = nodes.get(el.id); if (!node) return;
+    const cr = node.getClientRect(), box = stage.container().getBoundingClientRect();
+    const pw = strokePanel.offsetWidth || 90, ph = strokePanel.offsetHeight || 48;
+    let left = box.left + cr.x + cr.width / 2 - pw / 2, top = box.top + cr.y - ph - 14;
+    if (top < 70) top = box.top + cr.y + cr.height + 14;
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    top = Math.max(70, Math.min(top, window.innerHeight - ph - 8));
+    strokePanel.style.left = left + 'px'; strokePanel.style.top = top + 'px';
+  }
+  function showStrokePanel(el) { renderStrokePanel(); strokePanel.classList.remove('ps-hidden'); positionStrokePanel(el); }
+  function hideStrokePanel() { if (strokePanel && !strokePanel.classList.contains('ps-hidden')) { closeStrokePops(); strokePanel.classList.add('ps-hidden'); } }
+  Object.keys(ST_BTNS).forEach((which) => {
+    const b = document.getElementById(ST_BTNS[which]);
+    if (b) b.addEventListener('click', (e) => { e.stopPropagation(); if (!strokeSelectedEls().length) return; renderStrokePanel(); toggleStrokePop(which); });
+  });
+  document.addEventListener('click', (e) => {
+    if (strokePanel && !strokePanel.classList.contains('ps-hidden') && !strokePanel.contains(e.target)) closeStrokePops();
+  });
+  (function wireStrokeSliders() {
+    const pairs = [
+      { r: 'st-width-range', n: 'st-width-num', lo: 1, hi: 40, set: (el, v) => { el.data.strokeWidth = v; } },
+      { r: 'st-opacity-range', n: 'st-opacity-num', lo: 10, hi: 100, set: (el, v) => { el.data.opacity = v / 100; } },
+    ];
+    pairs.forEach((p) => {
+      const range = document.getElementById(p.r), num = document.getElementById(p.n);
+      if (!range || !num) return;
+      let snaps = null;
+      // Снимок ДО начала перетаскивания: в историю пишем один шаг на всё
+      // движение, а не по шагу на каждый пиксель ползунка.
+      const start = () => { snaps = strokeSelectedEls().map((el) => clone(el)); };
+      const live = (v) => {
+        v = Math.max(p.lo, Math.min(p.hi, parseInt(v, 10) || p.lo));
+        range.value = v; num.value = v;
+        strokeSelectedEls().forEach((el) => { p.set(el, v); upsertNode(el); });
+        layer.batchDraw();
+      };
+      const commit = () => {
+        const before = snaps; snaps = null;
+        const els = strokeSelectedEls();
+        els.forEach((el, i) => {
+          if (before && before[i]) histUpd(before[i], el);
+          send({ action: 'element_update', element: el });
+        });
+      };
+      range.addEventListener('mousedown', start); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
+      num.addEventListener('focus', start); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
+    });
+  })();
+
   function shapeSelectedEl() { if (selected.size !== 1) return null; const el = elements.get(Array.from(selected)[0]); return (el && SHAPE_TYPES_PANEL.indexOf(el.type) >= 0) ? el : null; }
   function shapeApply(mutator) {
     const el = shapeSelectedEl(); if (!el) return;
@@ -9277,7 +9871,11 @@
     closeSettingsMenu(); pointSettings.classList.add('ps-hidden'); figureSettings.classList.add('ps-hidden');
   });
 
-  document.querySelector('[data-action="clear"]').addEventListener('click', () => {
+  // Кнопку «очистить всё» убрали с панели инструментов: она стояла вплотную к
+  // рабочим, и промах стоил всей доски. Привязку оставляем на случай, если
+  // действие вернут в меню — но теперь не падаем, когда кнопки нет.
+  const clearBtn = document.querySelector('[data-action="clear"]');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
     if (!confirm('Очистить всю доску? Это удалит все элементы у всех участников.')) return;
     const ids = Array.from(elements.keys());
     ids.forEach((id) => { const el = elements.get(id); if (el) histDel(el); send({ action: 'element_delete', id }); removeNode(id); });
@@ -9295,6 +9893,7 @@
   const PAN_EASE = 0.2;    // плавность разгона/торможения (0..1 за кадр)
   const heldKeys = new Set();
   let shiftHeld = false;
+  let spaceHeld = false, panBeforeSpace = false;  // пробел — временная панорама
   let panVX = 0, panVY = 0, panRAF = null, lastPanT = 0;
 
   function panDirection() {
@@ -9331,6 +9930,8 @@
   window.addEventListener('keydown', (e) => {
     if (e.target && e.target.matches && e.target.matches('input, textarea, [contenteditable], [contenteditable] *')) return;
     shiftHeld = e.shiftKey;
+    // Открытая справка забирает Esc себе — иначе он сначала выключал бы режимы.
+    if (keysHelpEl && e.key === 'Escape') { e.preventDefault(); toggleKeysHelp(); return; }
 
     // «Только просмотр»: блокируем правки (удаление/дубль/группа/скрыть/undo/redo),
     // оставляем навигацию (стрелки-панораму, Esc).
@@ -9376,10 +9977,54 @@
       return;
     }
 
+    // Ctrl/Cmd+A — выделить всё на доске.
+    if ((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault(); selectAllElements(); return;
+    }
+
+    // Масштаб с клавиатуры: Ctrl+0 — вернуть 100%, Ctrl+«+»/«−» — крупнее/мельче.
+    if ((e.ctrlKey || e.metaKey) && (e.key === '0' || e.key === '=' || e.key === '+' || e.key === '-' || e.key === '_')) {
+      e.preventDefault();
+      if (e.key === '0') zoomTo(1);
+      else zoomTo(stage.scaleX() * ((e.key === '-' || e.key === '_') ? 0.8 : 1.25));
+      return;
+    }
+
+    // Esc — общий отбой: сначала выйти из режима скрытия, потом вернуться к
+    // стрелке, потом снять выделение. Незавершённые построения перехвачены выше.
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (revealHidden) { toggleRevealHidden(); return; }
+      if (tool !== 'select') { setTool('select'); return; }
+      if (selected.size) { clearSelection(); layer.batchDraw(); }
+      return;
+    }
+
+    // «?» — показать список горячих клавиш. Их некуда было подсмотреть.
+    if (e.key === '?' || (e.key === '/' && e.shiftKey)) { e.preventDefault(); toggleKeysHelp(); return; }
+
+    // Пробел — панорама, пока держишь. Так устроены графические редакторы, и
+    // это единственный способ подвинуть доску, не бросая инструмент из рук.
+    if (e.code === 'Space' && !spaceHeld) {
+      e.preventDefault(); spaceHeld = true; panBeforeSpace = panMode; setPanMode(true); return;
+    }
+
     // Ctrl/Cmd+G — сгруппировать выделенное, +Shift — разгруппировать.
     if ((e.key === 'g' || e.key === 'G') && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       if (e.shiftKey) ungroupSelected(); else groupSelected();
+      return;
+    }
+
+    // Ctrl/Cmd+C — скопировать выделенное, Ctrl/Cmd+X — вырезать.
+    // Вставку не перехватываем: её ловит событие paste, иначе до содержимого
+    // системного буфера не добраться.
+    if ((e.key === 'c' || e.key === 'C') && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      if (selected.size) { e.preventDefault(); copySelected(false); }
+      return;
+    }
+    if ((e.key === 'x' || e.key === 'X') && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      if (selected.size) { e.preventDefault(); copySelected(true); }
       return;
     }
 
@@ -9405,24 +10050,121 @@
       return;
     }
 
-    const map = { p: 'pen', l: 'line', r: 'rect', o: 'ellipse', f: 'latex', t: 'text_plain', v: 'select' };
-    if (map[e.key.toLowerCase()]) setTool(map[e.key.toLowerCase()]);
+    // Буквы инструментов — только без модификаторов. Раньше проверки не было, и
+    // Ctrl+P (печать) заодно переключал на карандаш, а Ctrl+A — на стрелку.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const map = {
+      v: 'select',  p: 'pen',     m: 'marker',  e: 'eraser_full', q: 'laser',
+      l: 'line',    a: 'arrow',   r: 'rect',    o: 'ellipse',     s: 'sticky',
+      t: 'text_plain', f: 'latex', g: 'graph',  c: 'circ_cp',     d: 'point',
+      w: 'frame',   b: 'table',
+    };
+    const k = e.key.toLowerCase();
+    if (map[k]) { e.preventDefault(); setTool(map[k]); }
   });
   window.addEventListener('keyup', (e) => {
     shiftHeld = e.shiftKey;
     if (PAN_KEYS[e.key]) { heldKeys.delete(e.key); ensurePanLoop(); }
+    if (e.code === 'Space' && spaceHeld) { spaceHeld = false; setPanMode(panBeforeSpace); }
   });
   // Если окно потеряло фокус с зажатой клавишей — плавно останавливаемся.
   window.addEventListener('blur', () => { heldKeys.clear(); ensurePanLoop(); });
 
-  // Копировать ссылку на доску.
-  document.getElementById('copy-code').addEventListener('click', () => {
-    navigator.clipboard.writeText(location.href).then(() => {
-      const btn = document.getElementById('copy-code');
-      const old = btn.textContent; btn.textContent = 'готово';
-      setTimeout(() => { btn.textContent = old; }, 1500);
+  // ── Справка по горячим клавишам ────────────────────────────────────────
+  // Инструментов на панели почти восемьдесят; без списка о клавишах просто
+  // неоткуда узнать. Собираем окно из JS, чтобы не плодить разметку.
+  const KEYS_HELP = [
+    ['Инструменты', [
+      ['V', 'стрелка (выделение)'], ['P', 'карандаш'], ['M', 'маркер'],
+      ['E', 'ластик'], ['Q', 'указка'], ['L', 'линия'], ['A', 'стрелка-объект'],
+      ['R', 'прямоугольник'], ['O', 'овал'], ['C', 'окружность'], ['D', 'точка'],
+      ['T', 'текст'], ['F', 'формула'], ['G', 'график'], ['S', 'стикер'],
+      ['W', 'окно построения'], ['B', 'таблица'],
+    ]],
+    ['Правка', [
+      ['Ctrl+Z', 'шаг назад'], ['Ctrl+Shift+Z', 'шаг вперёд'],
+      ['Ctrl+C', 'копировать'], ['Ctrl+X', 'вырезать'],
+      ['Ctrl+V', 'вставить: картинку, файл, текст или скопированные объекты'],
+      ['Ctrl+D', 'дублировать'], ['Ctrl+G', 'сгруппировать'],
+      ['Ctrl+Shift+G', 'разгруппировать'], ['Ctrl+A', 'выделить всё'],
+      ['Del', 'удалить выделенное'],
+    ]],
+    ['Скрытие', [
+      ['H', 'скрыть выделенное'],
+      ['Shift+H', 'режим скрытия: щелчком прячем и возвращаем'],
+    ]],
+    ['Вид', [
+      ['Пробел', 'держать — двигать доску'], ['Стрелки', 'двигать доску'],
+      ['Shift+стрелки', 'быстрее'], ['Ctrl+0', 'масштаб 100%'],
+      ['Ctrl+«+» / Ctrl+«−»', 'крупнее / мельче'],
+    ]],
+    ['Прочее', [
+      ['Esc', 'выйти из режима, вернуться к стрелке, снять выделение'],
+      ['Правая кнопка', 'меню: по объекту — действия с ним, по пустому месту — меню доски'],
+      ['?', 'этот список'],
+    ]],
+  ];
+  let keysHelpEl = null;
+  function toggleKeysHelp() {
+    if (keysHelpEl) { keysHelpEl.remove(); keysHelpEl = null; return; }
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(20,20,28,.45);'
+      + 'display:flex;align-items:center;justify-content:center;padding:24px;';
+    let html = '<div style="background:#fff;border-radius:12px;max-width:760px;width:100%;'
+      + 'max-height:86vh;overflow:auto;padding:22px 26px;box-shadow:0 10px 40px rgba(0,0,0,.28)">'
+      + '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">'
+      + '<h2 style="margin:0;font-size:19px">Горячие клавиши</h2>'
+      + '<button data-close style="border:1px solid #d9d9e0;background:#f0f0f4;border-radius:6px;'
+      + 'padding:3px 10px;cursor:pointer;font-size:13px">Закрыть</button></div>';
+    KEYS_HELP.forEach((grp) => {
+      html += '<div style="margin:14px 0 6px;font-weight:600;font-size:13px;color:#6b6b76;'
+        + 'text-transform:uppercase;letter-spacing:.04em">' + grp[0] + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:4px 18px">';
+      grp[1].forEach((row) => {
+        html += '<div style="display:flex;gap:10px;align-items:baseline;font-size:14px">'
+          + '<kbd style="flex:0 0 auto;min-width:96px;font:600 12px/1.6 ui-monospace,Consolas,monospace;'
+          + 'background:#f2f2f6;border:1px solid #dededf;border-bottom-width:2px;border-radius:5px;'
+          + 'padding:1px 7px;text-align:center;color:#33333b">' + row[0] + '</kbd>'
+          + '<span style="color:#3a3a42">' + row[1] + '</span></div>';
+      });
+      html += '</div>';
     });
-  });
+    html += '</div>';
+    wrap.innerHTML = html;
+    wrap.addEventListener('click', (ev) => {
+      if (ev.target === wrap || (ev.target.closest && ev.target.closest('[data-close]'))) toggleKeysHelp();
+    });
+    document.body.appendChild(wrap);
+    keysHelpEl = wrap;
+  }
+
+  // Копировать ссылку на доску.
+  (function wireCopyCode() {
+    const btn = document.getElementById('copy-code');
+    if (!btn) return;
+    const flash = (text) => {
+      const prev = btn.textContent;
+      btn.textContent = text;
+      setTimeout(() => { btn.textContent = prev; }, 1500);
+    };
+    btn.addEventListener('click', () => {
+      const link = location.href;
+      const ok = () => flash('готово');
+      // Запасной путь: браузер может не дать доступ к буферу (нет фокуса,
+      // не https, старая версия). Тогда показываем ссылку выделенной, чтобы
+      // её можно было скопировать руками, — молча отказывать нельзя.
+      const fallback = () => {
+        boardHint('Не удалось скопировать — ссылка показана, скопируйте вручную');
+        window.prompt('Ссылка на доску:', link);
+        flash('вручную');
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(ok).catch(fallback);
+      } else {
+        fallback();
+      }
+    });
+  })();
 
   // ── Импорт (кнопка + скрытый file input) и панель управления PDF ────────
   (function () {
@@ -9593,8 +10335,8 @@
     const now = laserNow(); if (!brk && now - lastLaserSentAt < 33) return; lastLaserSentAt = now;
     send({ action: 'laser', x: x, y: y, s: brk ? 1 : 0 });
   }
-  function laserDown() { laserDrawing = true; const p = worldPoint(); addLaserPoint(myId, p.x, p.y, true); sendLaser(p.x, p.y, true); }
-  function laserMove() { if (!laserDrawing) return; const p = worldPoint(); addLaserPoint(myId, p.x, p.y, false); sendLaser(p.x, p.y, false); }
+  function laserDown() { const p = worldPoint(); if (!p) return; laserDrawing = true; addLaserPoint(myId, p.x, p.y, true); sendLaser(p.x, p.y, true); }
+  function laserMove() { if (!laserDrawing) return; const p = worldPoint(); if (!p) return; addLaserPoint(myId, p.x, p.y, false); sendLaser(p.x, p.y, false); }
   function laserUp() { laserDrawing = false; }
 
   // ── Живое занятие: режим ведущего, только-просмотр ─────────────────────
@@ -10624,6 +11366,13 @@
 
   function handleMessage(msg) {
     switch (msg.action) {
+      // Сервер не принял объект. Прежде он в таких случаях просто молчал, и
+      // человек узнавал о потере только после перезагрузки страницы.
+      case 'rejected':
+        boardHint(msg.reason === 'too_big'
+          ? 'Объект слишком большой — сервер его не сохранил'
+          : 'Сервер не принял изменение');
+        return;
       case 'init':
         myId = msg.me;
         myLabel = msg.label || myLabel;

@@ -6,6 +6,7 @@ from . import views
 from . import views_exam
 from . import views_materials
 from . import views_oge1_5
+from . import views_media
 
 # ===== 1. СОЗДАЕМ РОУТЕР ДЛЯ API =====
 router = DefaultRouter()
@@ -16,6 +17,11 @@ router.register(r'pdf-annotations', views.PDFAnnotationViewSet, basename='pdf-an
 urlpatterns = [
     # --- ПОДКЛЮЧАЕМ API ПЕРВЫМИ ---
     path('api/', include(router.urls)),
+
+    # Служебный адрес для nginx: он спрашивает здесь разрешение, прежде чем
+    # отдать приватный файл из media/ (auth_request). Человеку открывать его
+    # незачем — ответ пустой, важен только код 200 или 403.
+    path('media-guard/', views_media.media_guard, name='media_guard'),
     
     # --- ОСНОВНЫЕ МАРШРУТЫ ---
     path('', views.home_view, name='home'),

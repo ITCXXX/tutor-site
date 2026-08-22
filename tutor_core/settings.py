@@ -210,6 +210,18 @@ def _try_parse_postgres_url(url):
 
 _postgres_config = _try_parse_postgres_url(DATABASE_URL) if DATABASE_URL else None
 
+# Адрес базы задан, но разобрать его не вышло. На боевом сервере это ошибка, а
+# не повод тихо переехать на SQLite: сайт поднялся бы на пустом файле, данные
+# писались бы туда, а копии снимаются с PostgreSQL — пропажу заметили бы только
+# после «починки». Лучше не запуститься.
+if not DEBUG and DATABASE_URL and not _postgres_config:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "DATABASE_URL задан, но разобрать его не удалось. Проверьте строку "
+        "DATABASE_URL в /opt/tutor/.env — сайт намеренно не запускается, чтобы "
+        "не начать писать данные в пустую локальную базу."
+    )
+
 if _postgres_config and not DEBUG:
     DATABASES = {"default": _postgres_config}
 else:
