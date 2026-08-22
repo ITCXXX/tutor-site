@@ -28,7 +28,19 @@
   // ── Координатная сетка (фон) ───────────────────────────────────────────
   // Отдельный слой под рисованием. Рисуется один Shape с кастомным sceneFunc,
   // который перерисовывает видимую часть бесконечной сетки при зуме/панораме.
-  const GRID_STEP = 40; // шаг клетки в мировых единицах
+  const GRID_STEP = 40; // базовый шаг клетки в мировых единицах (при 100%)
+  // Мельче этого клетка на ЭКРАНЕ не показывается: иначе линии сливаются в
+  // серую заливку. Для точек порог выше — их рисовать дороже, чем линии.
+  const GRID_MIN_PX = 14, GRID_MIN_PX_DOTS = 22;
+  // Шаг сетки под текущий масштаб. Ряд 1-2-5 (40 → 80 → 200 → 400 → 800 → 2000):
+  // тот же, что на линейках и осях графиков, поэтому укрупнение не бросается в
+  // глаза. Мельче базового шага не идём — это клетка тетради при 100%.
+  function gridStepFor(scale, minPx) {
+    let step = GRID_STEP;
+    const ladder = [2, 2.5, 2];
+    for (let i = 0; step * scale < minPx && i < 40; i++) step *= ladder[i % 3];
+    return step;
+  }
   const BOARD_CFG_ID = '__boardcfg__'; // singleton-элемент настроек доски (фон)
   let boardBg = 'grid'; // grid | dots | lines | blank — общий фон полотна
   let boardBgColor = ''; // цвет полотна ('' = по умолчанию из CSS)
@@ -53,23 +65,24 @@
     const y1 = y0 + stage.height() / scale;
     const lw = 1 / scale; // тонкие линии независимо от зума
 
-    const startX = Math.floor(x0 / GRID_STEP) * GRID_STEP;
-    const startY = Math.floor(y0 / GRID_STEP) * GRID_STEP;
+    const GRID = gridStepFor(scale, boardBg === 'dots' ? GRID_MIN_PX_DOTS : GRID_MIN_PX);
+    const startX = Math.floor(x0 / GRID) * GRID;
+    const startY = Math.floor(y0 / GRID) * GRID;
 
     const gc = boardGridColor || '#e2e2ea'; // цвет рисунка фона
     if (boardBg === 'dots') {
       // Точки в узлах клетки.
       ctx.fillStyle = gc;
       const r = 1.1 / scale;
-      for (let x = startX; x <= x1; x += GRID_STEP) {
-        for (let y = startY; y <= y1; y += GRID_STEP) { ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill(); }
+      for (let x = startX; x <= x1; x += GRID) {
+        for (let y = startY; y <= y1; y += GRID) { ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill(); }
       }
       return;
     }
     if (boardBg === 'lines') {
       // Тетрадная линейка — только горизонтальные линии.
       ctx.beginPath(); ctx.lineWidth = lw; ctx.strokeStyle = gc;
-      for (let y = startY; y <= y1; y += GRID_STEP) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+      for (let y = startY; y <= y1; y += GRID) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
       ctx.stroke();
       return;
     }
@@ -78,8 +91,8 @@
     ctx.beginPath();
     ctx.lineWidth = lw;
     ctx.strokeStyle = gc;
-    for (let x = startX; x <= x1; x += GRID_STEP) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
-    for (let y = startY; y <= y1; y += GRID_STEP) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    for (let x = startX; x <= x1; x += GRID) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for (let y = startY; y <= y1; y += GRID) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
     ctx.stroke();
   }
   // Общий фон доски хранится синглтон-элементом (синхронизируется как любой
@@ -6198,7 +6211,9 @@
 
   // ── Зум: колесо к указателю + контрол справа снизу ────────────────────
   const SCALE_BY = 1.06;
-  const MIN_SCALE = 0.15, MAX_SCALE = 5;
+  // 3%: доска обзорная, на ней раскладывают уроки целиком, и с 15% общий план
+  // не помещался. Сетка теперь не мешает — шаг подстраивается (gridStepFor).
+  const MIN_SCALE = 0.03, MAX_SCALE = 5;
   const zoomInput = document.getElementById('zoom-percent');
 
   function updateZoomLabel() {
@@ -8456,7 +8471,7 @@
     });
     if (!isFinite(minX)) { boardHint('На доске пока пусто'); return; }
     const pad = 60;
-    const sc = Math.max(0.05, Math.min(4, Math.min(
+    const sc = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.min(
       (stage.width() - pad * 2) / Math.max(1, maxX - minX),
       (stage.height() - pad * 2) / Math.max(1, maxY - minY))));
     stage.scale({ x: sc, y: sc });
