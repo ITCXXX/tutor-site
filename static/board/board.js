@@ -7787,7 +7787,11 @@
   function windowImage(fr) {
     const node = nodes.get(fr.id); if (!node) return '';
     const w = fr.data.width || 1, h = fr.data.height || 1;
-    const ratio = Math.min(1, SB_IMG_MAX / Math.max(w, h));
+    // Делим на масштаб узла: toDataURL рисует в ЭКРАННЫХ координатах, поэтому
+    // без этого снимок с приближённой доски выходил во столько же раз больше и
+    // тяжелее — и кадры переставали помещаться в объект уже на втором.
+    const абс = (node.getAbsoluteScale && node.getAbsoluteScale().x) || stage.scaleX() || 1;
+    const ratio = Math.min(1, SB_IMG_MAX / Math.max(w, h)) / абс;
     // Заголовок и крестик удаления — часть той же группы, и без этого они
     // впечатывались в каждую миниатюру серой полосой поверх построения.
     const шапка = ['fheader', 'fhlabel', 'fdel']
