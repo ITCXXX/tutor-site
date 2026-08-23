@@ -244,11 +244,15 @@
     else if (e.kind === 'upd') reUpd(e.after);
   }
   function doUndo() {
+    // Во время просмотра кадров отменять нечего: история относится к
+    // отложенной работе, и применять её к показанному кадру — мешать разное.
+    if (typeof sbView !== 'undefined' && sbView) { boardHint('Идёт просмотр кадров — сначала «К работе» или «Оставить»'); return; }
     const e = undoStack.pop(); if (!e) return; redoStack.push(e);
     if (e.kind === 'batch') { for (let i = e.ops.length - 1; i >= 0; i--) undoOp(e.ops[i]); }
     else undoOp(e);
   }
   function doRedo() {
+    if (typeof sbView !== 'undefined' && sbView) { boardHint('Идёт просмотр кадров — сначала «К работе» или «Оставить»'); return; }
     const e = redoStack.pop(); if (!e) return; undoStack.push(e);
     if (e.kind === 'batch') { e.ops.forEach(redoOp); }
     else redoOp(e);
@@ -7847,12 +7851,14 @@
   // загружает кадр обратно в окно. Кадры хранятся на элементе-окне (data.sb).
   const storyboardEl = document.getElementById('storyboard');
   const sbStrip = document.getElementById('sb-strip');
-  const sbPreview = document.getElementById('sb-preview');
-  const sbPvBody = document.getElementById('sb-pv-body');
-  const sbPvIdx = document.getElementById('sb-pv-idx');
-  const sbPvCap = document.getElementById('sb-pv-cap');
+  const sbBar = document.getElementById('sb-bar');
+  const sbIdx = document.getElementById('sb-idx');
+  const sbCapIn = document.getElementById('sb-cap-in');
   let _sbFrame = null;   // id окна, чью ленту показываем
-  let sbPvState = null;  // {frameId, index} — открытый предпросмотр
+  // Идёт просмотр кадров: {frameId, index, work} — work хранит ОТЛОЖЕННУЮ
+  // работу (что было в окне до первого щелчка по карточке). Пока она здесь,
+  // кадры можно перещёлкивать сколько угодно, ничего не теряя.
+  let sbView = null;
 
   function sbList(fr) { return (fr.data.sb = fr.data.sb || []); }
   // Элементы, принадлежащие окну (кроме самого окна) — их и снимаем/восстанавливаем.
@@ -7969,25 +7975,26 @@
   function renderStrip(fr) {
     if (!sbStrip) return;
     const list = sbList(fr);
+    const показан = (sbView && sbView.frameId === fr.id) ? sbView.index : -1;
     sbStrip.innerHTML = list.map((f, i) => {
-      const строки = frameLines(f);
-      const тело = строки.length
-        ? строки.slice(0, 3).map((t, k) => '<div class="sb-th-row' + (k === 0 ? ' sb-th-top' : '') + '">' + escapeHtml(t) + '</div>').join('')
-        : '<div class="sb-th-empty">пусто</div>';
-      return '<div class="sb-frame" draggable="true" data-i="' + i + '"><span class="sb-num">' + (i + 1) + '</span>'
-        + '<button class="sb-del" data-i="' + i + '" title="Удалить кадр">×</button>'
-        + '<div class="sb-thumb" title="' + escapeHtml(строки.join(', ')) + '">' + тело + '</div>'
-        + '<div class="sb-cap">' + escapeHtml(f.cap || '') + '</div></div>';
+      // Состав построения — только в подсказке. Смотреть кадр надо в окне,
+      // а не вычитывать из карточки, сколько там точек и прямых.
+      const состав = frameLines(f).join(', ') || 'окно было пустым';
+      return '<div class="sb-frame' + (i === показан ? ' sb-on' : '') + '" draggable="true" data-i="' + i + '"'
+        + ' title="' + escapeHtml('Кадр ' + (i + 1) + ': ' + состав) + '">'
+        + '<span class="sb-num">' + (i + 1) + '</span>'
+        + '<span class="sb-cap">' + escapeHtml(f.cap || '') + '</span>'
+        + '<button class="sb-del" data-i="' + i + '" title="Удалить кадр">×</button></div>';
     }).join('');
   }
   function updateStoryboard() {
     if (!storyboardEl) return;
     const fr = (tool === 'select' && activeFrameId) ? elements.get(activeFrameId) : null;
-    if (!fr || fr.type !== 'frame') { storyboardEl.hidden = true; _sbFrame = null; sbClosePreview(); return; }
+    if (!fr || fr.type !== 'frame') { storyboardEl.hidden = true; sbLeaveView(true); _sbFrame = null; return; }
     storyboardEl.hidden = false;
-    if (_sbFrame !== fr.id) { _sbFrame = fr.id; sbClosePreview(); renderStrip(fr); }
+    if (_sbFrame !== fr.id) { sbLeaveView(true); _sbFrame = fr.id; renderStrip(fr); }
     positionStoryboard(fr);
-    if (sbPvState && sbPvState.frameId === fr.id) positionPreview(fr);
+
   }
   function positionStoryboard(fr) {
     const s = stage.scaleX();
@@ -7996,57 +8003,85 @@
     storyboardEl.style.left = Math.max(8, Math.min(window.innerWidth - 360, sx)) + 'px';
     storyboardEl.style.top = sy + 'px';
   }
-  function positionPreview(fr) {
-    const s = stage.scaleX();
-    sbPreview.style.left = (fr.data.x * s + stage.x()) + 'px';
-    sbPreview.style.top = (fr.data.y * s + stage.y() + 56) + 'px';
-    sbPreview.style.width = (fr.data.width * s) + 'px';
-    sbPreview.style.height = (fr.data.height * s) + 'px';
+  // ── Просмотр кадров ───────────────────────────────────────────────────
+  // Кадр показываем В САМОМ ОКНЕ: то же построение, тот же масштаб. Так его
+  // видно по-настоящему, а не по описанию или мутной картинке.
+  //
+  // В истории отмены просмотр НЕ отражаем: это навигация, а не правка. Поэтому
+  // на время просмотра отмена выключена (см. doUndo) — история относится к
+  // отложенной работе, и мешать одно с другим нельзя.
+  function sbApplyState(fr, state) {
+    if (!state) return;
+    frameContentEls(fr.id).forEach((e) => { send({ action: 'element_delete', id: e.id }); removeNode(e.id); });
+    if (applyFrameView(fr, state.view)) { upsertNode(fr); send({ action: 'element_update', element: fr }); }
+    (state.snap || []).forEach((sd) => { const el = clone(sd); upsertNode(el); send({ action: 'element_add', element: el }); });
+    recomputeGeometry(); layer.batchDraw();
   }
-  // То же описание, но развёрнутое: в предпросмотре места больше.
-  function sbPreviewHtml(rec) {
-    const p = frameParts(rec), out = [];
-    if (p.точки.length) out.push('<div class="sb-pv-line"><b>Точки:</b> ' + escapeHtml(p.точки.join(', ')) + '</div>');
-    p.счёт.forEach((g) => out.push('<div class="sb-pv-line">' + g.n + ' ' + escapeHtml(словоЧисло(g.n, g.формы)) + '</div>'));
-    p.формулы.forEach((f) => out.push('<div class="sb-pv-line sb-pv-expr">' + escapeHtml(f) + '</div>'));
-    if (!out.length) out.push('<div class="sb-pv-line sb-pv-dim">Окно было пустым</div>');
-    const v = (rec && rec.view) || {};
-    if (v.unit) out.push('<div class="sb-pv-line sb-pv-dim">Масштаб окна: единица ≈ ' + Math.round(v.unit) + ' px</div>');
-    return out.join('');
-  }
-  function sbOpenPreview(fr, i) {
+  function sbSnapshot(fr) { return { snap: frameSnap(fr), view: frameView(fr) }; }
+
+  function sbShowFrame(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
-    sbPvState = { frameId: fr.id, index: i };
-    sbPvBody.innerHTML = sbPreviewHtml(list[i]);
-    sbPvIdx.textContent = (i + 1) + ' / ' + list.length;
-    sbPvCap.value = list[i].cap || '';
-    sbPreview.hidden = false; positionPreview(fr);
+    // Первый щелчок откладывает текущую работу. Дальше её не трогаем, сколько
+    // бы кадров ни пролистали.
+    if (!sbView || sbView.frameId !== fr.id) sbView = { frameId: fr.id, work: sbSnapshot(fr) };
+    sbView.index = i;
+    sbApplyState(fr, list[i]);
+    renderStrip(fr); sbShowBar(fr);
+    boardHint('Кадр ' + (i + 1) + ' — просмотр. «К работе» вернёт то, что было');
   }
-  function sbClosePreview() { sbPvState = null; if (sbPreview) sbPreview.hidden = true; }
+  function sbShowBar(fr) {
+    if (!sbBar) return;
+    const list = sbList(fr);
+    sbBar.hidden = !sbView;
+    if (!sbView) return;
+    sbIdx.textContent = 'Кадр ' + (sbView.index + 1) + ' / ' + list.length;
+    sbCapIn.value = (list[sbView.index] || {}).cap || '';
+  }
+  // Уходим из просмотра. вернуть=true — окно возвращается к отложенной работе.
+  function sbLeaveView(вернуть) {
+    if (!sbView) return;
+    const fr = elements.get(sbView.frameId), work = sbView.work;
+    sbView = null;
+    if (sbBar) sbBar.hidden = true;
+    if (fr) { if (вернуть) sbApplyState(fr, work); renderStrip(fr); }
+  }
+  // «Оставить»: продолжаем работу с показанного кадра. В отмену кладём один
+  // общий шаг — разницу между отложенной работой и тем, что сейчас в окне.
+  function sbKeepFrame() {
+    if (!sbView) return;
+    const fr = elements.get(sbView.frameId); if (!fr) { sbView = null; return; }
+    const было = sbView.work, стало = sbSnapshot(fr), ops = [];
+    const прежние = new Map((было.snap || []).map((e) => [e.id, e]));
+    const текущие = new Map((стало.snap || []).map((e) => [e.id, e]));
+    прежние.forEach((e, id) => { if (!текущие.has(id)) ops.push({ kind: 'del', el: clone(e) }); });
+    текущие.forEach((e, id) => {
+      const p = прежние.get(id);
+      if (!p) ops.push({ kind: 'add', el: clone(e) });
+      else if (JSON.stringify(p.data) !== JSON.stringify(e.data)) ops.push({ kind: 'upd', before: clone(p), after: clone(e) });
+    });
+    if (JSON.stringify(было.view) !== JSON.stringify(стало.view)) {
+      const b = clone(fr); applyFrameView(b, было.view);
+      ops.push({ kind: 'upd', before: b, after: clone(fr) });
+    }
+    const n = sbView.index + 1;
+    histBatch(ops);
+    sbLeaveView(false);
+    boardHint('Работаем дальше с кадра ' + n);
+  }
   function sbNav(delta) {
-    if (!sbPvState) return; const fr = elements.get(sbPvState.frameId); if (!fr) return;
-    const list = sbList(fr); let i = Math.max(0, Math.min(list.length - 1, sbPvState.index + delta));
-    sbOpenPreview(fr, i);
+    if (!sbView) return; const fr = elements.get(sbView.frameId); if (!fr) return;
+    const list = sbList(fr); if (!list.length) return;
+    sbShowFrame(fr, Math.max(0, Math.min(list.length - 1, sbView.index + delta)));
   }
   function sbDeleteFrame(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
     const before = clone(fr); list.splice(i, 1);
     histUpd(before, fr); send({ action: 'element_update', element: fr });
     renderStrip(fr);
-    if (sbPvState && sbPvState.frameId === fr.id) { if (!list.length) sbClosePreview(); else sbNav(0); }
-  }
-  function restoreFrame(fr, i) {
-    const list = sbList(fr); if (i < 0 || i >= list.length) return;
-    const beforeFr = clone(fr);
-    frameContentEls(fr.id).forEach((e) => { histDel(e); send({ action: 'element_delete', id: e.id }); removeNode(e.id); });
-    // Вид окна возвращаем ВМЕСТЕ с объектами: иначе построение вернётся верное,
-    // но в текущем приближении, и с миниатюрой не совпадёт.
-    if (applyFrameView(fr, list[i].view)) {
-      upsertNode(fr); histUpd(beforeFr, fr); send({ action: 'element_update', element: fr });
+    if (sbView && sbView.frameId === fr.id) {
+      if (!list.length) sbLeaveView(true);
+      else { sbView.index = Math.min(sbView.index, list.length - 1); sbShowFrame(fr, sbView.index); }
     }
-    (list[i].snap || []).forEach((sd) => { const el = clone(sd); upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); });
-    recomputeGeometry(); layer.batchDraw();
-    boardHint('Кадр ' + (i + 1) + ' загружен в окно');
   }
   function sbUpdateFrame(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
@@ -8060,7 +8095,7 @@
       return;
     }
     histUpd(before, fr); send({ action: 'element_update', element: fr });
-    renderStrip(fr); sbOpenPreview(fr, i);
+    renderStrip(fr); sbShowBar(fr);
     boardHint('Кадр ' + (i + 1) + ' обновлён');
   }
   const _sbCap = document.getElementById('sb-cap');
@@ -8068,7 +8103,7 @@
   if (sbStrip) sbStrip.addEventListener('click', (e) => {
     const fr = elements.get(_sbFrame); if (!fr) return;
     const del = e.target.closest('.sb-del'); if (del) { e.stopPropagation(); sbDeleteFrame(fr, +del.dataset.i); return; }
-    const cell = e.target.closest('.sb-frame'); if (cell) sbOpenPreview(fr, +cell.dataset.i);
+    const cell = e.target.closest('.sb-frame'); if (cell) sbShowFrame(fr, +cell.dataset.i);
   });
   // Перетаскивание миниатюр — смена порядка кадров.
   function sbMoveFrame(from, to) {
@@ -8078,7 +8113,7 @@
     const before = clone(fr);
     const item = list.splice(from, 1)[0]; list.splice(to, 0, item);
     histUpd(before, fr); send({ action: 'element_update', element: fr });
-    sbClosePreview(); renderStrip(fr);
+    sbLeaveView(true); renderStrip(fr);
   }
   let sbDragFrom = null;
   if (sbStrip) {
@@ -8089,15 +8124,15 @@
   }
   (function () {
     const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
-    on('sb-pv-prev', () => sbNav(-1));
-    on('sb-pv-next', () => sbNav(1));
-    on('sb-pv-close', sbClosePreview);
-    on('sb-pv-restore', () => { if (sbPvState) { const fr = elements.get(sbPvState.frameId); if (fr) { restoreFrame(fr, sbPvState.index); sbClosePreview(); } } });
-    on('sb-pv-update', () => { if (sbPvState) { const fr = elements.get(sbPvState.frameId); if (fr) sbUpdateFrame(fr, sbPvState.index); } });
-    if (sbPvCap) sbPvCap.addEventListener('change', () => {
-      if (!sbPvState) return; const fr = elements.get(sbPvState.frameId); if (!fr) return;
-      const list = sbList(fr); if (!list[sbPvState.index]) return;
-      const before = clone(fr); list[sbPvState.index].cap = sbPvCap.value;
+    on('sb-prev', () => sbNav(-1));
+    on('sb-next', () => sbNav(1));
+    on('sb-back', () => sbLeaveView(true));
+    on('sb-keep', sbKeepFrame);
+    on('sb-upd', () => { if (sbView) { const fr = elements.get(sbView.frameId); if (fr) sbUpdateFrame(fr, sbView.index); } });
+    if (sbCapIn) sbCapIn.addEventListener('change', () => {
+      if (!sbView) return; const fr = elements.get(sbView.frameId); if (!fr) return;
+      const list = sbList(fr); if (!list[sbView.index]) return;
+      const before = clone(fr); list[sbView.index].cap = sbCapIn.value;
       histUpd(before, fr); send({ action: 'element_update', element: fr }); renderStrip(fr);
     });
   })();

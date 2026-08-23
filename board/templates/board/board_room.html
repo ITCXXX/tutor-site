@@ -922,10 +922,11 @@
 
     /* Раскадровка окна — лента кадров под матокном. */
     #storyboard {
-        position: fixed; z-index: 38; display: flex; align-items: center; gap: 8px;
+        position: fixed; z-index: 38; display: flex; flex-direction: column; gap: 6px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 12px;
         box-shadow: 0 4px 16px rgba(0,0,0,.10); padding: 6px 8px; max-width: 620px;
     }
+    #sb-row { display: flex; align-items: center; gap: 8px; }
     #storyboard[hidden] { display: none; }
     #sb-cap {
         flex: none; width: 34px; height: 34px; border: none; background: #4d7cfe; color: #fff;
@@ -935,38 +936,44 @@
     #sb-cap svg { width: 20px; height: 20px; }
     #sb-strip { display: flex; gap: 6px; overflow-x: auto; padding: 2px; max-width: 560px; }
     #sb-strip:empty::after { content: 'Кадров пока нет — нажми камеру'; color: #b0b0ba; font-size: 12px; padding: 8px 4px; white-space: nowrap; }
-    .sb-frame { flex: none; width: 96px; cursor: grab; position: relative; }
+    /* Карточка — только номер и подпись: сам кадр смотрят в окне, щёлкнув по ней. */
+    .sb-frame {
+        flex: none; min-width: 34px; max-width: 130px; cursor: grab; position: relative;
+        display: flex; align-items: center; gap: 5px;
+        border: 1.5px solid #d9d9e0; border-radius: 8px; background: #fff;
+        padding: 5px 8px 5px 6px;
+    }
     .sb-frame:active { cursor: grabbing; }
     .sb-frame.sb-dragging { opacity: .4; }
-    .sb-frame .sb-thumb { width: 96px; height: 66px; border: 1.5px solid #d9d9e0; border-radius: 6px; background: #fff; box-sizing: border-box; padding: 3px 5px; display: flex; flex-direction: column; justify-content: center; gap: 1px; overflow: hidden; }
-    .sb-frame:hover .sb-thumb { border-color: #4d7cfe; }
-    .sb-th-row { font-size: 10px; line-height: 1.25; color: #6b6b76; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sb-th-top { font-size: 12px; font-weight: 600; color: #1f2937; letter-spacing: .4px; }
-    .sb-th-empty { font-size: 11px; color: #b0b0ba; text-align: center; }
-    .sb-frame .sb-num { position: absolute; top: 3px; left: 3px; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; line-height: 1; padding: 2px 5px; border-radius: 4px; }
-    .sb-frame .sb-del { position: absolute; top: 2px; right: 2px; border: none; background: rgba(255,255,255,.85); color: #9a9aa4; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1; padding: 1px 4px; display: none; }
-    .sb-frame:hover .sb-del { display: block; }
-    .sb-frame .sb-del:hover { color: #e7505a; }
-    .sb-frame .sb-cap { font-size: 11px; color: #6b6b76; margin-top: 2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-    /* Предпросмотр кадра — состав построения поверх окна. */
-    #sb-preview { position: fixed; z-index: 45; }
-    #sb-preview[hidden] { display: none; }
-    #sb-pv-body { width: 100%; height: 100%; border: 2px solid #4d7cfe; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,.2); background: #fff; box-sizing: border-box; padding: 10px 12px; overflow: auto; font-size: 13px; color: #2c2c34; }
-    .sb-pv-line { padding: 2px 0; }
-    .sb-pv-expr { font-family: ui-monospace, Consolas, monospace; }
-    .sb-pv-dim { color: #8a8a94; }
-    #sb-pv-bar {
-        position: absolute; top: -44px; left: 0; right: 0; display: flex; align-items: center; gap: 6px;
-        background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 5px 8px;
-        box-shadow: 0 4px 16px rgba(0,0,0,.10); font-size: 13px;
+    .sb-frame:hover { border-color: #4d7cfe; }
+    .sb-frame.sb-on { border-color: #4d7cfe; background: #eef3ff; box-shadow: inset 0 0 0 1px #4d7cfe; }
+    .sb-frame .sb-num {
+        flex: none; min-width: 18px; text-align: center; background: #eceff7; color: #4a4f5c;
+        font-size: 12px; line-height: 1; padding: 3px 4px; border-radius: 5px;
     }
-    #sb-pv-bar button { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 3px 8px; font-size: 13px; }
-    #sb-pv-bar button:hover { background: #eceff7; }
-    #sb-pv-idx { min-width: 44px; text-align: center; color: #6b6b76; }
-    #sb-pv-cap { flex: 1; min-width: 60px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 3px 6px; font-size: 13px; }
-    #sb-pv-restore { color: #1f6feb; font-weight: 600; }
-    #sb-pv-close { margin-left: 2px; }
+    .sb-frame.sb-on .sb-num { background: #4d7cfe; color: #fff; }
+    .sb-frame .sb-cap { font-size: 12px; color: #4a4f5c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sb-frame .sb-cap:empty { display: none; }
+    .sb-frame .sb-del {
+        flex: none; border: none; background: none; color: #b6b6c0; cursor: pointer;
+        font-size: 14px; line-height: 1; padding: 0 1px; visibility: hidden;
+    }
+    .sb-frame:hover .sb-del { visibility: visible; }
+    .sb-frame .sb-del:hover { color: #e7505a; }
+
+    /* Строка просмотра кадра. Появляется, когда окно показывает не текущую
+       работу, а один из кадров, — чтобы это нельзя было спутать. */
+    #sb-bar {
+        display: flex; align-items: center; gap: 6px; font-size: 13px;
+        border-top: 1px solid #eceff3; padding-top: 6px;
+    }
+    #sb-bar[hidden] { display: none; }
+    #sb-bar button { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 3px 8px; font-size: 13px; }
+    #sb-bar button:hover { background: #eceff7; }
+    #sb-idx { min-width: 52px; text-align: center; color: #6b6b76; }
+    #sb-cap-in { flex: 1; min-width: 60px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 3px 6px; font-size: 13px; }
+    #sb-keep { color: #1f6feb; font-weight: 600; }
+    #sb-back { margin-left: 2px; border-color: #c8cdd8; font-weight: 600; }
 
     /* Контрол масштаба (правый нижний угол). */
     #zoom-control {
@@ -2009,23 +2016,21 @@
 </div>
 
 <div id="storyboard" hidden>
-    <button id="sb-cap" title="Снять кадр (зафиксировать текущее состояние окна)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.2"/></svg>
-    </button>
-    <div id="sb-strip"></div>
-</div>
-
-<div id="sb-preview" hidden>
-    <div id="sb-pv-bar">
-        <button id="sb-pv-prev" title="Предыдущий кадр">‹</button>
-        <span id="sb-pv-idx">1 / 1</span>
-        <button id="sb-pv-next" title="Следующий кадр">›</button>
-        <input type="text" id="sb-pv-cap" placeholder="подпись кадра" maxlength="60">
-        <button id="sb-pv-restore" title="Загрузить этот кадр в окно">Вернуть</button>
-        <button id="sb-pv-update" title="Перезаписать кадр текущим состоянием окна">Обновить</button>
-        <button id="sb-pv-close" title="Закрыть просмотр">×</button>
+    <div id="sb-row">
+        <button id="sb-cap" title="Снять кадр (зафиксировать текущее состояние окна)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.2"/></svg>
+        </button>
+        <div id="sb-strip"></div>
     </div>
-    <div id="sb-pv-body"></div>
+    <div id="sb-bar" hidden>
+        <button id="sb-prev" title="Предыдущий кадр">‹</button>
+        <span id="sb-idx">1 / 1</span>
+        <button id="sb-next" title="Следующий кадр">›</button>
+        <input type="text" id="sb-cap-in" placeholder="подпись кадра" maxlength="60">
+        <button id="sb-keep" title="Продолжить работу с этого кадра">Оставить</button>
+        <button id="sb-upd" title="Перезаписать кадр тем, что сейчас в окне">Обновить</button>
+        <button id="sb-back" title="Вернуть окно к тому, что было до просмотра">К работе</button>
+    </div>
 </div>
 
 {{ board.code|json_script:"board-code" }}
