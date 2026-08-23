@@ -5932,6 +5932,8 @@
   // ДО того как Konva сдвинет узел. Это и устраняет рассинхрон группового
   // перетаскивания (стартовые позиции точны), и убирает двойную обработку.
   stage.on('mousedown touchstart', (e) => {
+    if (e.evt && e.evt.button === 2) return;  // правая кнопка двигает доску
+    if (rmbPan) return;                       // правой уже тянут — не мешаем
     if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не выделяем
     if (tool !== 'select') return;
     // Клик по ручке/рамке трансформера — отдать Konva (ресайз), не обрабатывать.
@@ -6084,6 +6086,10 @@
     }
   });
   stage.on('mousedown touchstart', (e) => {
+    // Правая кнопка двигает доску. Без этой проверки нажатие правой при
+    // карандаше НАЧИНАЛО штрих — заодно с меню.
+    if (e.evt && e.evt.button === 2) return;
+    if (rmbPan) return;                       // правой уже тянут — не мешаем
     if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не рисуем
     if (tool === 'select') return; // в режиме выделения сцена сама панорамит
     if (tool === 'latex') { openLatexEditor(); return; }
@@ -6749,6 +6755,7 @@
   }, true);
   document.addEventListener('pointermove', (e) => {
     if (!panDrag || e.pointerId !== panDrag.id) return;
+    if (!(e.buttons & 1)) { endPanDrag(e); return; }   // отпустили вне окна
     e.preventDefault(); e.stopPropagation();
     panBoardBy(e.clientX - panDrag.x, e.clientY - panDrag.y);
   }, true);
@@ -6759,6 +6766,89 @@
   }
   document.addEventListener('pointerup', endPanDrag, true);
   document.addEventListener('pointercancel', endPanDrag, true);
+
+  // ── Перемещение доски правой кнопкой ──────────────────────────────────
+  // Инструмент в руке, а холст всё равно надо подвинуть. Раньше для этого
+  // приходилось бросать инструмент, брать «руку» и возвращаться обратно.
+  // Теперь правая кнопка делает и то и другое: потянул — доска поехала,
+  // отпустил на месте — вышло меню. Порог отделяет одно от другого, иначе
+  // дрожание руки при вызове меню сдвигало бы доску.
+  const RMB_MOVE_PX = 5;
+  let rmbPan = null;      // идущее перетаскивание правой кнопкой
+  let rmbMoved = false;   // прошлое нажатие правой оказалось перетаскиванием
+  let rmbMovedAt = 0;     // когда именно — чтобы признак не жил вечно
+  let rmbMenu = null;     // отложенный показ меню (macOS шлёт его на нажатии)
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 2 || e.pointerType === 'touch') return;
+    rmbMoved = false; rmbMenu = null;
+    if (e.buttons & 1) return;               // левая уже зажата — идёт рисование
+    if (e.target.closest && e.target.closest(PAN_SKIP)) return;
+    const r = stageEl.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+    // Действие по умолчанию НЕ отменяем: иначе браузер не пришлёт contextmenu
+    // и меню пропадёт совсем. Достаточно не пустить событие дальше.
+    // x0/y0 — откуда нажали (для порога), x/y — предыдущая точка (для шага).
+    rmbPan = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY };
+    e.stopPropagation();
+  }, true);
+
+  // Виджеты (тексты, стикеры, таблицы, формулы) — это HTML поверх холста, и
+  // их перетаскивание висит на mousedown без проверки кнопки. Пока доску тянут
+  // правой, событие до них не доводим, иначе объект поедет вместе с доской.
+  document.addEventListener('mousedown', (e) => {
+    if (rmbPan && e.button === 2) e.stopPropagation();
+  }, true);
+
+  document.addEventListener('pointermove', (e) => {
+    if (!rmbPan || e.pointerId !== rmbPan.id) return;
+    // Кнопку отпустили за пределами окна — pointerup сюда не пришёл. Иначе
+    // доска ехала бы за курсором без нажатой кнопки.
+    if (!(e.buttons & 2)) { endRmbPan(e); return; }
+    if (!rmbMoved) {
+      if (Math.abs(e.clientX - rmbPan.x0) < RMB_MOVE_PX
+        && Math.abs(e.clientY - rmbPan.y0) < RMB_MOVE_PX) return;
+      rmbMoved = true; rmbMovedAt = Date.now(); rmbMenu = null;
+      hideCtxMenu();                         // macOS успевает открыть меню на нажатии
+      document.body.classList.add('rmb-pan');
+    }
+    e.preventDefault(); e.stopPropagation();
+    // Двигаем ШАГАМИ от прошлой точки, а не от точки нажатия. Иначе колесо,
+    // покрученное посреди перетаскивания, откатывалось бы назад: зум меняет и
+    // положение сцены, а абсолютный пересчёт затирал бы его.
+    const dx = e.clientX - rmbPan.x, dy = e.clientY - rmbPan.y;
+    rmbPan.x = e.clientX; rmbPan.y = e.clientY;
+    stage.position({ x: stage.x() + dx, y: stage.y() + dy });
+    scheduleViewRedraw();                    // сетка, курсоры, якоря и вид ведомым
+  }, true);
+
+  function endRmbPan(e) {
+    if (!rmbPan || (e && e.pointerId !== rmbPan.id)) return;
+    rmbPan = null;
+    document.body.classList.remove('rmb-pan');
+    // Меню пришло на нажатии и было отложено: не потянули — показываем сейчас.
+    if (!rmbMoved && rmbMenu) { const показать = rmbMenu; rmbMenu = null; показать(); }
+  }
+  document.addEventListener('pointerup', endRmbPan, true);
+  document.addEventListener('pointercancel', endRmbPan, true);
+  // Alt+Tab с зажатой кнопкой: отпускания мы уже не увидим.
+  window.addEventListener('blur', () => { endRmbPan(null); endPanDrag(null); });
+
+  // Потянули правой — меню не показываем: это было перемещение, а не вызов
+  // меню. Ловим на перехвате, чтобы событие не дошло ни до сцены, ни до
+  // виджетов, у которых свои обработчики.
+  document.addEventListener('contextmenu', (e) => {
+    if (!rmbMoved) return;
+    // Гасим ТОЛЬКО меню от самой правой кнопки и только сразу после жеста.
+    // Там, где браузер шлёт contextmenu на нажатии (macOS, Firefox), второго
+    // события за жест не будет и признак остаётся поднятым до следующего
+    // правого клика. Меню, вызванное иначе — клавишей Menu, Shift+F10,
+    // Ctrl+кликом на маке, долгим касанием, — приходит с кодом кнопки 0, и
+    // глушить его нельзя: человек остался бы вообще без меню.
+    if (e.button !== 2 || Date.now() - rmbMovedAt > 1500) return;
+    rmbMoved = false;
+    e.preventDefault(); e.stopPropagation();
+  }, true);
 
   // ── Выделение и удаление ───────────────────────────────────────────────
   // Выделение в режиме select: клик по объекту — выбрать, Shift+клик — добавить,
@@ -8755,21 +8845,36 @@
     if (!id) return;
     e.preventDefault();
     e.stopPropagation();
-    ctxWorld = worldFromClient(e.clientX, e.clientY);
-    if (!selected.has(id)) selectOnly(id);
-    showCtxMenu(e.clientX, e.clientY, false);
+    // Правая кнопка ещё зажата — значит меню пришло на НАЖАТИИ (так делает
+    // macOS). Откладываем до отпускания: потянут — будет перемещение доски,
+    // а не выскочившее и тут же закрытое меню.
+    const x = e.clientX, y = e.clientY;
+    if (rmbPan) { rmbMenu = () => openWidgetCtxMenu(id, x, y); return; }
+    openWidgetCtxMenu(id, x, y);
   });
+  function openWidgetCtxMenu(id, x, y) {
+    ctxWorld = worldFromClient(x, y);
+    if (!selected.has(id)) selectOnly(id);
+    showCtxMenu(x, y, false);
+  }
   stage.on('contextmenu', (e) => {
     if (e.evt) e.evt.preventDefault();
+    const x = e.evt ? e.evt.clientX : 0, y = e.evt ? e.evt.clientY : 0, цель = e.target;
+    // Правая кнопка ещё зажата — меню пришло на нажатии (macOS). Откладываем:
+    // потянут — выйдет перемещение доски, а не мелькнувшее меню.
+    if (rmbPan) { rmbMenu = () => openStageCtxMenu(x, y, цель); return; }
+    openStageCtxMenu(x, y, цель);
+  });
+  function openStageCtxMenu(x, y, цель) {
     const w = worldPoint(); let id = null;
     const g = w ? pickObjectAtWorld(w) : null;
-    if (g) id = g.id; else { const t = e.target; if (t && t !== stage && elements.get(t.id())) id = t.id(); }
-    ctxWorld = worldFromClient(e.evt.clientX, e.evt.clientY);
+    if (g) id = g.id; else { const t = цель; if (t && t !== stage && elements.get(t.id())) id = t.id(); }
+    ctxWorld = worldFromClient(x, y);
     if (id && !selected.has(id)) selectOnly(id);
     // По пустому месту — меню доски, как в Miro. Раньше здесь не появлялось
     // ничего, и правая кнопка казалась несуществующей.
-    showCtxMenu(e.evt.clientX, e.evt.clientY, !id || !selected.size);
-  });
+    showCtxMenu(x, y, !id || !selected.size);
+  }
 
 
   // ── Редактор формул LaTeX ──────────────────────────────────────────────
@@ -10281,13 +10386,15 @@
       ['Shift+H', 'режим скрытия: щелчком прячем и возвращаем'],
     ]],
     ['Вид', [
-      ['Пробел', 'держать — двигать доску'], ['Стрелки', 'двигать доску'],
+      ['Пробел', 'держать — двигать доску'],
+      ['Правая кнопка', 'тянуть — двигать доску при любом инструменте'],
+      ['Стрелки', 'двигать доску'],
       ['Shift+стрелки', 'быстрее'], ['Ctrl+0', 'масштаб 100%'],
       ['Ctrl+«+» / Ctrl+«−»', 'крупнее / мельче'],
     ]],
     ['Прочее', [
       ['Esc', 'выйти из режима, вернуться к стрелке, снять выделение'],
-      ['Правая кнопка', 'меню: по объекту — действия с ним, по пустому месту — меню доски'],
+      ['Правая кнопка', 'нажать и отпустить на месте — меню: по объекту действия с ним, по пустому месту меню доски'],
       ['?', 'этот список'],
     ]],
   ];

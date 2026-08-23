@@ -590,6 +590,12 @@
     body.board-pan.panning #board-stage,
     body.board-pan.panning #widget-layer,
     body.board-pan.panning #ggb-layer { cursor: grabbing; }
+    /* Тянут доску правой кнопкой при обычном инструменте: курсор тот же, что и
+       в режиме «рука», и выделение текста в виджетах на это время гасим. */
+    body.rmb-pan { user-select: none; }
+    body.rmb-pan #board-stage,
+    body.rmb-pan #widget-layer,
+    body.rmb-pan #ggb-layer { cursor: grabbing; }
     body.board-pan #widget-layer .wgt,
     body.board-pan #widget-layer .tbox,
     body.board-pan #widget-layer .mtext { cursor: grab; }
