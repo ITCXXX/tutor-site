@@ -7758,7 +7758,7 @@
   const storyboardEl = document.getElementById('storyboard');
   const sbStrip = document.getElementById('sb-strip');
   const sbPreview = document.getElementById('sb-preview');
-  const sbPvImg = document.getElementById('sb-pv-img');
+  const sbPvBody = document.getElementById('sb-pv-body');
   const sbPvIdx = document.getElementById('sb-pv-idx');
   const sbPvCap = document.getElementById('sb-pv-cap');
   let _sbFrame = null;   // id окна, чью ленту показываем
@@ -7774,36 +7774,66 @@
   // Сколько кадров помещается в одно окно и каким должен быть их размер.
   // Сервер принимает элемент не больше 256 КБ (board/consumers.py), поэтому
   // держимся с запасом: лучше честно отказать заранее, чем потерять молча.
-  const SB_MAX_FRAMES = 24;
-  // 360 пикселей по длинной стороне. Замеры на окне 640×460: PNG в полном
-  // размере — 20.7 КБ и всего 11 кадров до предела, PNG на 360 — около 8 КБ и
-  // почти 30. JPEG даёт тот же выигрыш, но оставляет ореолы вокруг тонких
-  // линий и формул, а снимают здесь именно их.
-  const SB_IMG_MAX = 360;              // длинная сторона миниатюры, пикселей
+  // Предел был 24, потому что каждый кадр тащил PNG примерно на 11 КБ.
+  // Картинки больше нет; elementFits всё равно проверяет по факту.
+  const SB_MAX_FRAMES = 48;
   const EL_SAFE_BYTES = 240 * 1024;    // запас под служебную обвязку сообщения
-  // Картинка кадра нужна ТОЛЬКО для показа в полоске и предпросмотре: сам кадр
-  // восстанавливается из snap, где лежат настоящие элементы. Поэтому берём
-  // миниатюру, а не снимок в полном размере — из-за него окно и переполнялось.
-  function windowImage(fr) {
-    const node = nodes.get(fr.id); if (!node) return '';
-    const w = fr.data.width || 1, h = fr.data.height || 1;
-    // Делим на масштаб узла: toDataURL рисует в ЭКРАННЫХ координатах, поэтому
-    // без этого снимок с приближённой доски выходил во столько же раз больше и
-    // тяжелее — и кадры переставали помещаться в объект уже на втором.
-    const абс = (node.getAbsoluteScale && node.getAbsoluteScale().x) || stage.scaleX() || 1;
-    const ratio = Math.min(1, SB_IMG_MAX / Math.max(w, h)) / абс;
-    // Заголовок и крестик удаления — часть той же группы, и без этого они
-    // впечатывались в каждую миниатюру серой полосой поверх построения.
-    const шапка = ['fheader', 'fhlabel', 'fdel']
-      .map((n) => node.findOne('.' + n)).filter(Boolean);
-    const было = шапка.map((n) => n.visible());
-    шапка.forEach((n) => n.visible(false));
-    let url = '';
-    try { url = node.toDataURL({ pixelRatio: ratio }); } catch (e) { url = ''; }
-    шапка.forEach((n, i) => n.visible(было[i]));
-    layer.batchDraw();
-    return url;
+  // Кадр описываем СЛОВАМИ, а не картинкой. PNG размывался при растяжении,
+  // весил около 11 КБ на кадр и при загрузке кадра всё равно не читался: окно
+  // восстанавливается из snap (элементы) и view (центр и масштаб плоскости).
+  // Состав построения виден прямо из snap — оттуда описание и берём.
+  const SB_WORDS = {
+    segment: ['отрезок', 'отрезка', 'отрезков'],
+    ray: ['луч', 'луча', 'лучей'],
+    gline: ['прямая', 'прямые', 'прямых'],
+    perpbis: ['серед. перпендикуляр', 'серед. перпендикуляра', 'серед. перпендикуляров'],
+    perp: ['перпендикуляр', 'перпендикуляра', 'перпендикуляров'],
+    parallel: ['параллельная', 'параллельные', 'параллельных'],
+    bisector: ['биссектриса', 'биссектрисы', 'биссектрис'],
+    conic: ['кривая', 'кривые', 'кривых'],
+    circle: ['окружность', 'окружности', 'окружностей'],
+    polygon: ['многоугольник', 'многоугольника', 'многоугольников'],
+    regpoly: ['многоугольник', 'многоугольника', 'многоугольников'],
+    vector: ['вектор', 'вектора', 'векторов'],
+    region: ['область', 'области', 'областей'],
+    measure: ['измерение', 'измерения', 'измерений'],
+    mark: ['пометка', 'пометки', 'пометок'],
+    text: ['подпись', 'подписи', 'подписей'],
+    textbox: ['подпись', 'подписи', 'подписей'],
+  };
+  const SB_WORD_ANY = ['объект', 'объекта', 'объектов'];
+  function словоЧисло(n, формы) {
+    const a = n % 100, b = a % 10;
+    if (a > 10 && a < 20) return формы[2];
+    if (b === 1) return формы[0];
+    if (b >= 2 && b <= 4) return формы[1];
+    return формы[2];
   }
+  // Разбор кадра: имена точек, счёт фигур по видам, формулы как есть.
+  function frameParts(rec) {
+    const snap = (rec && rec.snap) || [];
+    const точки = [], формулы = [], счёт = [], индекс = {};
+    snap.forEach((e) => {
+      const d = e.data || {};
+      if (e.type === 'point') { if (d.label) точки.push(d.label); return; }
+      if (d.expr) { формулы.push(d.expr); return; }
+      const формы = SB_WORDS[e.type] || SB_WORD_ANY;
+      if (индекс[e.type] == null) { индекс[e.type] = счёт.length; счёт.push({ n: 0, формы: формы }); }
+      счёт[индекс[e.type]].n++;
+    });
+    return { точки: точки, формулы: формулы, счёт: счёт };
+  }
+  // Короткие строки для карточки в полоске — чем кадры отличаются друг от друга.
+  function frameLines(rec) {
+    const p = frameParts(rec), out = [];
+    if (p.точки.length) out.push(p.точки.slice(0, 6).join(' ') + (p.точки.length > 6 ? ' …' : ''));
+    p.счёт.forEach((g) => out.push(g.n + ' ' + словоЧисло(g.n, g.формы)));
+    p.формулы.forEach((f) => out.push(f));
+    return out;
+  }
+  // Кадры, снятые до отказа от PNG, всё ещё таскают картинку в данных.
+  // Выбрасываем её при первой перезаписи списка — доска худеет сама.
+  function sbDropImages(list) { list.forEach((f) => { if (f && f.img) delete f.img; }); }
   // Собственный вид окна: центр и масштаб его плоскости. Это часть состояния
   // построения — без него кадр возвращает те же объекты, но в другом
   // приближении, и результат не совпадает с миниатюрой.
@@ -7833,7 +7863,8 @@
       return;
     }
     const before = clone(fr);
-    list.push({ cap: '', img: windowImage(fr), snap: frameSnap(fr), view: frameView(fr) });
+    sbDropImages(list);
+    list.push({ cap: '', snap: frameSnap(fr), view: frameView(fr) });
     // Не влезли — откатываем и говорим словами. Раньше кадр «снимался», доска
     // рапортовала об успехе, а сервер молча его не принимал.
     if (!elementFits(fr)) {
@@ -7848,11 +7879,16 @@
   function renderStrip(fr) {
     if (!sbStrip) return;
     const list = sbList(fr);
-    sbStrip.innerHTML = list.map((f, i) =>
-      '<div class="sb-frame" draggable="true" data-i="' + i + '"><span class="sb-num">' + (i + 1) + '</span>'
-      + '<button class="sb-del" data-i="' + i + '" title="Удалить кадр">×</button>'
-      + '<img src="' + (f.img || '') + '"><div class="sb-cap">' + escapeHtml(f.cap || '') + '</div></div>'
-    ).join('');
+    sbStrip.innerHTML = list.map((f, i) => {
+      const строки = frameLines(f);
+      const тело = строки.length
+        ? строки.slice(0, 3).map((t, k) => '<div class="sb-th-row' + (k === 0 ? ' sb-th-top' : '') + '">' + escapeHtml(t) + '</div>').join('')
+        : '<div class="sb-th-empty">пусто</div>';
+      return '<div class="sb-frame" draggable="true" data-i="' + i + '"><span class="sb-num">' + (i + 1) + '</span>'
+        + '<button class="sb-del" data-i="' + i + '" title="Удалить кадр">×</button>'
+        + '<div class="sb-thumb" title="' + escapeHtml(строки.join(', ')) + '">' + тело + '</div>'
+        + '<div class="sb-cap">' + escapeHtml(f.cap || '') + '</div></div>';
+    }).join('');
   }
   function updateStoryboard() {
     if (!storyboardEl) return;
@@ -7877,10 +7913,21 @@
     sbPreview.style.width = (fr.data.width * s) + 'px';
     sbPreview.style.height = (fr.data.height * s) + 'px';
   }
+  // То же описание, но развёрнутое: в предпросмотре места больше.
+  function sbPreviewHtml(rec) {
+    const p = frameParts(rec), out = [];
+    if (p.точки.length) out.push('<div class="sb-pv-line"><b>Точки:</b> ' + escapeHtml(p.точки.join(', ')) + '</div>');
+    p.счёт.forEach((g) => out.push('<div class="sb-pv-line">' + g.n + ' ' + escapeHtml(словоЧисло(g.n, g.формы)) + '</div>'));
+    p.формулы.forEach((f) => out.push('<div class="sb-pv-line sb-pv-expr">' + escapeHtml(f) + '</div>'));
+    if (!out.length) out.push('<div class="sb-pv-line sb-pv-dim">Окно было пустым</div>');
+    const v = (rec && rec.view) || {};
+    if (v.unit) out.push('<div class="sb-pv-line sb-pv-dim">Масштаб окна: единица ≈ ' + Math.round(v.unit) + ' px</div>');
+    return out.join('');
+  }
   function sbOpenPreview(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
     sbPvState = { frameId: fr.id, index: i };
-    sbPvImg.src = list[i].img || '';
+    sbPvBody.innerHTML = sbPreviewHtml(list[i]);
     sbPvIdx.textContent = (i + 1) + ' / ' + list.length;
     sbPvCap.value = list[i].cap || '';
     sbPreview.hidden = false; positionPreview(fr);
@@ -7915,7 +7962,8 @@
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
     const before = clone(fr);
     const prev = list[i];
-    list[i] = { cap: prev.cap || '', img: windowImage(fr), snap: frameSnap(fr), view: frameView(fr) };
+    sbDropImages(list);
+    list[i] = { cap: prev.cap || '', snap: frameSnap(fr), view: frameView(fr) };
     if (!elementFits(fr)) {
       list[i] = prev;
       boardHint('Обновлённый кадр не помещается — удалите несколько прежних');

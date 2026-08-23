@@ -932,18 +932,24 @@
     .sb-frame { flex: none; width: 96px; cursor: grab; position: relative; }
     .sb-frame:active { cursor: grabbing; }
     .sb-frame.sb-dragging { opacity: .4; }
-    .sb-frame img { width: 96px; height: 66px; object-fit: cover; border: 1.5px solid #d9d9e0; border-radius: 6px; background: #fff; display: block; }
-    .sb-frame:hover img { border-color: #4d7cfe; }
+    .sb-frame .sb-thumb { width: 96px; height: 66px; border: 1.5px solid #d9d9e0; border-radius: 6px; background: #fff; box-sizing: border-box; padding: 3px 5px; display: flex; flex-direction: column; justify-content: center; gap: 1px; overflow: hidden; }
+    .sb-frame:hover .sb-thumb { border-color: #4d7cfe; }
+    .sb-th-row { font-size: 10px; line-height: 1.25; color: #6b6b76; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sb-th-top { font-size: 12px; font-weight: 600; color: #1f2937; letter-spacing: .4px; }
+    .sb-th-empty { font-size: 11px; color: #b0b0ba; text-align: center; }
     .sb-frame .sb-num { position: absolute; top: 3px; left: 3px; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; line-height: 1; padding: 2px 5px; border-radius: 4px; }
     .sb-frame .sb-del { position: absolute; top: 2px; right: 2px; border: none; background: rgba(255,255,255,.85); color: #9a9aa4; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1; padding: 1px 4px; display: none; }
     .sb-frame:hover .sb-del { display: block; }
     .sb-frame .sb-del:hover { color: #e7505a; }
     .sb-frame .sb-cap { font-size: 11px; color: #6b6b76; margin-top: 2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Предпросмотр кадра — картинка поверх окна. */
+    /* Предпросмотр кадра — состав построения поверх окна. */
     #sb-preview { position: fixed; z-index: 45; }
     #sb-preview[hidden] { display: none; }
-    #sb-pv-img { display: block; width: 100%; height: 100%; border: 2px solid #4d7cfe; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,.2); background: #fff; }
+    #sb-pv-body { width: 100%; height: 100%; border: 2px solid #4d7cfe; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,.2); background: #fff; box-sizing: border-box; padding: 10px 12px; overflow: auto; font-size: 13px; color: #2c2c34; }
+    .sb-pv-line { padding: 2px 0; }
+    .sb-pv-expr { font-family: ui-monospace, Consolas, monospace; }
+    .sb-pv-dim { color: #8a8a94; }
     #sb-pv-bar {
         position: absolute; top: -44px; left: 0; right: 0; display: flex; align-items: center; gap: 6px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 5px 8px;
@@ -2013,7 +2019,7 @@
         <button id="sb-pv-update" title="Перезаписать кадр текущим состоянием окна">Обновить</button>
         <button id="sb-pv-close" title="Закрыть просмотр">×</button>
     </div>
-    <img id="sb-pv-img" alt="кадр">
+    <div id="sb-pv-body"></div>
 </div>
 
 {{ board.code|json_script:"board-code" }}
