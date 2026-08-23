@@ -7989,7 +7989,12 @@
   }
   function updateStoryboard() {
     if (!storyboardEl) return;
-    const fr = (tool === 'select' && activeFrameId) ? elements.get(activeFrameId) : null;
+    let fr = (tool === 'select' && activeFrameId) ? elements.get(activeFrameId) : null;
+    // Идёт просмотр кадра — лента остаётся на экране, каким бы инструментом ни
+    // работали. Раньше «нет ленты» означало «человек ушёл из окна», и просмотр
+    // обрывался от любого действия: взял карандаш дорисовать в кадре — окно
+    // тут же сбросилось на отложенную работу.
+    if (!fr && sbView) fr = elements.get(sbView.frameId) || null;
     if (!fr || fr.type !== 'frame') { storyboardEl.hidden = true; sbLeaveView(true); _sbFrame = null; return; }
     storyboardEl.hidden = false;
     if (_sbFrame !== fr.id) { sbLeaveView(true); _sbFrame = fr.id; renderStrip(fr); }
@@ -8018,16 +8023,38 @@
     recomputeGeometry(); layer.batchDraw();
   }
   function sbSnapshot(fr) { return { snap: frameSnap(fr), view: frameView(fr) }; }
+  // Правки, сделанные во время просмотра, сохраняем в САМ кадр — при переходе
+  // к другому кадру и при выходе из просмотра. Кадры от этого работают как
+  // слайды: открыл, поправил, пошёл дальше, ничего не нажимая.
+  function sbSyncViewed(fr) {
+    if (!sbView || !fr) return;
+    const list = sbList(fr), prev = list[sbView.index];
+    if (!prev) return;
+    const стало = sbSnapshot(fr);
+    const было = { snap: prev.snap || [], view: prev.view };
+    if (JSON.stringify(стало) === JSON.stringify(было)) return;   // ничего не меняли
+    const before = clone(fr);
+    list[sbView.index] = { cap: prev.cap || '', snap: стало.snap, view: стало.view };
+    if (!elementFits(fr)) {
+      list[sbView.index] = prev;
+      boardHint('Правки не помещаются в кадр — упростите построение или удалите лишние кадры');
+      return;
+    }
+    histUpd(before, fr); send({ action: 'element_update', element: fr });
+    renderStrip(fr);
+    boardHint('Правки сохранены в кадр ' + (sbView.index + 1));
+  }
 
   function sbShowFrame(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
     // Первый щелчок откладывает текущую работу. Дальше её не трогаем, сколько
     // бы кадров ни пролистали.
     if (!sbView || sbView.frameId !== fr.id) sbView = { frameId: fr.id, work: sbSnapshot(fr) };
+    else if (sbView.index !== i) sbSyncViewed(fr);   // уходим с кадра — забираем правки
     sbView.index = i;
     sbApplyState(fr, list[i]);
     renderStrip(fr); sbShowBar(fr);
-    boardHint('Кадр ' + (i + 1) + ' — просмотр. «К работе» вернёт то, что было');
+    boardHint('Кадр ' + (i + 1) + '. Правки уйдут в него; «К работе» вернёт вашу работу');
   }
   function sbShowBar(fr) {
     if (!sbBar) return;
@@ -8041,6 +8068,7 @@
   function sbLeaveView(вернуть) {
     if (!sbView) return;
     const fr = elements.get(sbView.frameId), work = sbView.work;
+    sbSyncViewed(fr);                 // правки в кадре не теряем
     sbView = null;
     if (sbBar) sbBar.hidden = true;
     if (fr) { if (вернуть) sbApplyState(fr, work); renderStrip(fr); }
@@ -8065,6 +8093,7 @@
     }
     const n = sbView.index + 1;
     histBatch(ops);
+    sbSyncViewed(fr);
     sbLeaveView(false);
     boardHint('Работаем дальше с кадра ' + n);
   }
@@ -8082,21 +8111,6 @@
       if (!list.length) sbLeaveView(true);
       else { sbView.index = Math.min(sbView.index, list.length - 1); sbShowFrame(fr, sbView.index); }
     }
-  }
-  function sbUpdateFrame(fr, i) {
-    const list = sbList(fr); if (i < 0 || i >= list.length) return;
-    const before = clone(fr);
-    const prev = list[i];
-    sbDropImages(list);
-    list[i] = { cap: prev.cap || '', snap: frameSnap(fr), view: frameView(fr) };
-    if (!elementFits(fr)) {
-      list[i] = prev;
-      boardHint('Обновлённый кадр не помещается — удалите несколько прежних');
-      return;
-    }
-    histUpd(before, fr); send({ action: 'element_update', element: fr });
-    renderStrip(fr); sbShowBar(fr);
-    boardHint('Кадр ' + (i + 1) + ' обновлён');
   }
   const _sbCap = document.getElementById('sb-cap');
   if (_sbCap) _sbCap.addEventListener('click', () => { const fr = elements.get(_sbFrame); if (fr) captureFrame(fr); });
@@ -8128,7 +8142,6 @@
     on('sb-next', () => sbNav(1));
     on('sb-back', () => sbLeaveView(true));
     on('sb-keep', sbKeepFrame);
-    on('sb-upd', () => { if (sbView) { const fr = elements.get(sbView.frameId); if (fr) sbUpdateFrame(fr, sbView.index); } });
     if (sbCapIn) sbCapIn.addEventListener('change', () => {
       if (!sbView) return; const fr = elements.get(sbView.frameId); if (!fr) return;
       const list = sbList(fr); if (!list[sbView.index]) return;
