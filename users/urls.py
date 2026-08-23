@@ -7,6 +7,7 @@ from . import views_exam
 from . import views_materials
 from . import views_oge1_5
 from . import views_media
+from . import views_seo
 
 # ===== 1. СОЗДАЕМ РОУТЕР ДЛЯ API =====
 router = DefaultRouter()
@@ -25,6 +26,9 @@ urlpatterns = [
     
     # --- ОСНОВНЫЕ МАРШРУТЫ ---
     path('', views.home_view, name='home'),
+    # Файлы для поисковых роботов. Лежат в корне сайта — так их и ищут.
+    path('robots.txt', views_seo.robots_txt, name='robots_txt'),
+    path('sitemap.xml', views_seo.sitemap_xml, name='sitemap_xml'),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
     path('student/', views.student_dashboard, name='student_dashboard'),
