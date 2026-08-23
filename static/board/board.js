@@ -6352,13 +6352,13 @@
   stage.on('wheel', (e) => {
     const ev = e.evt;
     ev.preventDefault();
-    // Курсор над матокном — колесо приближает ЕГО плоскость, выделено окно или
-    // нет. Раньше это работало только у выделенного, и человек, наведя курсор
-    // в окно, вместо приближения уезжал всей доской.
-    // Ctrl — отходной путь: с ним колесо работает по доске, как настроено в меню.
+    // Колесо приближает ДОСКУ — и над пустым местом, и над матокном. Плоскость
+    // самого окна зумится, только когда окно ВЫБРАНО: пока его не тронули, оно
+    // ведёт себя как обычный объект на доске, и над ним можно спокойно летать.
+    // Ctrl — отходной путь: с ним колесо работает наоборот, как настроено в меню.
     const wpz = stage.getRelativePointerPosition();
     const fz = wpz && frameAtWorld(wpz.x, wpz.y, true);
-    if (fz && !ev.ctrlKey) { frameZoomAt(fz, wpz, ev.deltaY); return; }
+    if (fz && activeFrameId === fz.id && !ev.ctrlKey) { frameZoomAt(fz, wpz, ev.deltaY); return; }
     boardWheel(ev, stage.getPointerPosition());
   });
 
