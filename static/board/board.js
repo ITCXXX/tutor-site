@@ -6318,8 +6318,23 @@
   //  • щипок (пальцы разъезжаются) → браузер шлёт wheel с ctrlKey=true → зум;
   //  • два пальца параллельно (или колесо мыши) → обычный wheel → панорама.
   // Панорама/зум доски колесом. center — экранная точка (отн. контейнера сцены).
+  // Колесо: приближать или двигать. Выбор личный (мышь у всех разная), поэтому
+  // храним в браузере у себя, а не в доске — иначе один участник менял бы
+  // поведение другому.
+  const WHEEL_STORE = 'board_wheel_zoom_v1';
+  let wheelZoom = true;
+  try { const v = localStorage.getItem(WHEEL_STORE); if (v !== null) wheelZoom = (v === '1'); } catch (e) {}
+  function setWheelZoom(on) {
+    wheelZoom = !!on;
+    try { localStorage.setItem(WHEEL_STORE, wheelZoom ? '1' : '0'); } catch (e) {}
+    const c = document.getElementById('wheel-zoom'); if (c) c.checked = wheelZoom;
+    boardHint(wheelZoom ? 'Колесо приближает; с Ctrl — двигает доску'
+                        : 'Колесо двигает доску; с Ctrl — приближает');
+  }
   function boardWheel(ev, center) {
-    if (ev.ctrlKey) {
+    // Ctrl всегда делает ПРОТИВОПОЛОЖНОЕ выбранному — как в графических
+    // редакторах: одна рука на клавише, и поведение временно меняется.
+    if (wheelZoom !== ev.ctrlKey) {
       const factor = Math.min(1.15, Math.max(0.85, Math.exp(-ev.deltaY * 0.01)));
       zoomTo(stage.scaleX() * factor, center);
     } else {
@@ -6337,11 +6352,13 @@
   stage.on('wheel', (e) => {
     const ev = e.evt;
     ev.preventDefault();
-    // Колесо над АКТИВНЫМ (выделенным) окном — зум его плоскости. Над неактивным
-    // окно «прозрачно» — колесо двигает/зумит доску (чтобы быстро летать по холсту).
+    // Курсор над матокном — колесо приближает ЕГО плоскость, выделено окно или
+    // нет. Раньше это работало только у выделенного, и человек, наведя курсор
+    // в окно, вместо приближения уезжал всей доской.
+    // Ctrl — отходной путь: с ним колесо работает по доске, как настроено в меню.
     const wpz = stage.getRelativePointerPosition();
     const fz = wpz && frameAtWorld(wpz.x, wpz.y, true);
-    if (fz && activeFrameId === fz.id) { frameZoomAt(fz, wpz, ev.deltaY); return; }
+    if (fz && !ev.ctrlKey) { frameZoomAt(fz, wpz, ev.deltaY); return; }
     boardWheel(ev, stage.getPointerPosition());
   });
 
@@ -6353,6 +6370,13 @@
   // ggb-layer берём напрямую: его const объявлен ниже по файлу (избегаем TDZ).
   const _ggbLayer = document.getElementById('ggb-layer');
   if (_ggbLayer) _ggbLayer.addEventListener('wheel', forwardWheel, { passive: false });
+
+  (function wireWheelZoom() {
+    const c = document.getElementById('wheel-zoom');
+    if (!c) return;
+    c.checked = wheelZoom;
+    c.addEventListener('change', () => setWheelZoom(c.checked));
+  })();
 
   if (zoomInput) {
     document.getElementById('zoom-in').addEventListener('click', () => zoomTo(stage.scaleX() * 1.2));
@@ -7764,8 +7788,33 @@
     const node = nodes.get(fr.id); if (!node) return '';
     const w = fr.data.width || 1, h = fr.data.height || 1;
     const ratio = Math.min(1, SB_IMG_MAX / Math.max(w, h));
-    try { return node.toDataURL({ pixelRatio: ratio }); }
-    catch (e) { return ''; }
+    // Заголовок и крестик удаления — часть той же группы, и без этого они
+    // впечатывались в каждую миниатюру серой полосой поверх построения.
+    const шапка = ['fheader', 'fhlabel', 'fdel']
+      .map((n) => node.findOne('.' + n)).filter(Boolean);
+    const было = шапка.map((n) => n.visible());
+    шапка.forEach((n) => n.visible(false));
+    let url = '';
+    try { url = node.toDataURL({ pixelRatio: ratio }); } catch (e) { url = ''; }
+    шапка.forEach((n, i) => n.visible(было[i]));
+    layer.batchDraw();
+    return url;
+  }
+  // Собственный вид окна: центр и масштаб его плоскости. Это часть состояния
+  // построения — без него кадр возвращает те же объекты, но в другом
+  // приближении, и результат не совпадает с миниатюрой.
+  function frameView(fr) {
+    const d = fr.data || {};
+    return { cx: d.cx, cy: d.cy, unit: d.unit };
+  }
+  function applyFrameView(fr, v) {
+    if (!v) return false;                       // старые кадры вида не хранят
+    const d = fr.data;
+    let изменилось = false;
+    ['cx', 'cy', 'unit'].forEach((k) => {
+      if (v[k] != null && d[k] !== v[k]) { d[k] = v[k]; изменилось = true; }
+    });
+    return изменилось;
   }
   // Влезет ли элемент в то, что примет сервер. Проверяем ДО отправки.
   function elementFits(el) {
@@ -7780,7 +7829,7 @@
       return;
     }
     const before = clone(fr);
-    list.push({ cap: '', img: windowImage(fr), snap: frameSnap(fr) });
+    list.push({ cap: '', img: windowImage(fr), snap: frameSnap(fr), view: frameView(fr) });
     // Не влезли — откатываем и говорим словами. Раньше кадр «снимался», доска
     // рапортовала об успехе, а сервер молча его не принимал.
     if (!elementFits(fr)) {
@@ -7847,7 +7896,13 @@
   }
   function restoreFrame(fr, i) {
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
+    const beforeFr = clone(fr);
     frameContentEls(fr.id).forEach((e) => { histDel(e); send({ action: 'element_delete', id: e.id }); removeNode(e.id); });
+    // Вид окна возвращаем ВМЕСТЕ с объектами: иначе построение вернётся верное,
+    // но в текущем приближении, и с миниатюрой не совпадёт.
+    if (applyFrameView(fr, list[i].view)) {
+      upsertNode(fr); histUpd(beforeFr, fr); send({ action: 'element_update', element: fr });
+    }
     (list[i].snap || []).forEach((sd) => { const el = clone(sd); upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); });
     recomputeGeometry(); layer.batchDraw();
     boardHint('Кадр ' + (i + 1) + ' загружен в окно');
@@ -7856,7 +7911,7 @@
     const list = sbList(fr); if (i < 0 || i >= list.length) return;
     const before = clone(fr);
     const prev = list[i];
-    list[i] = { cap: prev.cap || '', img: windowImage(fr), snap: frameSnap(fr) };
+    list[i] = { cap: prev.cap || '', img: windowImage(fr), snap: frameSnap(fr), view: frameView(fr) };
     if (!elementFits(fr)) {
       list[i] = prev;
       boardHint('Обновлённый кадр не помещается — удалите несколько прежних');
@@ -9994,6 +10049,17 @@
     if (panRAF == null) { lastPanT = 0; panRAF = requestAnimationFrame(panLoop); }
   }
 
+  // Буква клавиши НЕЗАВИСИМО от раскладки. e.key — это напечатанный символ: в
+  // русской раскладке та же клавиша шлёт «м» вместо v, «я» вместо z. Поэтому
+  // берём e.code («KeyV»), он привязан к физической клавише. Запасной путь по
+  // e.key — на случай раскладок, где code не приходит.
+  function keyLetter(e) {
+    const c = e.code || '';
+    if (c.length === 4 && c.indexOf('Key') === 0) return c.charAt(3).toLowerCase();
+    const k = (e.key || '').toLowerCase();
+    return k.length === 1 ? k : '';
+  }
+
   // Горячие клавиши.
   window.addEventListener('keydown', (e) => {
     if (e.target && e.target.matches && e.target.matches('input, textarea, [contenteditable], [contenteditable] *')) return;
@@ -10003,7 +10069,8 @@
 
     // «Только просмотр»: блокируем правки (удаление/дубль/группа/скрыть/undo/redo),
     // оставляем навигацию (стрелки-панораму, Esc).
-    if (viewOnly && (e.key === 'Delete' || e.key === 'Backspace' || ((e.ctrlKey || e.metaKey) && 'dgzy'.indexOf(e.key.toLowerCase()) >= 0) || e.key === 'h' || e.key === 'H')) { e.preventDefault(); return; }
+    const _L = keyLetter(e);
+    if (viewOnly && (e.key === 'Delete' || e.key === 'Backspace' || ((e.ctrlKey || e.metaKey) && 'dgzy'.indexOf(_L) >= 0) || _L === 'h')) { e.preventDefault(); return; }
 
     // Многоугольник: Enter — замкнуть, Esc — отменить незавершённый.
     if (tool === 'polygon' && polyPicks.length) {
@@ -10037,7 +10104,7 @@
     }
 
     // H — скрыть выделенное; Shift+H — показать/спрятать все скрытые (режим просмотра).
-    if (e.key === 'h' || e.key === 'H') {
+    if (_L === 'h') {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       e.preventDefault();
       if (e.shiftKey) toggleRevealHidden();
@@ -10046,7 +10113,7 @@
     }
 
     // Ctrl/Cmd+A — выделить всё на доске.
-    if ((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey)) {
+    if (_L === 'a' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault(); selectAllElements(); return;
     }
 
@@ -10078,7 +10145,7 @@
     }
 
     // Ctrl/Cmd+G — сгруппировать выделенное, +Shift — разгруппировать.
-    if ((e.key === 'g' || e.key === 'G') && (e.ctrlKey || e.metaKey)) {
+    if (_L === 'g' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       if (e.shiftKey) ungroupSelected(); else groupSelected();
       return;
@@ -10087,27 +10154,27 @@
     // Ctrl/Cmd+C — скопировать выделенное, Ctrl/Cmd+X — вырезать.
     // Вставку не перехватываем: её ловит событие paste, иначе до содержимого
     // системного буфера не добраться.
-    if ((e.key === 'c' || e.key === 'C') && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    if (_L === 'c' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       if (selected.size) { e.preventDefault(); copySelected(false); }
       return;
     }
-    if ((e.key === 'x' || e.key === 'X') && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    if (_L === 'x' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       if (selected.size) { e.preventDefault(); copySelected(true); }
       return;
     }
 
     // Ctrl/Cmd+D — дублировать выделенное.
-    if ((e.key === 'd' || e.key === 'D') && (e.ctrlKey || e.metaKey)) {
+    if (_L === 'd' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault(); if (selected.size) duplicateSelected(); return;
     }
 
     // Ctrl/Cmd+Z — шаг назад, +Shift или Ctrl+Y — шаг вперёд.
-    if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey)) {
+    if (_L === 'z' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       if (e.shiftKey) doRedo(); else doUndo();
       return;
     }
-    if ((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey)) {
+    if (_L === 'y' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault(); doRedo(); return;
     }
 
@@ -10127,7 +10194,7 @@
       t: 'text_plain', f: 'latex', g: 'graph',  c: 'circ_cp',     d: 'point',
       w: 'frame',   b: 'table',
     };
-    const k = e.key.toLowerCase();
+    const k = _L;
     if (map[k]) { e.preventDefault(); setTool(map[k]); }
   });
   window.addEventListener('keyup', (e) => {
