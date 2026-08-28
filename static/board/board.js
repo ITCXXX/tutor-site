@@ -365,10 +365,12 @@
       // Вектор AB — стрелка, следует за точками.
       const vc = d.color || d.stroke || '#1f2937';
       node = new Konva.Arrow({ id: el.id, x: 0, y: 0, points: vecEnds(el) || [0, 0, 0, 0], stroke: vc, fill: vc, strokeWidth: d.strokeWidth || 2.5, pointerLength: 11, pointerWidth: 10, lineCap: 'round', lineJoin: 'round', hitStrokeWidth: 14, draggable: false });
-    } else if (el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit') {
-      // Анализ функций / неявная кривая — sceneFunc по окну; живёт в группе окна.
-      const sf = el.type === 'ftangent' ? drawTangent : (el.type === 'farea' ? drawArea : (el.type === 'fintersect' ? drawFIntersect : (el.type === 'region' ? drawRegion : drawImplicit)));
-      node = new Konva.Shape({ id: el.id, x: 0, y: 0, listening: false, sceneFunc: sf });
+    } else if (el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit' || el.type === 'xcurve') {
+      // Анализ функций / неявная кривая / образ при инверсии — sceneFunc по окну;
+      // живёт в группе окна.
+      const sf = el.type === 'ftangent' ? drawTangent : (el.type === 'farea' ? drawArea : (el.type === 'fintersect' ? drawFIntersect : (el.type === 'region' ? drawRegion : (el.type === 'xcurve' ? drawXformCurve : drawImplicit))));
+      node = new Konva.Shape({ id: el.id, x: 0, y: 0, listening: false, sceneFunc: sf,
+        stroke: el.data.color || '#1f2937', strokeWidth: el.data.strokeWidth || 2 });
     } else if (isFilledPoly(el.type)) {
       // Многоугольник (обычный по вершинам / правильный n-угольник): замкнутая
       // линия с полупрозрачной заливкой; контур — shapeOutline.
@@ -406,9 +408,14 @@
         clipX: 0, clipY: 0, clipWidth: W, clipHeight: H });
       node.add(new Konva.Rect({ name: 'fbg', x: 0, y: 0, width: W, height: H, fill: d.bgColor || '#ffffff', stroke: '#d9d9e0', strokeWidth: 1 }));
       node.add(new Konva.Shape({ name: 'fgrid', sceneFunc: (ctx) => drawFrameGrid(ctx, elements.get(el.id)) }));
-      node.add(new Konva.Rect({ name: 'fheader', x: 0, y: 0, width: W, height: FRAME_HEADER, fill: '#f4f4f7', stroke: '#e3e3e8', strokeWidth: 1 }));
-      node.add(new Konva.Text({ name: 'fhlabel', x: 8, y: 6, text: 'Окно', fontSize: 12, fill: '#6b6b76' }));
-      node.add(new Konva.Text({ name: 'fdel', text: '×', x: W - 16, y: 3, fontSize: 16, fill: '#9a9aa4' }));
+      // Полоса сверху осталась, но стала невидимой: серая плашка спорила с
+      // чертежом. Она по-прежнему ручка, за которую окно двигают, и Z-якорь,
+      // под который кладётся вся геометрия окна, поэтому убрать её нельзя —
+      // убран только вид. Проступает при наведении, иначе ручку не найти.
+      // Заливка нужна прозрачная, но НЕ пустая: без fill Konva не считает
+      // прямоугольник закрашенным и не ловит по нему нажатие.
+      node.add(new Konva.Rect({ name: 'fheader', x: 0, y: 0, width: W, height: FRAME_HEADER, fill: 'rgba(0,0,0,0)' }));
+      node.add(new Konva.Text({ name: 'fdel', text: '×', x: W - 16, y: 3, fontSize: 16, fill: '#9a9aa4', opacity: 0 }));
       attachFrameHandlers(node, el.id);
     } else {
       return null;
@@ -798,7 +805,7 @@
         else if (o.isect && (o.isect[0] === id || o.isect[1] === id)) refs = true;
         else if (o.centroid && o.centroid.indexOf(id) >= 0) refs = true;
         else if (o.ratio && (o.ratio.a === id || o.ratio.b === id)) refs = true;
-        else if (o.xform && (o.src === id || o.xform.c === id || o.xform.a === id || o.xform.b === id || o.xform.line === id)) refs = true;
+        else if (o.xform && (o.src === id || o.xform.c === id || o.xform.a === id || o.xform.b === id || o.xform.line === id || o.xform.through === id)) refs = true;
       }
       if (refs) res.push(el.id);
     });
@@ -1904,6 +1911,18 @@
       const fx = G.base.x + proj * G.u.x, fy = G.base.y + proj * G.u.y;
       return { x: 2 * fx - p.x, y: 2 * fy - p.y };
     }
+    if (xf.kind === 'inv') {
+      // Инверсия: центр c, радиус = расстояние от c до точки through.
+      // Считаем прямо в локальных пикселях окна — по x и y там один и тот же
+      // масштаб (frameMathToLocal), поэтому R²/|OP| согласовано.
+      const C = xfPtLocal(fr, xf.c), T = xfPtLocal(fr, xf.through);
+      if (!C || !T) return null;
+      const R2 = (T.x - C.x) * (T.x - C.x) + (T.y - C.y) * (T.y - C.y);
+      const dx = p.x - C.x, dy = p.y - C.y, d2 = dx * dx + dy * dy;
+      if (d2 < 1e-9 || R2 < 1e-9) return null;   // сам центр образа не имеет
+      const k = R2 / d2;
+      return { x: C.x + k * dx, y: C.y + k * dy };
+    }
     return null;
   }
   function drawAngleShape(ctx, shape) {
@@ -2621,11 +2640,86 @@
     pmap[srcId] = el.id;
     return el.id;
   }
+  // Отсчёты исходной кривой в локальных координатах окна — по ним строится
+  // образ при инверсии. Возвращаем массив точек, идущих вдоль кривой.
+  const XC_STEPS = 400;
+  function xcurveSamples(src) {
+    if (!src) return null;
+    if (src.type === 'circ') {
+      const G = circleGeom(src); if (!G) return null;
+      const a0 = G.semi ? G.a0 : 0, размах = G.semi ? Math.PI : Math.PI * 2;
+      const out = [];
+      for (let i = 0; i <= XC_STEPS; i++) {
+        const a = a0 + размах * i / XC_STEPS;
+        out.push({ x: G.cx + G.r * Math.cos(a), y: G.cy + G.r * Math.sin(a) });
+      }
+      return out;
+    }
+    if (isConstruction(src.type)) {
+      const G = lineGeom(src); if (!G) return null;
+      const t0 = (G.tmin === -Infinity) ? -GEO_L : G.tmin;
+      const t1 = (G.tmax === Infinity) ? GEO_L : G.tmax;
+      const out = [];
+      // Сгущаем отсчёты к середине: ближняя к центру часть прямой уходит в
+      // дальнюю часть окружности-образа и требует частых точек, а хвосты
+      // сжимаются к центру, там хватает редких.
+      const РАЗМАХ = 1.45, T = Math.tan(РАЗМАХ);
+      for (let i = 0; i <= XC_STEPS; i++) {
+        const u = i / XC_STEPS * 2 - 1;
+        const доля = (Math.tan(u * РАЗМАХ) / T + 1) / 2;
+        const t = t0 + (t1 - t0) * доля;
+        out.push({ x: G.base.x + G.u.x * t, y: G.base.y + G.u.y * t });
+      }
+      return out;
+    }
+    if (isFilledPoly(src.type)) {
+      const flat = shapeOutline(src); if (!flat || flat.length < 6) return null;
+      const out = [], n = flat.length / 2;
+      for (let i = 0; i < n; i++) {
+        const ax = flat[i * 2], ay = flat[i * 2 + 1];
+        const j = (i + 1) % n, bx = flat[j * 2], by = flat[j * 2 + 1];
+        for (let k = 0; k < 60; k++) out.push({ x: ax + (bx - ax) * k / 60, y: ay + (by - ay) * k / 60 });
+      }
+      out.push({ x: flat[0], y: flat[1] });
+      return out;
+    }
+    return null;
+  }
+  // Рисование образа кривой: каждый отсчёт через applyXform. Путь рвём там,
+  // где образа нет (сам центр инверсии) или где он улетел за пределы окна —
+  // соединять такие куски одной линией нельзя.
+  function drawXformCurve(ctx, shape) {
+    const el = elements.get(shape.id()); if (!el) return;
+    const d = el.data, fr = elements.get(d.frame), src = elements.get(d.src);
+    if (!fr || !src) return;
+    const S = xcurveSamples(src); if (!S) return;
+    ctx.beginPath();
+    let ведём = false;
+    for (let i = 0; i < S.length; i++) {
+      const q = applyXform(fr, d.xf, S[i]);
+      if (!q || !isFinite(q.x) || !isFinite(q.y) || Math.abs(q.x) > GEO_L || Math.abs(q.y) > GEO_L) { ведём = false; continue; }
+      if (!ведём) { ctx.moveTo(q.x, q.y); ведём = true; } else ctx.lineTo(q.x, q.y);
+    }
+    ctx.strokeShape(shape);
+  }
   // Образ объекта src: та же фигура на образах опорных точек. objMap — против циклов/дублей.
   function imageObjOf(src, xf, pmap, objMap) {
     if (!src) return null;
     if (objMap[src.id]) return objMap[src.id];
     if (src.type === 'point') { const iid = imagePointOf(src.id, xf, pmap); if (iid) objMap[src.id] = iid; return iid; }
+    // Инверсия меняет РОД фигуры: прямая становится окружностью через центр,
+    // окружность через центр — прямой. Поэтому образ нельзя построить «той же
+    // фигурой на образах точек», и он рисуется отсчётами.
+    if (xf.kind === 'inv') {
+      if (!xcurveSamples(src)) return null;
+      const el = { id: uuid(), type: 'xcurve', z: 0,
+        data: { frame: src.data.frame, src: src.id, xf: clone(xf),
+                color: src.data.color || src.data.stroke || strokeColor,
+                strokeWidth: src.data.strokeWidth || 2 } };
+      upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+      objMap[src.id] = el.id;
+      return el.id;
+    }
     if (!(isConstruction(src.type) || src.type === 'circ' || isFilledPoly(src.type))) return null; // прочее (виджеты/рисунки) не преобразуем
     const nd = { frame: src.data.frame };
     ['color', 'stroke', 'strokeWidth', 'style', 'kind', 'n', 'r'].forEach((k) => { if (src.data[k] !== undefined) nd[k] = src.data[k]; });
@@ -2659,6 +2753,7 @@
     trans:  { picks: ['point', 'point'], nums: [], hint: 'Кликните начало вектора, затем конец' },
     homo:   { picks: ['point'], nums: [['k', 'Коэффициент гомотетии k:', '2']], hint: 'Кликните центр гомотетии' },
     spiral: { picks: ['point'], nums: [['angle', 'Угол (°):', '90'], ['k', 'Коэффициент k:', '2']], hint: 'Кликните центр' },
+    inv:    { picks: ['point', 'point'], nums: [], hint: 'Кликните центр инверсии, затем точку на её окружности' },
   };
   let xformSources = [], xformPicks = [];
   // Активация инструмента: источники = текущее выделение (если было). Дальше можно
@@ -2683,6 +2778,7 @@
     if (tool === 'csym' || tool === 'rot' || tool === 'homo' || tool === 'spiral') xf.c = xformPicks[0];
     else if (tool === 'asym') xf.line = xformPicks[0];
     else if (tool === 'trans') { xf.a = xformPicks[0]; xf.b = xformPicks[1]; }
+    else if (tool === 'inv') { xf.c = xformPicks[0]; xf.through = xformPicks[1]; }
     let ok = true;
     spec.nums.forEach((nm) => { if (!ok) return; const txt = prompt(nm[1], nm[2]); const v = parseFloat((txt || '').replace(',', '.')); if (!isFinite(v)) ok = false; else xf[nm[0]] = v; });
     if (ok) applyTransform(xformSources, xf);
@@ -3060,7 +3156,7 @@
       (o.isect || []).forEach((id) => out.push(id));
       (o.centroid || []).forEach((id) => out.push(id));
       if (o.ratio) { if (o.ratio.a) out.push(o.ratio.a); if (o.ratio.b) out.push(o.ratio.b); }
-      if (o.xform) ['src', 'c', 'a', 'b', 'line'].forEach((k) => { if (o.xform[k]) out.push(o.xform[k]); });
+      if (o.xform) ['src', 'c', 'a', 'b', 'line', 'through'].forEach((k) => { if (o.xform[k]) out.push(o.xform[k]); });
     }
     return out;
   }
@@ -4741,7 +4837,6 @@
 
   function attachFrameHandlers(node, id) {
     const header = node.findOne('.fheader');
-    const hlabel = node.findOne('.fhlabel');
     const del = node.findOne('.fdel');
     const startMove = (e) => {
       e.cancelBubble = true;
@@ -4750,7 +4845,14 @@
       frameMove = { id, sx: w.x, sy: w.y, ox: el.data.x, oy: el.data.y, moved: false, shift: isAddKey(e.evt) };
     };
     header.on('mousedown', startMove);
-    if (hlabel) hlabel.on('mousedown', startMove);
+    // Курсор над окном — полоса и крестик проступают; ушёл — гаснут.
+    const подсветка = (вкл) => {
+      header.fill(вкл ? 'rgba(233,235,242,0.85)' : 'rgba(0,0,0,0)');
+      del.opacity(вкл ? 1 : 0);
+      layer.batchDraw();
+    };
+    node.on('mouseenter', () => подсветка(true));
+    node.on('mouseleave', () => подсветка(false));
     del.on('mousedown', (e) => { e.cancelBubble = true; });
     del.on('click tap', (e) => { e.cancelBubble = true; deleteWithDependents([id]); }); // окно + вся геометрия внутри
   }
@@ -5157,7 +5259,7 @@
         const n = nodes.get(el.id); if (n && n.getParent() === frameNode) n.moveToTop();
       }
     });
-    ['.fheader', '.fhlabel', '.fdel'].forEach((s) => { const h = frameNode.findOne(s); if (h) h.moveToTop(); });
+    ['.fheader', '.fdel'].forEach((s) => { const h = frameNode.findOne(s); if (h) h.moveToTop(); });
   }
   function attachFuncNode(el, node) { attachToFrame(el, node); }
   function upsertFuncNode(el) {
@@ -10606,10 +10708,8 @@
     }
     const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
     on('reveal-hidden', toggleRevealHidden);
-    on('hide-selected', () => { if (selected.size) setHidden(Array.from(selected), true); else boardHint('Сначала выделите объекты, которые нужно скрыть'); });
     on('present-btn', () => setPresenter(!presenterOn));
     on('follow-btn', () => setFollow(!followOn));
-    on('viewonly-btn', () => setViewOnly(!viewOnly));
     on('board-menu-btn', () => toggleBoardMenu());
     const bgSeg = document.getElementById('bg-seg');
     if (bgSeg) bgSeg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setBoardBg(b.dataset.bg); });
@@ -11996,8 +12096,8 @@
     });
 
     // 3. Занятие: кнопки верхней плашки, которым не хватает места на узком экране.
-    const topIds = ['import-btn', 'hide-selected', 'reveal-hidden', 'present-btn',
-                    'follow-btn', 'viewonly-btn', 'access-btn'];
+    const topIds = ['import-btn', 'reveal-hidden', 'present-btn',
+                    'follow-btn', 'access-btn'];
     const liveGrid = mkSection('Занятие');
     topIds.forEach((id) => {
       const src = document.getElementById(id);

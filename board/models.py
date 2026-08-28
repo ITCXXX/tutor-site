@@ -209,6 +209,7 @@ class BoardElement(models.Model):
     TYPE_CHOICES = [
         # рисование и оформление
         ('freehand', 'Рисунок от руки'),
+        ('xcurve', 'Образ кривой при инверсии'),
         ('line', 'Линия'),
         ('arrow', 'Стрелка'),
         ('rect', 'Прямоугольник'),
