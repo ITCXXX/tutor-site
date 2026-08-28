@@ -5620,7 +5620,32 @@
     return stage.getRelativePointerPosition();
   }
 
+  // Начали рисовать — убираем с глаз всё, что открыто поверх доски. Панель
+  // связи, звонок и история сюда не входят: их открывают намеренно и надолго.
+  function closeToolPanels() {
+    document.querySelectorAll('#board-toolbar .tool-flyout.open').forEach((f) => f.classList.remove('open'));
+    const скрыть = [['color-palette', 'cp-hidden'], ['settings-menu', 'sm-hidden'],
+      ['stroke-panel', 'ps-hidden'], ['shape-panel', 'ps-hidden'], ['dp-pop', 'ps-hidden']];
+    скрыть.forEach(([id, кл]) => { const el = document.getElementById(id); if (el) el.classList.add(кл); });
+    const bm = document.getElementById('board-menu'), bb = document.getElementById('board-menu-btn');
+    if (bm) bm.hidden = true; if (bb) bb.classList.remove('on');
+  }
+  const PEN_MIN_STEP = 2;   // ближе этого (пикселей экрана) точки в штрих не берём
+  // Лёгкое сглаживание: каждая внутренняя точка подтягивается к среднему с
+  // соседями. Концы не трогаем — иначе штрих уползает от места, где человек
+  // начал и закончил вести.
+  function smoothStroke(pts) {
+    const n = pts.length;
+    if (n < 10) return pts;              // короткий штрих сглаживать нечего
+    const out = pts.slice();
+    for (let i = 2; i < n - 2; i += 2) {
+      out[i] = pts[i - 2] * 0.25 + pts[i] * 0.5 + pts[i + 2] * 0.25;
+      out[i + 1] = pts[i - 1] * 0.25 + pts[i + 1] * 0.5 + pts[i + 3] * 0.25;
+    }
+    return out;
+  }
   function startDraw() {
+    closeToolPanels();
     if (selected.size) clearSelection(); // начали рисовать — снять прежнее выделение
     const p = worldPoint();
     const base = { stroke: strokeColor, strokeWidth: strokeWidth };
@@ -5672,7 +5697,16 @@
     const p = worldPoint(); if (!p) return;
     const d = drawing.data;
     if (drawing.type === 'freehand') {
-      d.points.push(p.x - d.x, p.y - d.y);
+      // Не берём точки чаще, чем раз в PEN_MIN_STEP пикселей экрана. Раньше в
+      // штрих попадало каждое событие движения, включая субпиксельное дрожание
+      // руки, и сплайн Konva превращал его в пилу.
+      const пт = d.points, n = пт.length;
+      const nx = p.x - d.x, ny = p.y - d.y;
+      if (n >= 2) {
+        const шаг = PEN_MIN_STEP / (stage.scaleX() || 1);
+        if (Math.hypot(nx - пт[n - 2], ny - пт[n - 1]) < шаг) return;
+      }
+      пт.push(nx, ny);
     } else if (drawing.type === 'rect') {
       const x = Math.min(p.x, d._ax), y = Math.min(p.y, d._ay);
       d.x = x; d.y = y;
@@ -5733,6 +5767,16 @@
     if ((drawing.type === 'line' || drawing.type === 'arrow')) {
       const pp = drawing.data.points || [0, 0, 0, 0];
       if (Math.hypot(pp[2] - pp[0], pp[3] - pp[1]) < 4) { send({ action: 'element_delete', id: drawing.id }); removeNode(drawing.id); drawing = null; return; }
+    }
+    if (drawing.type === 'freehand') {
+      const пт = drawing.data.points || [];
+      // Щелчок без движения — ставим точку. Отрезок нулевой длины браузер не
+      // рисует даже с круглым концом, поэтому раздвигаем концы на волосок.
+      // Отсюда и было «точка ставится через раз»: она появлялась, только если
+      // рука дрогнула на пиксель и точек оказывалось две.
+      if (пт.length <= 2) drawing.data.points = [пт[0] || 0, пт[1] || 0, (пт[0] || 0) + 0.01, пт[1] || 0];
+      else drawing.data.points = smoothStroke(пт);
+      upsertNode(drawing);      // без этого узел на холсте остаётся с прежними точками
     }
     send({ action: 'element_update', element: stripPrivate(drawing) });
     histAdd(stripPrivate(drawing));
@@ -6408,6 +6452,11 @@
   const toolButtons = document.querySelectorAll('#board-toolbar .tool[data-tool]');
   function setTool(name) {
     if (viewOnly) name = 'select'; // «только просмотр» — без инструментов
+    // Любой инструмент выводит из перемещения доски. Раньше это делал только
+    // обработчик кнопок панели, а кнопка ГРУППЫ (под ней карандаш и прочие)
+    // зовёт setTool напрямую — режим оставался включённым, и рисовать было
+    // нельзя. Флаг гасит обратный вызов: setPanMode(false) сам зовёт setTool.
+    if (panMode && !_panExiting) { _panExiting = true; setPanMode(false); _panExiting = false; }
     tool = name;
     pendingPicks = []; pickFrame = null; pickRefLine = null; pickCurve1 = null; // сбрасываем незавершённое построение
     if (typeof clearPolyPicks === 'function' && name !== 'polygon') clearPolyPicks(); // отменяем недорисованный многоугольник
@@ -6708,6 +6757,8 @@
   // обработчиков), а касания отдаём той же системе жестов, что уже умеет
   // панораму и щипок, — чтобы два пальца по-прежнему меняли масштаб.
   let panMode = false, panDrag = null;
+  let _panExiting = false;   // идёт выход из перемещения — не зацикливать setTool
+  let panDbl = null;         // прошлое нажатие в перемещении — ловим двойной щелчок
 
   // Панели поверх доски: нажатие на них — не перемещение.
   const PAN_SKIP = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
@@ -6731,7 +6782,7 @@
       // В перемещении объекты не таскаем и якоря прячем — они ловили бы нажатия.
       nodes.forEach((n) => n.draggable(false));
       clearSelection();
-    } else {
+    } else if (!_panExiting) {
       setTool(tool);   // вернуть обычное поведение выбранного инструмента
     }
     renderAnchors();
@@ -6753,6 +6804,33 @@
     if (e.target.closest && e.target.closest(PAN_SKIP)) return;
     const r = stageEl.getBoundingClientRect();
     if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+    // Двойной щелчок возвращает выделение и берёт объект под курсором: не надо
+    // искать кнопку, чтобы продолжить работу с тем, на что смотришь. Считаем
+    // нажатия сами — перемещение перехватывает их раньше Konva, и её
+    // собственный dblclick сюда не доходит.
+    const _t = Date.now();
+    if (panDbl && _t - panDbl.t < 350
+      && Math.abs(e.clientX - panDbl.x) < 5 && Math.abs(e.clientY - panDbl.y) < 5) {
+      panDbl = null; panDrag = null;
+      document.body.classList.remove('panning');
+      setPanMode(false);
+      // Ищем объект двумя способами: геометрией (точки, окружности, построения)
+      // и обычным попаданием Konva. Одной геометрии мало — карандашные штрихи
+      // и картинки она не знает, и двойной щелчок по ним ничего не выделял.
+      const wp = worldFromClient(e.clientX, e.clientY);
+      const g = wp && pickObjectAtWorld(wp);
+      let целевой = g ? g.id : null;
+      if (!целевой) {
+        const rr = stage.content.getBoundingClientRect();
+        let t = stage.getIntersection({ x: e.clientX - rr.left, y: e.clientY - rr.top });
+        while (t && t !== stage && !(t.id && nodes.has(t.id()))) t = t.getParent();
+        if (t && t.id && nodes.has(t.id())) целевой = t.id();
+      }
+      if (целевой) selectOnly(целевой);
+      e.preventDefault(); e.stopPropagation();
+      return;
+    }
+    panDbl = { t: _t, x: e.clientX, y: e.clientY };
     panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: stage.x(), sy: stage.y() };
     document.body.classList.add('panning');
     e.preventDefault(); e.stopPropagation();
@@ -8224,7 +8302,7 @@
   // Два ластика: eraser_full — стирает мазок целиком; eraser_fine — «точный»,
   // вырезает только точки в радиусе, штрих распадается на уцелевшие куски.
   let eraserActive = false, eraserOps = null, eraserRadius = 13, lastEraseW = null; // радиус в px экрана
-  function eraserDown() { eraserActive = true; eraserOps = []; lastEraseW = worldPoint(); eraserAt(lastEraseW); }
+  function eraserDown() { closeToolPanels(); eraserActive = true; eraserOps = []; lastEraseW = worldPoint(); eraserAt(lastEraseW); }
   function eraserMove() {
     if (!eraserActive) return;
     const w = worldPoint(), r = eraserRadius / stage.scaleX();
@@ -8284,13 +8362,24 @@
       const survived = runs.reduce((s, run) => s + run.length, 0);
       if (survived === dp.length) return; // штрих не задет
       changed = true;
-      eraserOps.push({ kind: 'del', el: clone(el) });
-      removeNode(el.id); send({ action: 'element_delete', id: el.id });
-      runs.forEach((run) => {
-        const nel = { id: uuid(), type: 'freehand', z: el.z, data: Object.assign({}, clone(d), { points: run }) };
+      if (!runs.length) {                     // от штриха ничего не осталось
+        eraserOps.push({ kind: 'del', el: clone(el) });
+        removeNode(el.id); send({ action: 'element_delete', id: el.id });
+        return;
+      }
+      // Первый уцелевший кусок ПЕРЕПИСЫВАЕМ на месте. Раньше штрих удалялся
+      // целиком и куски создавались заново: у себя это одна перерисовка и
+      // незаметно, а второму участнику приходят два разных сообщения, и между
+      // ними штрих успевает пропасть — это и мерцало.
+      const было = clone(el);
+      el.data.points = runs[0];
+      upsertNode(el); send({ action: 'element_update', element: stripPrivate(el) });
+      eraserOps.push({ kind: 'upd', before: было, after: clone(el) });
+      for (let k = 1; k < runs.length; k++) {  // разрез посередине — добавочные куски
+        const nel = { id: uuid(), type: 'freehand', z: el.z, data: Object.assign({}, clone(d), { points: runs[k] }) };
         upsertNode(nel); send({ action: 'element_add', element: nel });
         eraserOps.push({ kind: 'add', el: clone(nel) });
-      });
+      }
     });
     if (changed) layer.batchDraw();
   }
