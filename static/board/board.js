@@ -12025,10 +12025,31 @@
   const peers = new Map(); // userId → label
 
   let reconnectDelay = 1000, reconnectTimer = null;
+  // Сердцебиение: раз в 25 секунд шлём «ping», сервер отвечает «pong». Без
+  // этого обмена молчаливое соединение закрывает посредник — nginx рвёт по
+  // умолчанию через 60 секунд тишины, у мобильных операторов бывает и меньше.
+  // 25 секунд выбраны с запасом: даже если один ответ потеряется, до предела
+  // останется время на второй.
+  const BEAT_MS = 25000;
+  let beatTimer = null, lastCloseCode = 0;
+  function startBeat() {
+    stopBeat();
+    beatTimer = setInterval(() => {
+      if (!ws || ws.readyState !== 1) return;
+      try { ws.send(JSON.stringify({ action: 'ping' })); } catch (e) {}
+    }, BEAT_MS);
+  }
+  function stopBeat() { if (beatTimer) { clearInterval(beatTimer); beatTimer = null; } }
   let connBanner = null;
   const pendingOps = []; // правки, сделанные при разрыве связи — досылаем при реконнекте
   function setConnState(online) {
-    if (connDot) { connDot.classList.toggle('online', online); connDot.title = online ? 'Связь есть' : 'Связь потеряна — переподключаемся…'; }
+    if (connDot) {
+      connDot.classList.toggle('online', online);
+      // Код закрытия виден в подсказке: 1006 — оборвал посредник (таймаут сети),
+      // 1001 — ушли со страницы, 1011 — упал сервер. Без кода причину не найти.
+      connDot.title = online ? 'Связь есть'
+        : ('Связь потеряна — переподключаемся…' + (lastCloseCode ? ' (код ' + lastCloseCode + ')' : ''));
+    }
     if (online) { if (connBanner) connBanner.style.display = 'none'; }
     else {
       if (!connBanner) { connBanner = document.createElement('div'); connBanner.id = 'conn-banner'; connBanner.textContent = 'Связь потеряна — переподключаемся…'; document.body.appendChild(connBanner); }
@@ -12045,8 +12066,10 @@
     clearTimeout(reconnectTimer);
     const url = cfg.wsScheme + '://' + location.host + '/ws/board/' + cfg.code + '/';
     try { ws = new WebSocket(url); } catch (e) { scheduleReconnect(); return; }
-    ws.onopen = () => { reconnectDelay = 1000; setConnState(true); };
+    ws.onopen = () => { reconnectDelay = 1000; setConnState(true); startBeat(); };
     ws.onclose = (ev) => {
+      stopBeat();
+      lastCloseCode = (ev && ev.code) || 0;
       setConnState(false);
       // 4403 — сервер отказал в доступе (убрали с доски или её удалили).
       // Переподключаться бессмысленно: молча стучались бы вечно.
@@ -12112,6 +12135,7 @@
           ? 'Объект слишком большой — сервер его не сохранил'
           : 'Сервер не принял изменение');
         return;
+      case 'pong': break;   // сердцебиение: ответ получен, соединение живо
       case 'init':
         myId = msg.me;
         myLabel = msg.label || myLabel;
