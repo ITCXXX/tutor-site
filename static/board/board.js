@@ -218,7 +218,7 @@
 
   // ── История (шаг назад / вперёд) ───────────────────────────────────────
   const undoStack = [], redoStack = [];
-  const TYPE_NAMES = { frame: 'окно', point: 'точка', segment: 'отрезок', ray: 'луч', gline: 'прямая', perp: 'перпендикуляр', parallel: 'параллель', perpbis: 'сер. перпендикуляр', bisector: 'биссектриса', circ: 'окружность', circle: 'окружность', angle: 'угол', func: 'функция', implicit: 'кривая', region: 'область', ftangent: 'касательная', farea: 'площадь', fintersect: 'пересечение', vector: 'вектор', rect: 'прямоугольник', ellipse: 'эллипс', line: 'линия', arrow: 'стрелка', freehand: 'рисунок', text: 'текст', latex: 'формула', shape: 'фигура', image: 'картинка', pdf: 'PDF', measure: 'измерение', polygon: 'многоугольник', regpoly: 'многоугольник', table: 'таблица', kanban: 'канбан', timer: 'таймер', wheel: 'колесо', slider: 'ползунок', sticky: 'стикер', geogebra: 'ГеоГебра' };
+  const TYPE_NAMES = { frame: 'окно', point: 'точка', segment: 'отрезок', ray: 'луч', gline: 'прямая', perp: 'перпендикуляр', parallel: 'параллель', perpbis: 'сер. перпендикуляр', bisector: 'биссектриса', circ: 'окружность', circle: 'окружность', angle: 'угол', func: 'функция', implicit: 'кривая', region: 'область', ftangent: 'касательная', farea: 'площадь', fintersect: 'пересечение', vector: 'вектор', rect: 'прямоугольник', ellipse: 'эллипс', line: 'линия', arrow: 'стрелка', freehand: 'рисунок', text: 'текст', latex: 'формула', shape: 'фигура', comment: 'комментарий', image: 'картинка', pdf: 'PDF', measure: 'измерение', polygon: 'многоугольник', regpoly: 'многоугольник', table: 'таблица', kanban: 'канбан', timer: 'таймер', wheel: 'колесо', slider: 'ползунок', sticky: 'стикер', geogebra: 'ГеоГебра' };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function histAdd(el) { undoStack.push({ kind: 'add', el: clone(el) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
   function histDel(el) { undoStack.push({ kind: 'del', el: clone(el) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
@@ -851,7 +851,12 @@
   // ── Умные направляющие (как в Miro): при перетаскивании выравниваем края/центры
   // объекта к соседям (матокна, PDF, картинки, фигуры, таблицы) с прилипанием.
   let guideRefs = null; // боксы соседей {x,y,w,h}, снятые один раз за перетаскивание
-  const SNAP_BOX_TYPES = { frame: 1, image: 1, pdf: 1, shape: 1, rect: 1, ellipse: 1, text: 1, latex: 1 };
+  // Текста и формулы здесь намеренно НЕТ. Выравнивание по краю осмысленно у
+  // блоков с границами — картинка, окно, фигура. У текста границы нет, есть
+  // строки: выравниваться не по чему, а запись, которую ведут под текстом,
+  // прыгала вверх по его краю и налезала сверху. Сам текст к другим объектам
+  // по-прежнему притягивается — он тут в роли перетаскиваемого, а не соседа.
+  const SNAP_BOX_TYPES = { frame: 1, image: 1, pdf: 1, shape: 1, rect: 1, ellipse: 1 };
   function boxOfElem(el, id) {
     if (!el) return null;
     if (el.type === 'frame') return { x: el.data.x || 0, y: el.data.y || 0, w: el.data.width || 0, h: el.data.height || 0 };
@@ -3232,7 +3237,7 @@
   // ── Виджеты (таблица, канбан, таймер, колесо) — DOM-оверлей ─────────────
   const widgetLayerEl = document.getElementById('widget-layer');
   const widgetItems = new Map();
-  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card', 'embed', 'poll', 'screen'];
+  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card', 'embed', 'poll', 'screen', 'comment'];
 
   function repositionWidgets() {
     if (typeof recomputeConnectors === 'function') recomputeConnectors(); // стрелки к DOM-объектам
@@ -3339,6 +3344,7 @@
     else if (it.el.type === 'slider') buildSlider(it);
     else if (it.el.type === 'sticky') buildSticky(it);
     else if (it.el.type === 'card') buildCard(it);
+    else if (it.el.type === 'comment') buildComment(it);
   }
 
   // — Стикер — цветная заметка с текстом —
@@ -3356,6 +3362,53 @@
     it.update = render; render();
   }
   function insertSticky() { insertWidget('sticky', { text: '', color: STICKY_COLORS[0] }); }
+
+  // — Комментарий: свёрнутая метка, разворачивается в нить —
+  const COMMENT_MAX = 2000;   // символов в одной записи
+  const THREAD_MAX = 100;     // записей в нити: элемент не должен упереться в предел размера
+  function commentInitial(name) { const t = (name || '?').trim(); return t ? t.charAt(0).toUpperCase() : '?'; }
+  function buildComment(it) {
+    if (it._open == null) it._open = !((it.el.data.thread || []).length);  // новый — сразу открыт
+    const render = () => {
+      const d = it.el.data, нить = d.thread || [];
+      it.wrapper.classList.toggle('cmt-collapsed', !it._open);
+      it.wrapper.classList.toggle('cmt-done', !!d.resolved);
+      if (!it._open) {
+        const кто = нить.length ? нить[нить.length - 1].name : myLabel;
+        it.body.innerHTML = '<button class="cmt-dot" title="Показать комментарий">'
+          + escapeHtml(commentInitial(кто))
+          + (нить.length > 1 ? '<span class="cmt-n">' + нить.length + '</span>' : '') + '</button>';
+        it.body.querySelector('.cmt-dot').addEventListener('click', () => { it._open = true; render(); });
+        return;
+      }
+      const записи = нить.map((r) => '<div class="cmt-row"><span class="cmt-who">' + escapeHtml(r.name || '—')
+        + '</span><span class="cmt-at">' + escapeHtml(histTime(r.at)) + '</span>'
+        + '<div class="cmt-text">' + linkifyHtml(escapeHtml(r.text || '')) + '</div></div>').join('');
+      it.body.innerHTML = '<div class="cmt-head"><b>Комментарий</b>'
+        + '<button class="cmt-fold" title="Свернуть">–</button></div>'
+        + '<div class="cmt-list">' + (записи || '<div class="cmt-empty">Пока пусто</div>') + '</div>'
+        + '<textarea class="cmt-input" rows="2" maxlength="' + COMMENT_MAX + '" placeholder="Написать…"></textarea>'
+        + '<div class="cmt-actions"><button class="cmt-send">Отправить</button>'
+        + '<button class="cmt-res">' + (d.resolved ? 'Вернуть' : 'Решено') + '</button></div>';
+      const поле = it.body.querySelector('.cmt-input');
+      const отправить = () => {
+        const t = (поле.value || '').trim(); if (!t) return;
+        const н = it.el.data.thread || (it.el.data.thread = []);
+        if (н.length >= THREAD_MAX) { boardHint('В одной нити не больше ' + THREAD_MAX + ' записей'); return; }
+        н.push({ text: t.slice(0, COMMENT_MAX), name: myLabel || 'Аноним', at: Date.now() });
+        поле.value = ''; render(); syncWidget(it);
+      };
+      it.body.querySelector('.cmt-send').addEventListener('click', отправить);
+      // Enter отправляет, Shift+Enter — перенос строки: так привычнее в переписке.
+      поле.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); отправить(); } });
+      it.body.querySelector('.cmt-fold').addEventListener('click', () => { it._open = false; render(); });
+      it.body.querySelector('.cmt-res').addEventListener('click', () => {
+        it.el.data.resolved = it.el.data.resolved ? undefined : true; render(); syncWidget(it);
+      });
+    };
+    it.update = render; render();
+  }
+  function insertComment(at) { insertWidget('comment', { thread: [] }, at); }
 
   // — Карточка (двусторонняя): вопрос ↔ ответ, переворот по кнопке (как в Quizlet) —
   // Содержимое (front/back/цвет) синхронизируется; ТЕКУЩАЯ сторона — локальная у
@@ -6168,7 +6221,7 @@
     const clickedEl = elements.get(id);
     let carry = [];
     if (clickedEl && (clickedEl.type === 'image' || clickedEl.type === 'pdf')) {
-      carry = annotationsOnImage(clickedEl).filter((x) => x !== id && !selected.has(x));
+      carry = objectsOnCarrier(clickedEl).filter((x) => x !== id && !selected.has(x));
     }
     if ((selected.has(id) && selected.size > 1) || carry.length) {
       const lead = nodes.get(id);
@@ -6192,20 +6245,54 @@
       dragStart = null;
     }
   });
-  // Надписи карандашом/маркером, лежащие «на» картинке/pdf (центр штриха внутри неё).
-  function annotationsOnImage(imgEl) {
-    const d = imgEl.data, ib = { x: d.x || 0, y: d.y || 0, width: d.width || 0, height: d.height || 0 };
-    if (ib.width <= 0 || ib.height <= 0) return [];
+  // Всё, что лежит НА картинке или PDF, едет вместе с ней. Раньше ехали только
+  // штрихи карандаша, а подписи, формулы, стрелки и стикеры оставались на
+  // месте — и разбор отрывался от картинки, к которой относился.
+  //
+  // Носителями друг друга не считаем: картинка, PDF и матокно — самостоятельные
+  // объекты, они не должны утаскивать друг друга. И не трогаем то, что живёт
+  // ВНУТРИ матокна: у такого объекта координаты локальные, относительно окна, и
+  // сдвиг на мировые dx/dy оторвал бы его от окна.
+  const CARRY_SKIP = { image: 1, pdf: 1, frame: 1 };
+  function objectsOnCarrier(imgEl) {
+    const d = imgEl.data, ib = { x: d.x || 0, y: d.y || 0, w: d.width || 0, h: d.height || 0 };
+    if (ib.w <= 0 || ib.h <= 0) return [];
+    const внутри = (cx, cy) => cx >= ib.x && cx <= ib.x + ib.w && cy >= ib.y && cy <= ib.y + ib.h;
     const res = [];
     elements.forEach((el, eid) => {
-      if (el.type !== 'freehand') return; // карандаш и маркер
-      const n = nodes.get(eid); if (!n) return;
+      if (eid === imgEl.id || CARRY_SKIP[el.type]) return;
+      if (el.data && el.data.frame) return;          // геометрия внутри матокна
+      if (isPointBound(el)) return;                  // следует за своими точками
+      const w = widgetItems.get(eid);
+      if (w && w.wrapper) {                          // текст, стикер, таблица — DOM
+        const ww = w.wrapper.offsetWidth || 0, wh = w.wrapper.offsetHeight || 0;
+        if (внутри((el.data.x || 0) + ww / 2, (el.data.y || 0) + wh / 2)) res.push(eid);
+        return;
+      }
+      const n = nodes.get(eid); if (!n || typeof n.getClientRect !== 'function') return;
       const b = n.getClientRect({ relativeTo: layer });
-      const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
-      if (cx >= ib.x && cx <= ib.x + ib.width && cy >= ib.y && cy <= ib.y + ib.height) res.push(eid);
+      if (!b || (!b.width && !b.height)) return;
+      if (внутри(b.x + b.width / 2, b.y + b.height / 2)) res.push(eid);
     });
     return res;
   }
+  // Щелчок по объекту, которому задана ссылка, переходит по ней. Только
+  // инструментом «выделение» и только если это именно щелчок, а не окончание
+  // перетаскивания: иначе объект нельзя было бы просто подвинуть.
+  let clickDownAt = null;
+  stage.on('mousedown touchstart', (e) => {
+    if (e.evt && e.evt.button === 2) return;
+    const p = stage.getPointerPosition();
+    clickDownAt = p ? { x: p.x, y: p.y } : null;
+  });
+  stage.on('click tap', () => {
+    if (tool !== 'select' || !clickDownAt) return;
+    const p = stage.getPointerPosition();
+    if (!p || Math.hypot(p.x - clickDownAt.x, p.y - clickDownAt.y) > 4) return;  // это было перетаскивание
+    const w = stage.getRelativePointerPosition();
+    const g = w ? pickObjectAtWorld(w) : null;
+    if (g && g.data && g.data.link) openObjectLink(g);
+  });
   // Двойной клик по тексту — открыть редактор с его содержимым (в любом режиме).
   stage.on('dblclick dbltap', (e) => {
     let n = e.target;
@@ -6277,6 +6364,7 @@
     if (tool === 'wheel') { if (e.evt) e.evt.preventDefault(); insertWheel(); return; }
     if (tool === 'slider') { if (e.evt) e.evt.preventDefault(); insertSlider(); return; }
     if (tool === 'sticky') { if (e.evt) e.evt.preventDefault(); insertSticky(); return; }
+    if (tool === 'comment') { if (e.evt) e.evt.preventDefault(); insertComment(); return; }
     if (tool === 'card') { if (e.evt) e.evt.preventDefault(); insertCard(); return; }
     if (tool === 'laser') { if (e.evt) e.evt.preventDefault(); laserDown(); return; }
     if (isEraser(tool)) { if (e.evt) e.evt.preventDefault(); eraserDown(); return; }
@@ -8882,8 +8970,35 @@
   });
 
   // ── Порядок слоёв ──────────────────────────────────────────────────────
+  // dir: 'front' | 'back' — сразу наверх или вниз; 'up' | 'down' — на один шаг,
+  // то есть поменяться местами с ближайшим соседом по глубине. Шаг нужен, когда
+  // объектов много и прыжок через все ломает разложенный порядок.
   function moveElZ(ids, dir) {
     let mz = 0, minz = 0; elements.forEach((e) => { const z = e.z || 0; if (z > mz) mz = z; if (z < minz) minz = z; });
+    if (dir === 'up' || dir === 'down') {
+      ids.forEach((id) => {
+        const el = elements.get(id), n = nodes.get(id); if (!el || !n) return;
+        const мой = el.z || 0;
+        // Ближайший сосед по глубине в нужную сторону. Равные z разводим по
+        // порядку узлов, иначе объекты с одинаковым z никогда не разъедутся.
+        let сосед = null;
+        elements.forEach((e, eid) => {
+          if (eid === id || !nodes.get(eid)) return;
+          const z = e.z || 0;
+          if (dir === 'up' ? (z > мой) : (z < мой)) {
+            if (!сосед || (dir === 'up' ? z < сосед.z : z > сосед.z)) сосед = { id: eid, el: e, z: z };
+          }
+        });
+        const before = clone(el);
+        if (сосед) { el.z = сосед.z + (dir === 'up' ? 1 : -1); }
+        else { el.z = dir === 'up' ? ++mz : --minz; }
+        if (dir === 'up' && typeof n.moveUp === 'function') n.moveUp();
+        if (dir === 'down' && typeof n.moveDown === 'function') n.moveDown();
+        histUpd(before, el); send({ action: 'element_update', element: el });
+      });
+      refreshTransformer(); layer.batchDraw();
+      return;
+    }
     ids.forEach((id) => {
       const el = elements.get(id), n = nodes.get(id); if (!el || !n) return; const before = clone(el);
       if (dir === 'front') { el.z = ++mz; if (typeof n.moveToTop === 'function') n.moveToTop(); }
@@ -8891,6 +9006,86 @@
       histUpd(before, el); send({ action: 'element_update', element: el });
     });
     refreshTransformer(); layer.batchDraw();
+  }
+  // ── Замок ──────────────────────────────────────────────────────────────
+  // data.locked уважается всюду (перетаскивание, двойной щелчок, якоря), но
+  // поставить его можно было только точке — чекбоксом в её настройках.
+  function setLocked(ids, locked) {
+    ids.forEach((id) => {
+      const el = elements.get(id); if (!el) return;
+      const before = clone(el); el.data.locked = locked ? true : undefined;
+      const n = nodes.get(id);
+      if (n && typeof n.draggable === 'function') n.draggable(!locked && tool === 'select' && !viewOnly && !isPointBound(el) && el.type !== 'frame');
+      histUpd(before, el); send({ action: 'element_update', element: el });
+    });
+    renderAnchors(); refreshTransformer(); layer.batchDraw();
+    boardHint(locked ? 'Заблокировано: объект не двигается и не правится' : 'Разблокировано');
+  }
+  function allLocked(ids) { return ids.length > 0 && ids.every((id) => { const e = elements.get(id); return e && e.data && e.data.locked; }); }
+  // ── Ссылка на объект: якорь в адресе ───────────────────────────────────
+  // Хеш, а не параметр запроса: хеш не уходит на сервер и не оседает в журналах.
+  function boardLink(eid) { return location.origin + location.pathname + '#o=' + encodeURIComponent(eid); }
+  // Адрес вида …/board/КОД/#o=<id>: доезжаем до объекта и подсвечиваем его.
+  // Картинки и виджеты появляются не сразу, поэтому пробуем ещё раз кадром позже.
+  function gotoHashAnchor() {
+    const m = /^#o=(.+)$/.exec(location.hash || ''); if (!m) return;
+    const eid = decodeURIComponent(m[1]);
+    const дойти = () => { if (elements.get(eid)) focusElement(eid); };
+    дойти(); requestAnimationFrame(дойти);
+  }
+  window.addEventListener('hashchange', gotoHashAnchor);
+  // Копирование в буфер с честным запасным путём: браузер может не дать доступ
+  // (нет фокуса, не https), и молча отказывать нельзя — показываем текст.
+  function copyText(text, чтоЭто) {
+    const вручную = () => {
+      boardHint('Не удалось скопировать — текст показан, скопируйте вручную');
+      window.prompt(чтоЭто || 'Скопируйте:', text);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => boardHint('Скопировано')).catch(вручную);
+    } else вручную();
+  }
+  // Внешний адрес: только http и https. Ссылку кладёт один участник, а щёлкают
+  // по ней все, поэтому javascript:… или data:… выполнили бы чужой код у
+  // каждого. Та же проверка продублирована на сервере.
+  function safeLinkUrl(raw) {
+    const t = (raw || '').trim(); if (!t) return null;
+    let u; try { u = new URL(t); } catch (e) { try { u = new URL('https://' + t); } catch (e2) { return null; } }
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+  }
+  function openObjectLink(el) {
+    const L = el && el.data && el.data.link; if (!L) return false;
+    if (L.kind === 'obj') { focusElement(L.id); return true; }
+    if (L.kind === 'url') {
+      const href = safeLinkUrl(L.href); if (!href) { boardHint('Ссылка испорчена и не открыта'); return true; }
+      // Шаг для безопасности: наружу уходим только с подтверждением и показываем,
+      // куда именно. Ссылку мог положить другой участник.
+      let host = href; try { host = new URL(href).host; } catch (e) {}
+      if (window.confirm('Открыть внешний сайт?\n\n' + host + '\n\n' + href)) window.open(href, '_blank', 'noopener,noreferrer');
+      return true;
+    }
+    return false;
+  }
+  function askLinkFor(ids) {
+    const el = ids.length === 1 ? elements.get(ids[0]) : null; if (!el) { boardHint('Выберите один объект'); return; }
+    const было = el.data.link ? (el.data.link.kind === 'url' ? el.data.link.href : boardLink(el.data.link.id)) : '';
+    const txt = window.prompt('Куда ведёт ссылка?\n\nВставьте адрес сайта или ссылку на объект этой доски\n(её даёт пункт «Копировать ссылку»).\nПустая строка — убрать ссылку.', было);
+    if (txt === null) return;
+    const before = clone(el);
+    const t = txt.trim();
+    if (!t) { el.data.link = undefined; boardHint('Ссылка убрана'); }
+    else {
+      // Свой же адрес доски с якорем — это переход внутри доски.
+      let свой = null;
+      try { const u = new URL(t, location.href); if (u.pathname === location.pathname && /^#o=/.test(u.hash)) свой = decodeURIComponent(u.hash.slice(3)); } catch (e) {}
+      if (свой) { el.data.link = { kind: 'obj', id: свой }; boardHint('Ссылка на объект доски'); }
+      else {
+        const href = safeLinkUrl(t);
+        if (!href) { boardHint('Не похоже на адрес. Разрешены только http и https'); return; }
+        el.data.link = { kind: 'url', href: href }; boardHint('Внешняя ссылка добавлена');
+      }
+    }
+    histUpd(before, el); send({ action: 'element_update', element: el });
   }
   // ── Выравнивание выделенных объектов (по рамкам) ───────────────────────
   function moveItemTo(o, b, nx, ny, ops) {
@@ -8934,8 +9129,16 @@
     { label: 'Вырезать', key: 'Ctrl+X', act: function () { copySelected(true); } },
     { label: 'Дублировать', key: 'Ctrl+D', act: duplicateSelected },
     { label: 'Скрыть', key: 'H', act: () => { if (selected.size) setHidden(Array.from(selected), true); } },
+    { sep: true },
+    { label: 'Выше', act: () => moveElZ(Array.from(selected), 'up') },
+    { label: 'Ниже', act: () => moveElZ(Array.from(selected), 'down') },
     { label: 'На передний план', act: () => moveElZ(Array.from(selected), 'front') },
     { label: 'На задний план', act: () => moveElZ(Array.from(selected), 'back') },
+    { sep: true },
+    { label: 'Копировать ссылку', act: () => { const id = Array.from(selected)[0]; if (id) copyText(boardLink(id), 'Ссылка на объект:'); } },
+    { label: 'Связать с…', act: () => askLinkFor(Array.from(selected)) },
+    { label: 'Комментировать', act: () => insertComment(ctxWorld) },
+    { label: 'Заблокировать', act: () => { const ids = Array.from(selected); setLocked(ids, !allLocked(ids)); } },
     { sep: true },
     { label: 'Удалить', key: 'Del', danger: true, act: deleteSelected },
   ];
@@ -9061,7 +9264,12 @@
         const s = document.createElement('div'); s.className = 'ctx-sep'; ctxMenu.appendChild(s);
       }
     }
-    CTX_ITEMS.forEach(put);
+    // Замок — переключатель, поэтому подпись зависит от текущего состояния.
+    const _ids = Array.from(selected);
+    CTX_ITEMS.forEach((it) => {
+      if (it.label === 'Заблокировать') put(Object.assign({}, it, { label: allLocked(_ids) ? 'Разблокировать' : 'Заблокировать' }));
+      else put(it);
+    });
     ctxMenu.style.left = Math.min(x, window.innerWidth - 210) + 'px';
     ctxMenu.style.top = Math.min(y, window.innerHeight - 260) + 'px';
     ctxMenu.style.display = 'block';
@@ -9481,7 +9689,7 @@
 
   // Инструменты, создающие объект «в точке». Ключ — имя инструмента.
   const DROP_MAKE = {
-    sticky: insertSticky, card: insertCard, table: insertTable, kanban: insertKanban,
+    sticky: insertSticky, comment: insertComment, card: insertCard, table: insertTable, kanban: insertKanban,
     timer: insertTimer, wheel: insertWheel, slider: insertSlider,
     text_plain: insertTextbox, geogebra: insertGeoGebra, point: placePoint, embed: insertEmbed, poll: insertPoll, venn: insertVenn,
     screen: function () { setTool('select'); startScreenShare(); },
@@ -11918,6 +12126,7 @@
         (msg.elements || []).forEach(upsertNode);
         reattachFuncs(); // функции могли загрузиться раньше своих окон
         recomputeGeometry(); // построения — после загрузки всех точек
+        gotoHashAnchor();  // адрес мог содержать #o=<объект> — доезжаем до него
         applyMyRole();
         if (boardIsOwner) refreshAccessPanel();
         boardHistory = msg.history || [];

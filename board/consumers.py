@@ -471,6 +471,15 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             if not _embed_host_allowed(url):
                 return None, None
 
+        # Ссылка «Связать с…»: её кладёт один участник, а щёлкают по ней все.
+        # Клиент проверяет схему сам, но клиентскую проверку обходят запросом
+        # мимо интерфейса, поэтому повторяем здесь: наружу — только http и https.
+        link = (data or {}).get('link')
+        if isinstance(link, dict) and link.get('kind') == 'url':
+            href = link.get('href')
+            if not isinstance(href, str) or not href.lower().startswith(('http://', 'https://')):
+                return None, None
+
         # Голосование: итоги живут в data['votes'] и меняются ТОЛЬКО отдельным
         # действием poll_vote, где сервер записывает голос за отправителя.
         # Обычная правка объекта (подвинули, переименовали вопрос, сменили
