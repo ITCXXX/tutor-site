@@ -346,6 +346,12 @@ apt update && apt install -y coturn
 sed -i 's/^#*TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn
 ```
 
+**Учтите:** apt запускает coturn сразу, с заводским конфигом. Поэтому в конце
+(шаг 10.7) нужен именно `restart` — «enable --now» на уже работающей службе
+перезапуска не делает, и ваш файл настроек остался бы непрочитанным. Признак
+беды: в журнале жалобы на `turn_server_cert.pem` и пустой `cli-password`,
+которых в нашем конфиге нет вовсе.
+
 ### 10.2. Придумать общий секрет
 
 Это пароль, которым сайт подписывает временные пропуска, а coturn их
@@ -384,6 +390,13 @@ groupadd -f ssl-cert
 usermod -aG ssl-cert turnserver
 chgrp -R ssl-cert /etc/letsencrypt/live /etc/letsencrypt/archive
 chmod -R g+rX /etc/letsencrypt/live /etc/letsencrypt/archive
+```
+
+Заодно создадим файл журнала: сам coturn его не создаёт и, не сумев открыть,
+пишет «Cannot open log file for writing».
+
+```bash
+touch /var/log/turnserver.log && chown turnserver:turnserver /var/log/turnserver.log
 ```
 
 Certbot при обновлении сертификата сбрасывает права обратно, поэтому добавим
@@ -433,15 +446,23 @@ systemctl restart tutor tutor-ws
 ### 10.7. Запустить и проверить
 
 ```bash
-systemctl enable --now coturn
-systemctl status coturn --no-pager
+systemctl enable coturn && systemctl restart coturn
+systemctl is-active coturn
 ```
 
-Проверка, что порты слушаются:
+Проверка, что порты слушаются. Смотреть надо ОБА списка: 3478 работает по UDP,
+а защищённый 5349 — по TCP, и по одному только UDP его отсутствие незаметно.
 
 ```bash
-ss -lnup | grep -E '3478|5349'
-ss -lntp | grep -E '3478|5349'
+ss -lnu | grep -E '3478|5349'
+ss -lnt | grep -E '3478|5349'
+```
+
+И проверка, что конфиг принят целиком, а не до первой непонятной строки —
+список должен получиться пустым:
+
+```bash
+journalctl -u coturn --since '-1 min' --no-pager | grep -iE 'error|warning|cannot'
 ```
 
 Проверка, что сайт выдаёт пропуска (должны появиться `turn:` и `turns:`):
@@ -460,7 +481,11 @@ cd /opt/tutor && sudo -u tutor venv/bin/python manage.py shell -c \
 
 | Симптом | Куда смотреть |
 |---------|---------------|
-| coturn не стартует | `journalctl -u coturn -n 50` — почти всегда права на сертификат (шаг 10.4) |
+| coturn не стартует | `journalctl -u coturn -n 50` — чаще всего права на сертификат (шаг 10.4) |
+| В журнале ищет `turn_server_cert.pem` | Работает заводской конфиг: нужен `systemctl restart coturn`, а не «enable --now» |
+| `CONFIG ERROR: … must set --max-bps` | `bps-capacity` задан без `max-bps` — оба должны быть в конфиге |
+| `Cannot open log file for writing` | Файл журнала не создан: `touch /var/log/turnserver.log && chown turnserver:turnserver /var/log/turnserver.log` |
+| Соединяется, но звук рвётся | Полоса в конфиге задана в БАЙТАХ в секунду, не в килобитах: `max-bps` ниже ~50000 душит даже голос |
 | В панели «не удалось соединиться» | открыты ли порты 49160–49200/udp; совпадает ли секрет в `.env` и `/etc/turnserver.conf` |
 | Пусто в списке серверов | `.env` не перечитан — перезапустите `tutor` и `tutor-ws` |
 | Работает у вас, не работает у ученика | проверьте с мобильного интернета: это и есть тот случай, ради которого ставился coturn |
