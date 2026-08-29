@@ -1931,6 +1931,27 @@
         </div>
     </div>
 </div>
+<div id="sticky-panel" class="conn-panel ps-hidden">
+    <div class="cn-bar">
+        <button type="button" class="cn-tool" id="stp-color-btn" title="Цвет заметки">
+            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M5 4h9l5 5v11H5z" fill="currentColor" fill-opacity=".25"/><path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/></svg>
+            <span class="cn-dot" id="stp-color-dot"></span>
+        </button>
+        <button type="button" class="cn-tool" id="stp-size-btn" title="Размер текста">
+            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M4 7h9"/><path d="M8.5 7v12"/><path d="M14 11h6"/><path d="M17 11v8"/></svg>
+        </button>
+    </div>
+    <div class="cn-pop ps-hidden" id="stp-color-pop">
+        <div class="cp-grid" id="stp-colors"></div>
+    </div>
+    <div class="cn-pop ps-hidden" id="stp-size-pop">
+        <div class="cn-wrow"><span class="cn-wlbl">Размер</span>
+            <input type="range" id="stp-size-range" class="cn-range" min="11" max="30">
+            <input type="number" id="stp-size-num" class="cn-num" min="11" max="30">
+        </div>
+    </div>
+</div>
+
 <div id="shape-panel" class="conn-panel ps-hidden">
     <div class="cn-bar">
         <button type="button" class="cn-tool" id="sp-border-btn" title="Граница: цвет и толщина">

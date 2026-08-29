@@ -3261,6 +3261,7 @@
     });
     if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
     if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
+    if (typeof positionStickyPanel === 'function') positionStickyPanel();
     // У текста, стикеров и таблиц угловых ручек нет, значит через
     // positionHandles их якоря не обновятся — двигаем здесь.
     if (typeof renderAnchors === 'function') renderAnchors();
@@ -3366,11 +3367,13 @@
     const render = () => {
       const d = it.el.data, col = d.color || STICKY_COLORS[0];
       it.wrapper.style.background = col;
-      it.body.innerHTML = '<div class="stk-colors">' + STICKY_COLORS.map((c) => '<span class="stk-c' + (c === col ? ' on' : '') + '" data-c="' + c + '" style="background:' + c + '"></span>').join('') + '</div>'
-        + '<textarea class="stk-text" placeholder="Заметка…">' + escapeAttr(d.text || '') + '</textarea>';
+      // Кружки выбора цвета убраны из тела: они занимали верх заметки и вели
+      // себя не как у прочих объектов доски. Цвет и размер текста теперь в
+      // плавающей панели над выделенным стикером — как у фигур.
+      it.body.innerHTML = '<textarea class="stk-text" placeholder="Заметка…">' + escapeAttr(d.text || '') + '</textarea>';
       const ta = it.body.querySelector('.stk-text');
+      ta.style.fontSize = (d.fontSize || 14) + 'px';
       ta.addEventListener('input', () => { it.el.data.text = ta.value; syncWidget(it); });
-      it.body.querySelectorAll('.stk-c').forEach((s) => s.addEventListener('click', () => { it.el.data.color = s.dataset.c; render(); syncWidget(it); }));
     };
     it.update = render; render();
   }
@@ -7472,6 +7475,9 @@
     // Панель фигуры — у одиночной фигуры (прямоугольник/эллипс/фигура).
     const shapeEl = (el && SHAPE_TYPES_PANEL.indexOf(el.type) >= 0 && tool === 'select' && !(el.data && el.data.locked) && !(el.data && el.data.hidden)) ? el : null;
     if (shapeEl) showShapePanel(shapeEl); else hideShapePanel();
+    // Панель стикера — там же, где решается судьба остальных панелей.
+    const stickyEl = stickySelectedEl();
+    if (stickyEl) showStickyPanel(stickyEl); else hideStickyPanel();
     // Штрихи карандаша и маркера — своя панель с цветом и толщиной.
     const strokeEls = strokeSelectedEls();
     if (strokeEls.length) showStrokePanel(strokeEls[0]); else hideStrokePanel();
@@ -10620,6 +10626,74 @@
   function toggleShapePop(which) { const pop = document.getElementById(SP_POPS[which]), wasHidden = pop.classList.contains('ps-hidden'); closeShapePops(); if (wasHidden) { pop.classList.remove('ps-hidden'); document.getElementById(SP_BTNS[which]).classList.add('cn-open'); } }
   Object.keys(SP_BTNS).forEach((which) => document.getElementById(SP_BTNS[which]).addEventListener('click', (e) => { e.stopPropagation(); if (!shapeSelectedEl()) return; renderShapePanel(); toggleShapePop(which); }));
   document.addEventListener('click', (e) => { if (!shapePanel.classList.contains('ps-hidden') && !shapePanel.contains(e.target)) closeShapePops(); });
+  // ── Панель стикера: цвет заметки и размер текста ──────────────────────
+  // Устроена так же, как панель фигуры, и показывается из того же места.
+  // Отличие одно: стикер — HTML-объект, а не фигура на холсте, поэтому
+  // положение панели считаем по рамке его обёртки, а не по узлу Konva.
+  const stickyPanel = document.getElementById('sticky-panel');
+  function stickySelectedEl() {
+    if (tool !== 'select' || selected.size !== 1) return null;
+    const el = elements.get(Array.from(selected)[0]);
+    if (!el || el.type !== 'sticky') return null;
+    if (el.data && (el.data.locked || el.data.hidden)) return null;
+    return el;
+  }
+  function closeStickyPops() {
+    ['stp-color-pop', 'stp-size-pop'].forEach((id) => { const p = document.getElementById(id); if (p) p.classList.add('ps-hidden'); });
+  }
+  function renderStickyPanel() {
+    const el = stickySelectedEl(); if (!el) return; const d = el.data;
+    const col = d.color || STICKY_COLORS[0];
+    const dot = document.getElementById('stp-color-dot'); if (dot) dot.style.background = col;
+    document.querySelectorAll('#stp-colors .cp-sw').forEach((sw) => {
+      sw.classList.toggle('cp-sel', (sw.dataset.color || '').toLowerCase() === String(col).toLowerCase());
+    });
+    const fs = d.fontSize || 14;
+    const r = document.getElementById('stp-size-range'), n = document.getElementById('stp-size-num');
+    if (r) r.value = fs; if (n) n.value = fs;
+  }
+  function positionStickyPanel(el) {
+    el = el || stickySelectedEl(); if (!el || !stickyPanel) return;
+    const it = widgetItems.get(el.id); if (!it || !it.wrapper) return;
+    const cr = it.wrapper.getBoundingClientRect();
+    const pw = stickyPanel.offsetWidth || 110, ph = stickyPanel.offsetHeight || 48;
+    let left = cr.left + cr.width / 2 - pw / 2, top = cr.top - ph - 14;
+    if (top < 70) top = cr.bottom + 14;
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    top = Math.max(70, Math.min(top, window.innerHeight - ph - 8));
+    stickyPanel.style.left = left + 'px'; stickyPanel.style.top = top + 'px';
+  }
+  function showStickyPanel(el) { if (!stickyPanel) return; renderStickyPanel(); stickyPanel.classList.remove('ps-hidden'); positionStickyPanel(el); }
+  function hideStickyPanel() { if (stickyPanel && !stickyPanel.classList.contains('ps-hidden')) { closeStickyPops(); stickyPanel.classList.add('ps-hidden'); } }
+  function applyStickySetting(изменить) {
+    const el = stickySelectedEl(); if (!el) return;
+    const before = clone(el); изменить(el.data);
+    const it = widgetItems.get(el.id); if (it && it.update) it.update();
+    if (it) { it.wrapper.style.background = el.data.color || STICKY_COLORS[0]; }
+    histUpd(before, el); send({ action: 'element_update', element: el });
+    renderStickyPanel();
+  }
+  (function wireStickyPanel() {
+    if (!stickyPanel) return;
+    const grid = document.getElementById('stp-colors');
+    if (grid) STICKY_COLORS.forEach((c) => {
+      const sw = document.createElement('div');
+      sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c;
+      sw.addEventListener('click', () => applyStickySetting((d) => { d.color = c; }));
+      grid.appendChild(sw);
+    });
+    const пара = (id, поле) => {
+      const el = document.getElementById(id); if (!el) return;
+      el.addEventListener('input', () => applyStickySetting((d) => { d[поле] = parseInt(el.value, 10) || 14; }));
+    };
+    пара('stp-size-range', 'fontSize'); пара('stp-size-num', 'fontSize');
+    const кнопка = (btn, pop) => {
+      const b = document.getElementById(btn), p = document.getElementById(pop); if (!b || !p) return;
+      b.addEventListener('click', (e) => { e.stopPropagation(); const было = p.classList.contains('ps-hidden'); closeStickyPops(); if (было) p.classList.remove('ps-hidden'); });
+    };
+    кнопка('stp-color-btn', 'stp-color-pop'); кнопка('stp-size-btn', 'stp-size-pop');
+    document.addEventListener('click', (e) => { if (!stickyPanel.contains(e.target)) closeStickyPops(); });
+  })();
   function renderShapePanel() {
     const el = shapeSelectedEl(); if (!el) return; const d = el.data;
     const bw = d.strokeWidth == null ? 2 : d.strokeWidth;
