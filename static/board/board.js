@@ -4821,14 +4821,21 @@
     // Настройки фона окна (по умолчанию — сетка линиями + оси с подписями).
     const gridOn = d.gridOn !== false, axesOn = d.axesOn !== false, dots = d.gridStyle === 'dots';
     const gc = d.gridColor || '#e4e6ee'; // цвет рисунка окна (линии/точки)
+    // Волосяная линия и точка постоянного размера НА ЭКРАНЕ — ровно так же
+    // рисуется фон самой доски. Прежде толщина здесь была задана в координатах
+    // окна и росла вместе с приближением: на 200% сетка окна выходила вдвое
+    // толще сетки доски рядом с ним.
+    const мсш = stage.scaleX() || 1;
+    const волос = 1 / мсш;
     ctx.save();
     if (gridOn && dots) {
       // Точки в узлах сетки.
       ctx.fillStyle = gc;
-      for (let mx = sx; mx <= xR; mx += step) { const px = X2P(mx); for (let my = sy; my <= yT; my += step) { ctx.beginPath(); ctx.arc(px, Y2P(my), 1.1, 0, 2 * Math.PI); ctx.fill(); } }
+      const r = 1.1 / мсш;
+      for (let mx = sx; mx <= xR; mx += step) { const px = X2P(mx); for (let my = sy; my <= yT; my += step) { ctx.beginPath(); ctx.arc(px, Y2P(my), r, 0, 2 * Math.PI); ctx.fill(); } }
     } else if (gridOn) {
       // Сетка линиями.
-      ctx.beginPath(); ctx.lineWidth = 1; ctx.strokeStyle = gc;
+      ctx.beginPath(); ctx.lineWidth = волос; ctx.strokeStyle = gc;
       for (let mx = sx; mx <= xR; mx += step) { const px = X2P(mx); ctx.moveTo(px, plotTop); ctx.lineTo(px, H); }
       for (let my = sy; my <= yT; my += step) { const py = Y2P(my); ctx.moveTo(0, py); ctx.lineTo(W, py); }
       ctx.stroke();
@@ -4837,7 +4844,7 @@
     const ax = X2P(0), ay = Y2P(0);
     if (axesOn) {
       // Оси и подписи перекрашиваются вместе с рисунком (d.gridColor), иначе — свои дефолты.
-      ctx.beginPath(); ctx.lineWidth = 1.4; ctx.strokeStyle = d.gridColor || '#b8b8c2';
+      ctx.beginPath(); ctx.lineWidth = 1.4 / мсш; ctx.strokeStyle = d.gridColor || '#b8b8c2';
       if (ax >= 0 && ax <= W) { ctx.moveTo(ax, plotTop); ctx.lineTo(ax, H); }
       if (ay >= plotTop && ay <= H) { ctx.moveTo(0, ay); ctx.lineTo(W, ay); }
       ctx.stroke();
@@ -5863,6 +5870,18 @@
     if (bm) bm.hidden = true; if (bb) bb.classList.remove('on');
     // Мобильный лист — тоже панель поверх доски.
     if (typeof closeMobileSheet === 'function') closeMobileSheet();
+  }
+  // Округление значения ползунка толщины до половины. Раньше все три панели
+  // настроек читали толщину целым числом, и половинные значения новых наборов
+  // (1.5 и 2.5) при первом же касании ползунка пропадали навсегда.
+  function полшага(v, lo, hi, шаг) {
+    шаг = шаг || 0.5;
+    let x = parseFloat(v);
+    if (!isFinite(x)) x = lo;
+    x = Math.round(x / шаг) * шаг;
+    x = Math.max(lo, Math.min(hi, x));
+    // 1.5 остаётся 1.5, а 3.0 печатается как 3 — иначе в поле видно «3.0».
+    return Math.round(x * 100) / 100;
   }
   const PEN_MIN_STEP = 2;   // ближе этого (пикселей экрана) точки в штрих не берём
   // Лёгкое сглаживание: каждая внутренняя точка подтягивается к среднему с
@@ -7092,7 +7111,7 @@
 
   // Панели поверх доски: нажатие на них — не перемещение.
   const PAN_SKIP = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
-    + ' #access-panel, #voice-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control,'
+    + ' #people-panel, #voice-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control,'
     + ' #settings-btn, #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor,'
     + ' #tbox-bar, #tbl-bar, #venn-bar, #dp-pop, #eraser-panel, #storyboard, #pdf-controls,'
     + ' #frame-exit-btn, #mobile-sheet, #mobile-fab, #mobile-backdrop, #embed-dialog,'
@@ -8899,7 +8918,11 @@
     thick.addEventListener('input', (e) => {
       // parseFloat, а не parseInt: толщины теперь дробные (1.5, 2.5), и целое
       // округление съело бы их при первом же касании ползунка.
-      const key = drawKey(tool); if (!key) return; const p = dpActive(key); const v = parseFloat(e.target.value);
+      // Если сейчас не рисующий инструмент — правим карандаш. На компьютере
+      // этого не случается (панель открыта только при рисующем), а вот в
+      // мобильном листе ползунок «Толщина» доступен всегда, и молчаливое
+      // бездействие выглядело бы поломкой.
+      const key = drawKey(tool) || 'pen'; const p = dpActive(key); const v = parseFloat(e.target.value);
       if (key === 'eraser') p.r = v; else p.w = v;
       document.getElementById('dp-thick-val').textContent = v; applyDrawPreset(key); saveDrawCfg();
       const btn = document.querySelectorAll('#dp-presets .dp-preset')[drawCfg[key].active]; if (btn) btn.innerHTML = dpDemoHtml(key, p);
@@ -10041,7 +10064,7 @@
     if (!bar) return;
     // Панели поверх холста — бросать в них нельзя.
     const PANELS = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
-      + ' #access-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control, #settings-btn,'
+      + ' #people-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control, #settings-btn,'
       + ' #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor, #tbox-bar,'
       + ' #dp-pop, #eraser-panel, #storyboard, #pdf-controls, #frame-exit-btn,'
       + ' #mobile-sheet, #mobile-fab, #mobile-backdrop';
@@ -10119,6 +10142,8 @@
     // Esc во время перетаскивания — отменить.
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && cropId) { endCropMode(); boardHint('Обрезка отменена'); return; }
+      // Панель участников закрывается Escape наравне с крестиком и щелчком мимо.
+      if (e.key === 'Escape') { const pp = document.getElementById('people-panel'); if (pp && !pp.hidden) { togglePeoplePanel(false); return; } }
       if (e.key === 'Escape' && panMode && !dragging) { setPanMode(false); return; }
     if (e.key === 'Escape' && dragging) {
         const btn = src; cleanup(); src = null; pid = null; dragging = false;
@@ -10430,7 +10455,9 @@
     const range = document.getElementById('fs-width-range'), num = document.getElementById('fs-width-num');
     let snap = null;
     const startSnap = () => { snap = figureTargets().map(clone); };
-    const live = (v) => { v = Math.max(1, Math.min(16, parseInt(v, 10) || 1)); range.value = v; num.value = v; recFigDefault('strokeWidth', v); liveFigureSetting((e) => { e.data.strokeWidth = v; }); };
+    // Полшага, а не целое: наборы пера и фигур теперь 1.5 / 2.5 / 4, и целое
+    // округление молча портило нарисованное — тронул ползунок, и 1.5 стало 1.
+    const live = (v) => { v = полшага(v, 0.5, 16); range.value = v; num.value = v; recFigDefault('strokeWidth', v); liveFigureSetting((e) => { e.data.strokeWidth = v; }); };
     const commit = () => { const before = snap; snap = null; if (onlyNew && fsMode === 'all') return; if (before) before.forEach((b) => { const el = elements.get(b.id); if (el) { histUpd(b, el); send({ action: 'element_update', element: el }); } }); else figureTargets().forEach((el) => send({ action: 'element_update', element: el })); };
     range.addEventListener('mousedown', startSnap); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
     num.addEventListener('focus', startSnap); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
@@ -10682,8 +10709,9 @@
   });
   (function wireStrokeSliders() {
     const pairs = [
-      { r: 'st-width-range', n: 'st-width-num', lo: 1, hi: 40, set: (el, v) => { el.data.strokeWidth = v; } },
-      { r: 'st-opacity-range', n: 'st-opacity-num', lo: 10, hi: 100, set: (el, v) => { el.data.opacity = v / 100; } },
+      // step: 0.5 у толщины — иначе тонкий штрих 1.5 не выставить и не сохранить.
+      { r: 'st-width-range', n: 'st-width-num', lo: 0.5, hi: 40, step: 0.5, set: (el, v) => { el.data.strokeWidth = v; } },
+      { r: 'st-opacity-range', n: 'st-opacity-num', lo: 10, hi: 100, step: 1, set: (el, v) => { el.data.opacity = v / 100; } },
     ];
     pairs.forEach((p) => {
       const range = document.getElementById(p.r), num = document.getElementById(p.n);
@@ -10693,7 +10721,7 @@
       // движение, а не по шагу на каждый пиксель ползунка.
       const start = () => { snaps = strokeSelectedEls().map((el) => clone(el)); };
       const live = (v) => {
-        v = Math.max(p.lo, Math.min(p.hi, parseInt(v, 10) || p.lo));
+        v = полшага(v, p.lo, p.hi, p.step);
         range.value = v; num.value = v;
         strokeSelectedEls().forEach((el) => { p.set(el, v); upsertNode(el); });
         layer.batchDraw();
@@ -10728,7 +10756,7 @@
   (function () { // толщина границы: ползунок + число, живое + фиксация
     const range = document.getElementById('sp-border-range'), num = document.getElementById('sp-border-num'); let snap = null;
     const start = () => { const el = shapeSelectedEl(); snap = el ? clone(el) : null; };
-    const live = (v) => { v = Math.max(0, Math.min(24, parseInt(v, 10) || 0)); range.value = v; num.value = v; const el = shapeSelectedEl(); if (!el) return; el.data.strokeWidth = v; upsertNode(el); layer.batchDraw(); };
+    const live = (v) => { v = полшага(v, 0, 24); range.value = v; num.value = v; const el = shapeSelectedEl(); if (!el) return; el.data.strokeWidth = v; upsertNode(el); layer.batchDraw(); };
     const commit = () => { const before = snap; snap = null; const el = shapeSelectedEl(); if (el) { if (before) histUpd(before, el); send({ action: 'element_update', element: el }); } };
     range.addEventListener('mousedown', start); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
     num.addEventListener('focus', start); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
@@ -11286,8 +11314,10 @@
     }
     const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
     on('reveal-hidden', toggleRevealHidden);
-    on('present-btn', () => setPresenter(!presenterOn));
-    on('follow-btn', () => setFollow(!followOn));
+    on('people-btn', () => togglePeoplePanel());
+    on('people-close', () => togglePeoplePanel(false));
+    on('lead-all-btn', () => setLeadAll(!leadAll));
+    on('unfollow-btn', () => setFollowUid(null));
     on('board-menu-btn', () => toggleBoardMenu());
     const bgSeg = document.getElementById('bg-seg');
     if (bgSeg) bgSeg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setBoardBg(b.dataset.bg); });
@@ -11312,19 +11342,22 @@
       if (e.target === pdfDlg || e.target.closest('#pdf-x-cancel')) { pdfDlg.hidden = true; return; }
       const b = e.target.closest('.pdf-mode'); if (b) { pdfDlg.hidden = true; exportBoardPdf(b.dataset.mode); }
     });
-    on('access-btn', () => toggleAccessPanel());
+
     const erSize = document.getElementById('eraser-size');
     if (erSize) erSize.addEventListener('input', () => { eraserRadius = +erSize.value; const v = document.getElementById('eraser-size-val'); if (v) v.textContent = eraserRadius; });
     // Роль по ссылке (владелец): переключение сегмента.
     const apDefault = document.getElementById('ap-default');
-    if (apDefault) apDefault.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; boardDefaultRole = b.dataset.role; refreshAccessPanel(); send({ action: 'set_role', target: null, role: b.dataset.role }); });
-    // Личная роль участника (владелец).
-    const apPeople = document.getElementById('ap-people');
+    if (apDefault) apDefault.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; boardDefaultRole = b.dataset.role; renderPeoplePanel(); send({ action: 'set_role', target: null, role: b.dataset.role }); });
+    // Список участников: следовать, вести, роль, убрать.
+    const apPeople = document.getElementById('pp-people');
     if (apPeople) apPeople.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
+      // Значки «следовать» и «вести» — переключатели: нажал ещё раз, выключил.
+      if (b.dataset.follow) { const u = b.dataset.follow; setFollowUid(String(followUid) === u ? null : u); return; }
+      if (b.dataset.lead) { const u = b.dataset.lead; setLead(u, !(leadAll || leadUids.has(u))); return; }
       // «Убрать»: спрашиваем подтверждение — действие видно всем и рвёт связь участнику.
       if (b.dataset.kick) {
-        const name = (b.closest('.ap-person').querySelector('.ap-name') || {}).textContent || 'участника';
+        const name = (b.closest('.pp-row').querySelector('.pp-name') || {}).textContent || 'участника';
         if (confirm('Убрать ' + name + ' с доски?\n\nОн выйдет сейчас же и не сможет войти по ссылке, пока вы не вернёте доступ.')) {
           send({ action: 'member_remove', target: b.dataset.kick });
         }
@@ -11332,7 +11365,7 @@
       }
       const seg = b.closest('.ap-seg'); if (!seg) return;
       const uid = seg.getAttribute('data-uid'), role = b.dataset.r;
-      boardRoles[uid] = role; refreshAccessPanel(); send({ action: 'set_role', target: uid, role: role });
+      boardRoles[uid] = role; renderPeoplePanel(); send({ action: 'set_role', target: uid, role: role });
     });
     const apRemoved = document.getElementById('ap-removed');
     if (apRemoved) apRemoved.addEventListener('click', (e) => {
@@ -11461,19 +11494,124 @@
   function laserUp() { laserDrawing = false; }
 
   // ── Живое занятие: режим ведущего, только-просмотр ─────────────────────
-  let presenterOn = false, followOn = false, viewOnly = false, applyingView = false, lastViewAt = 0;
+  // За кем слежу я (id участника или null), кого веду я, и кто сам объявил,
+  // что следит за мной. Последнее нужно, чтобы понимать, стоит ли вообще
+  // рассылать свой вид: если за мной никто не смотрит, в сеть не уходит ничего.
+  let followUid = null;          // чей вид повторяю
+  let followLabel = '';          // его имя — для подсказки
+  const leadUids = new Set();    // кого веду поимённо
+  // Кого вёл, но у него оборвалась связь. Отдельно от leadUids, потому что
+  // рассылать вид ушедшему незачем, а вот вернуть его под ведение, когда он
+  // войдёт снова (обычно это просто перезагрузка страницы), — правильно.
+  const leadPending = new Set();
+  let leadAll = false;           // веду всех сразу
+  const myFollowers = new Set(); // кто объявил, что следит за мной
+  let viewOnly = false, applyingView = false, lastViewAt = 0;
+  function iBroadcastView() { return leadAll || leadUids.size > 0 || myFollowers.size > 0; }
   function sendView() {
-    if (!presenterOn || applyingView) return;
+    if (!iBroadcastView() || applyingView) return;
     const now = Date.now(); if (now - lastViewAt < 60) return; lastViewAt = now;
     send({ action: 'view', x: stage.x(), y: stage.y(), scale: stage.scaleX() });
   }
-  function applyView(x, y, scale) {
-    if (!followOn) return;
+  function applyView(user, x, y, scale) {
+    // Повторяем вид ТОЛЬКО того, за кем сами следим. Раньше годился любой
+    // ведущий, и два человека, нажавшие «Вести», рвали ведомого на части.
+    if (followUid === null || String(user) !== String(followUid)) return;
     applyingView = true; stage.scale({ x: scale, y: scale }); stage.position({ x: x, y: y }); applyingView = false;
     scheduleViewRedraw();
   }
-  function setPresenter(on) { presenterOn = on; const b = document.getElementById('present-btn'); if (b) b.classList.toggle('on', on); if (on) { setFollow(false); sendView(); } boardHint(on ? 'Вы ведёте — ваш вид транслируется' : 'Трансляция вида выключена'); }
-  function setFollow(on) { followOn = on; const b = document.getElementById('follow-btn'); if (b) b.classList.toggle('on', on); if (on) setPresenter(false); boardHint(on ? 'Следуем за ведущим' : 'Свободный просмотр'); }
+  // Объявить соседям договорённость. mode: 'follow' — «я смотрю за тобой»,
+  // 'lead' — «смотри за мной». target: id участника или 'all'.
+  function sendViewLink(mode, target, on) {
+    send({ action: 'viewlink', mode: mode, target: String(target), on: on ? 1 : 0 });
+  }
+  // Начать/перестать следить за участником. Одновременно следить за двумя
+  // нельзя — вид один, поэтому прежняя подписка снимается.
+  function setFollowUid(uid, тихо) {
+    const был = followUid;
+    const новый = (uid === null || uid === undefined) ? null : String(uid);
+    if (был !== null && был !== новый) sendViewLink('follow', был, false);  // прежнего отпускаем
+    followUid = новый;
+    followLabel = новый === null ? '' : (peers.get(Number(новый)) || peers.get(новый) || 'участник');
+    if (новый !== null && был !== новый) {
+      // Пока я не объявлю, что смотрю за ним, он свой вид не рассылает.
+      sendViewLink('follow', новый, true);
+      if (!тихо) boardHint('Следуем за: ' + followLabel);
+      // Вести и следовать одновременно бессмысленно — вид пошёл бы по кругу.
+      stopLeading(true);
+    } else if (новый === null && был !== null && !тихо) {
+      boardHint('Смотрите доску самостоятельно');
+    }
+    renderPeoplePanel(); syncPeopleBtn();
+  }
+  // Вести участника: его доска повторяет мою.
+  function setLead(uid, on) {
+    if (on) {
+      setFollowUid(null, true);      // ведущий не может одновременно следовать
+      leadUids.add(String(uid));
+      sendViewLink('lead', uid, true); sendView();
+      boardHint('Ведёте: ' + (peers.get(Number(uid)) || peers.get(uid) || 'участник'));
+    } else {
+      leadUids.delete(String(uid)); leadPending.delete(String(uid));
+      sendViewLink('lead', uid, false);
+    }
+    renderPeoplePanel(); syncPeopleBtn();
+  }
+  function setLeadAll(on) {
+    if (on) {
+      setFollowUid(null, true);
+      leadAll = true; leadUids.clear();
+      sendViewLink('lead', 'all', true); sendView();
+      boardHint('Ведёте всех — их доска повторяет вашу');
+    } else {
+      leadAll = false;
+      sendViewLink('lead', 'all', false);
+      boardHint('Больше никого не ведёте');
+    }
+    renderPeoplePanel(); syncPeopleBtn();
+  }
+  function stopLeading(тихо) {
+    if (leadAll) { leadAll = false; sendViewLink('lead', 'all', false); }
+    Array.from(leadUids).forEach((u) => { leadUids.delete(u); sendViewLink('lead', u, false); });
+    leadPending.clear();
+    if (!тихо) boardHint('Больше никого не ведёте');
+    renderPeoplePanel(); syncPeopleBtn();
+  }
+  // Пришла договорённость от соседа.
+  function onViewLink(msg) {
+    const from = String(msg.user), мне = String(myId);
+    const цель = String(msg.target || '');
+    if (msg.mode === 'follow') {
+      // За мной начали (или перестали) следить — от этого зависит, рассылать ли вид.
+      if (цель !== мне) return;
+      if (msg.on) { myFollowers.add(from); sendView(); } else myFollowers.delete(from);
+      renderPeoplePanel(); syncPeopleBtn();
+      return;
+    }
+    if (msg.mode === 'lead') {
+      if (цель !== мне && цель !== 'all') return;
+      if (msg.on) {
+        if (String(followUid) !== from) {
+          setFollowUid(from, true);
+          if (msg.label) followLabel = msg.label;   // список соседей мог ещё не наполниться
+          syncPeopleBtn();
+          boardHint((msg.label || 'Участник') + ' ведёт — ваша доска идёт за ним');
+        }
+      } else if (String(followUid) === from) {
+        setFollowUid(null, true);
+        boardHint((msg.label || 'Участник') + ' больше не ведёт');
+      }
+    }
+  }
+  // Участник ушёл — все договорённости с ним теряют силу.
+  function forgetViewLinks(uid) {
+    const u = String(uid);
+    myFollowers.delete(u);
+    // Ведение не забываем совсем, а откладываем: вернётся — снова поведём.
+    if (leadUids.delete(u)) leadPending.add(u);
+    if (String(followUid) === u) { followUid = null; followLabel = ''; }
+    renderPeoplePanel(); syncPeopleBtn();
+  }
   function setViewOnly(on) { if (roleViewer) on = true; viewOnly = on; const b = document.getElementById('viewonly-btn'); if (b) { b.classList.toggle('on', on); b.disabled = roleViewer; } setTool(on ? 'select' : tool); if (!roleViewer) boardHint(on ? 'Только просмотр — правки заблокированы' : 'Правки разрешены'); }
 
   // ── Роли доступа (серверные) ────────────────────────────────────────────
@@ -11487,31 +11625,73 @@
     myRole = computeMyRole(); roleViewer = (myRole === 'viewer');
     const badge = document.getElementById('role-badge');
     if (badge) { if (boardIsOwner) { badge.hidden = true; } else { badge.hidden = false; badge.textContent = roleViewer ? 'Наблюдатель' : 'Редактор'; badge.classList.toggle('viewer', roleViewer); } }
-    const ab = document.getElementById('access-btn'); if (ab) ab.hidden = !boardIsOwner;
+    // Кнопка «Участники» нужна всем: вести и следовать может каждый. Роли и
+    // пароль спрятаны внутри панели, в разделе владельца.
+    renderPeoplePanel(); syncPeopleBtn();
     if (roleViewer) { setViewOnly(true); boardHint('Ваша роль — наблюдатель: можно только смотреть'); }
     else { const vb = document.getElementById('viewonly-btn'); if (vb) vb.disabled = false; setViewOnly(false); }
   }
   function peerLabels() { const m = {}; peers.forEach((lab, uid) => { m[String(uid)] = lab; }); return m; }
-  function refreshAccessPanel() {
+  // Кнопка в плашке: число людей на доске и зелёная подсветка, когда вид с
+  // кем-то связан. Без подсветки «почему доска сама ездит» — загадка.
+  function syncPeopleBtn() {
+    const b = document.getElementById('people-btn'); if (!b) return;
+    const c = document.getElementById('people-count');
+    if (c) c.textContent = String(peers.size + 1);   // +1 — я сам
+    b.classList.toggle('live', followUid !== null || iBroadcastView());
+    let t = 'Участники: кто сейчас на доске, кого вести и за кем следовать';
+    if (followUid !== null) t = 'Следуете за: ' + (followLabel || 'участником');
+    else if (leadAll) t = 'Вы ведёте всех';
+    else if (leadUids.size) t = 'Вы ведёте участников: ' + leadUids.size;
+    b.title = t;
+  }
+  // Значки действий. Глаз — «смотреть его глазами»; экран со стрелкой внутрь —
+  // «привести его к моему виду».
+  const PP_FOLLOW_SVG = '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>';
+  const PP_LEAD_SVG = '<svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12.5" rx="2"/><path d="M12 17v3M8.5 20h7"/><path d="M8.5 10.7h5.5M11.8 8.4l2.7 2.3-2.7 2.3"/></svg>';
+  function renderPeoplePanel() {
+    const p = document.getElementById('people-panel'); if (!p || p.hidden) { syncPeopleBtn(); return; }
+    // Раздел владельца: роли, пароль, убранные. Остальным его не показываем —
+    // на общей доске чужие роли знать незачем.
+    const own = document.getElementById('pp-owner'); if (own) own.hidden = !boardIsOwner;
     const seg = document.getElementById('ap-default');
     if (seg) seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.role === boardDefaultRole));
-    const box = document.getElementById('ap-people'); if (!box) return;
-    const labels = peerLabels(), ids = new Set();
-    peers.forEach((_, uid) => ids.add(String(uid))); Object.keys(boardRoles).forEach((uid) => ids.add(String(uid))); ids.delete(String(myId));
-    if (!ids.size) { box.innerHTML = '<div class="ap-empty">Пока никто не подключён</div>'; return; }
-    let html = '';
+    const la = document.getElementById('lead-all-btn');
+    if (la) { la.classList.toggle('on', leadAll); la.textContent = leadAll ? 'Не вести никого' : 'Вести всех'; la.disabled = peers.size === 0; }
+    const uf = document.getElementById('unfollow-btn');
+    if (uf) uf.disabled = (followUid === null);
+    const box = document.getElementById('pp-people'); if (!box) return;
+    const labels = peerLabels(), ids = [];
+    peers.forEach((_, uid) => { if (String(uid) !== String(myId)) ids.push(String(uid)); });
+    // Владельцу показываем и тех, кому назначена личная роль, даже если их
+    // сейчас нет на доске: иначе роль некуда было бы вернуть.
+    if (boardIsOwner) Object.keys(boardRoles).forEach((uid) => { if (uid !== String(myId) && ids.indexOf(uid) < 0) ids.push(uid); });
+    let html = '<div class="pp-row"><span class="pp-name">' + escapeHtml(myLabel || 'Вы')
+      + ' <span class="pp-me">' + (boardIsOwner ? '· вы, владелец' : '· вы') + '</span></span></div>';
+    if (!ids.length) html += '<div class="pp-empty">Больше на доске никого нет</div>';
     ids.forEach((uid) => {
-      const label = labels[uid] || ('участник #' + uid), r = boardRoles[uid], eff = (r === 'viewer' || r === 'editor') ? r : boardDefaultRole;
-      html += '<div class="ap-person"><span class="ap-name">' + escapeHtml(label) + '</span>'
-        + '<div class="ap-seg" data-uid="' + uid + '">'
-        + '<button data-r="editor"' + (eff === 'editor' ? ' class="on"' : '') + '>Ред.</button>'
-        + '<button data-r="viewer"' + (eff === 'viewer' ? ' class="on"' : '') + '>Набл.</button>'
-        + '</div>'
-        + '<button class="ap-kick" data-kick="' + uid + '" title="Убрать с доски: выйдет сейчас и не войдёт по ссылке">Убрать</button>'
-        + '</div>';
+      const тут = peers.has(Number(uid)) || peers.has(uid);
+      const label = labels[uid] || ('участник #' + uid);
+      const r = boardRoles[uid], eff = (r === 'viewer' || r === 'editor') ? r : boardDefaultRole;
+      const слежу = String(followUid) === uid, веду = leadAll || leadUids.has(uid);
+      html += '<div class="pp-row"><span class="pp-name">' + escapeHtml(label)
+        + (тут ? '' : ' <span class="pp-me">· не на доске</span>') + '</span>';
+      if (тут) {
+        html += '<button class="pp-act' + (слежу ? ' on' : '') + '" data-follow="' + uid + '" title="Следовать: ваша доска повторяет его вид">' + PP_FOLLOW_SVG + '</button>'
+          + '<button class="pp-act' + (веду ? ' on' : '') + '" data-lead="' + uid + '" title="Вести: его доска повторяет ваш вид">' + PP_LEAD_SVG + '</button>';
+      }
+      if (boardIsOwner) {
+        html += '<div class="ap-seg" data-uid="' + uid + '">'
+          + '<button data-r="editor"' + (eff === 'editor' ? ' class="on"' : '') + '>Ред.</button>'
+          + '<button data-r="viewer"' + (eff === 'viewer' ? ' class="on"' : '') + '>Набл.</button>'
+          + '</div>'
+          + '<button class="ap-kick" data-kick="' + uid + '" title="Убрать с доски: выйдет сейчас и не войдёт по ссылке">Убрать</button>';
+      }
+      html += '</div>';
     });
     box.innerHTML = html;
     renderRemovedPeople();
+    syncPeopleBtn();
   }
   // Раздел «Убранные с доски»: показываем, только если кого-то убрали.
   function renderRemovedPeople() {
@@ -11524,11 +11704,21 @@
       + '<button class="ap-back" data-back="' + p.id + '" title="Вернуть доступ к доске">Вернуть</button></div>'
     ).join('');
   }
-  function toggleAccessPanel(force) {
-    const p = document.getElementById('access-panel'), ab = document.getElementById('access-btn'); if (!p) return;
+  function togglePeoplePanel(force) {
+    const p = document.getElementById('people-panel'), ab = document.getElementById('people-btn'); if (!p) return;
     const show = force === undefined ? p.hidden : force;
-    p.hidden = !show; if (ab) ab.classList.toggle('on', show); if (show) refreshAccessPanel();
+    p.hidden = !show; if (ab) ab.classList.toggle('on', show);
+    if (show) renderPeoplePanel(); else syncPeopleBtn();
   }
+  // Закрытие: крестик, щелчок мимо и Escape. Прежде у панели не было ни того,
+  // ни другого — закрыть её можно было только повторным нажатием кнопки.
+  document.addEventListener('mousedown', (e) => {
+    const p = document.getElementById('people-panel');
+    // closest() есть только у элементов: цель нажатия бывает и текстовым узлом,
+    // и самим документом — без проверки такой случай ронял бы обработчик.
+    const t = (e.target && e.target.closest) ? e.target : null; if (!t) return;
+    if (p && !p.hidden && !t.closest('#people-panel') && !t.closest('#people-btn')) togglePeoplePanel(false);
+  });
   function syncBgUI() {
     document.querySelectorAll('#bg-seg button').forEach((b) => b.classList.toggle('on', b.dataset.bg === boardBg));
     const dots = Array.from(document.querySelectorAll('#bg-color .bgdot'));
@@ -11805,7 +11995,7 @@
     if (!any) return null;
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }
-  const EXPORT_HIDE_IDS = ['board-toolbar', 'board-topbar', 'board-head', 'board-menu', 'zoom-control', 'board-version', 'cursor-layer', 'tbox-bar', 'dp-pop', 'shape-panel', 'conn-panel', 'settings-btn', 'settings-menu', 'history-panel', 'access-panel', 'point-settings', 'figure-settings', 'func-editor', 'text-editor', 'conn-banner'];
+  const EXPORT_HIDE_IDS = ['board-toolbar', 'board-topbar', 'board-head', 'board-menu', 'zoom-control', 'board-version', 'cursor-layer', 'tbox-bar', 'dp-pop', 'shape-panel', 'sticky-panel', 'stroke-panel', 'conn-panel', 'settings-btn', 'settings-menu', 'history-panel', 'people-panel', 'point-settings', 'figure-settings', 'func-editor', 'text-editor', 'conn-banner'];
   function exportIgnore(el) {
     if (!el) return false;
     if (el.id && EXPORT_HIDE_IDS.indexOf(el.id) >= 0) return true;
@@ -12535,8 +12725,13 @@
         // Состояние доски приходит порциями: пересчитывать геометрию и ехать по
         // якорю есть смысл только когда пришла последняя.
         if (!msg.more) finishInit();
-        applyMyRole();
-        if (boardIsOwner) refreshAccessPanel();
+        applyMyRole();   // он же перерисует панель участников
+        // Переподключение: у соседей наши договорённости о видах не сохранились
+        // (они живут только в памяти вкладки), поэтому объявляем их заново —
+        // иначе «следовать» после обрыва связи тихо переставало работать.
+        if (followUid !== null) sendViewLink('follow', followUid, true);
+        if (leadAll) sendViewLink('lead', 'all', true);
+        leadUids.forEach((u) => sendViewLink('lead', u, true));
         boardHistory = msg.history || [];
         if (historyOpen()) renderHistory();
         flushPending(); // досылаем правки, накопленные в оффлайне (при переподключении)
@@ -12552,9 +12747,8 @@
         boardRoles = msg.roles || {};
         boardRemoved = msg.removed || [];
         if (msg.kicked && String(msg.target) === String(myId)) { showRemovedFromBoard(); break; }
-        if (msg.kicked) { peers.delete(Number(msg.target)); peers.delete(msg.target); removeCursor(msg.target); renderPeers(); }
-        applyMyRole();
-        if (boardIsOwner) refreshAccessPanel();
+        if (msg.kicked) { peers.delete(Number(msg.target)); peers.delete(msg.target); removeCursor(msg.target); forgetViewLinks(msg.target); renderPeers(); }
+        applyMyRole();   // он же перерисует панель участников
         break;
       case 'rtc':
         handleRtc(msg);
@@ -12562,8 +12756,7 @@
       case 'roles_update':
         boardDefaultRole = msg.default_role || boardDefaultRole;
         boardRoles = msg.roles || {};
-        applyMyRole();
-        if (boardIsOwner) refreshAccessPanel();
+        applyMyRole();   // он же перерисует панель участников
         break;
       case 'element_add':
       case 'element_update':
@@ -12579,8 +12772,25 @@
         }
         break;
       case 'presence':
-        if (msg.event === 'join' && msg.user !== myId) { peers.set(msg.user, msg.label); renderPeers(); }
-        if (msg.event === 'leave') { peers.delete(msg.user); removeCursor(msg.user); laserTrails.delete(msg.user); if (msg.peer) { closePeer(msg.peer); dropRemoteScreen(msg.peer);
+        if ((msg.event === 'join' || msg.event === 'here') && msg.user !== myId) {
+          peers.set(msg.user, msg.label); renderPeers();
+        }
+        if (msg.event === 'join' && msg.user !== myId) {
+          // Отзываемся, чтобы вошедший узнал, что мы здесь: сам он об этом
+          // ниоткуда не узнаёт — сообщение о входе рассылается только в момент
+          // входа, и пришедший вторым не видел никого.
+          send({ action: 'hello' });
+          // Вошедший не слышал прежнего «веду всех»: объявляем заново,
+          // иначе он один остался бы со своим видом. То же и для поимённого
+          // ведения: у человека могла просто моргнуть связь, и возвращаться он
+          // должен туда же, куда его вели.
+          if (leadAll) { sendViewLink('lead', 'all', true); sendView(); }
+          else if (leadUids.has(String(msg.user)) || leadPending.delete(String(msg.user))) {
+            leadUids.add(String(msg.user));
+            sendViewLink('lead', msg.user, true); sendView();
+          }
+        }
+        if (msg.event === 'leave') { peers.delete(msg.user); removeCursor(msg.user); laserTrails.delete(msg.user); forgetViewLinks(msg.user); if (msg.peer) { closePeer(msg.peer); dropRemoteScreen(msg.peer);
           // Показывающий ушёл — объект-экран без картинки не нужен.
           elements.forEach((el) => { if (el.type === 'screen' && el.data.by === msg.peer) { send({ action: 'element_delete', id: el.id }); removeNode(el.id); } }); } renderPeers(); }
         break;
@@ -12588,7 +12798,10 @@
         if (msg.user !== myId) addLaserPoint(msg.user, msg.x, msg.y, !!msg.s);
         break;
       case 'view':
-        if (msg.user !== myId) applyView(msg.x, msg.y, msg.scale);
+        if (msg.user !== myId) applyView(msg.user, msg.x, msg.y, msg.scale);
+        break;
+      case 'viewlink':
+        if (msg.user !== myId) onViewLink(msg);
         break;
     }
   }
@@ -12609,8 +12822,7 @@
   function renderPeers() {
     if (peers.size === 0) { peersEl.textContent = ''; }
     else peersEl.textContent = '· с вами: ' + Array.from(peers.values()).join(', ');
-    const ap = document.getElementById('access-panel');
-    if (boardIsOwner && ap && !ap.hidden) refreshAccessPanel();
+    renderPeoplePanel(); syncPeopleBtn();
   }
 
   // ── Панель инструментов для телефона и планшета ────────────────────────
@@ -12717,8 +12929,9 @@
     });
 
     // 3. Занятие: кнопки верхней плашки, которым не хватает места на узком экране.
-    const topIds = ['import-btn', 'reveal-hidden', 'present-btn',
-                    'follow-btn', 'access-btn'];
+    // «Участники» сюда не дублируем: эта кнопка теперь видна в плашке и на
+    // узком экране — вести и следовать нужны как раз на планшете.
+    const topIds = ['import-btn', 'reveal-hidden'];
     const liveGrid = mkSection('Занятие');
     topIds.forEach((id) => {
       const src = document.getElementById(id);
@@ -12745,9 +12958,18 @@
     function syncSwatch() { if (colorBtn) sw.style.background = colorBtn.style.background || '#1f2937'; }
     syncSwatch();
     sw.addEventListener('click', () => { closeMobileSheet(); if (colorBtn) colorBtn.click(); });
-    const widthSrc = document.getElementById('stroke-width');
+    // Ползунок толщины ведёт к настоящему полю настроек пера (#dp-thick).
+    // Раньше он искал #stroke-width — поля с таким именем в разметке нет уже
+    // давно, обработчик выходил на первой же строке, и на планшете ползунок
+    // двигался вхолостую. Границы и шаг копируем с оригинала, иначе новую
+    // тонкую единицу 1.5 через него было бы не выставить.
+    const widthSrc = document.getElementById('dp-thick');
     const rng = document.createElement('input');
-    rng.type = 'range'; rng.min = '1'; rng.max = '24'; rng.title = 'Толщина';
+    rng.type = 'range';
+    rng.min = widthSrc ? widthSrc.min : '0.5';
+    rng.max = widthSrc ? widthSrc.max : '24';
+    rng.step = widthSrc ? (widthSrc.step || '0.5') : '0.5';
+    rng.title = 'Толщина';
     rng.value = widthSrc ? widthSrc.value : '3';
     rng.addEventListener('input', () => {
       if (!widthSrc) return;

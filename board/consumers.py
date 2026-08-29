@@ -131,7 +131,7 @@ _RATE_WINDOW = 1.0                # окно троттлинга, сек
 _RATE_MAX_PERSIST = 2000
 # Что можно терять без последствий: следующее сообщение того же рода придёт
 # через мгновение и заменит потерянное.
-_EPHEMERAL_ACTIONS = {'cursor', 'laser', 'view', 'rtc', 'ping', 'presence'}
+_EPHEMERAL_ACTIONS = {'cursor', 'laser', 'view', 'rtc', 'ping', 'presence', 'viewlink', 'hello'}
 _MAX_RTC_BYTES = 64 * 1024        # одно служебное сообщение голоса (описание связи)
 
 
@@ -327,6 +327,39 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             })
             return
 
+        # Перекличка: «я здесь». Шлётся в ответ на чей-то вход, чтобы вошедший
+        # узнал, кто на доске уже был. Событие НЕ join, иначе отзывы вызывали бы
+        # новые отзывы и перекличка пошла бы по кругу.
+        if action == 'hello':
+            await self._broadcast({
+                'action': 'presence',
+                'event': 'here',
+                'user': self.user_id,
+                'peer': self.peer_id,
+                'label': self.label,
+            })
+            return
+
+        # Связка видов: кто за кем следит. Сервер ничего не помнит и не решает
+        # — он только передаёт договорённость дальше, а согласуют её сами
+        # участники. Поэтому потеря такого сообщения ничего не ломает: хуже
+        # того, что вид не поедет, не случится.
+        if action == 'viewlink':
+            mode = content.get('mode')
+            if mode not in ('follow', 'lead'):
+                return
+            target = content.get('target')
+            await self._broadcast({
+                'action': 'viewlink',
+                'mode': mode,
+                # 'all' — «все сразу»; иначе id участника.
+                'target': str(target)[:32] if target is not None else '',
+                'on': 1 if content.get('on') else 0,
+                'user': self.user_id,
+                'label': self.label,
+            })
+            return
+
         # Эфемерные сообщения занятия (в БД не пишем, просто пересылаем):
         #   laser — точка гаснущего следа (x,y, s=начало штриха);
         #   view  — вид ведущего (x,y,scale).
@@ -482,7 +515,13 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def _can_access(self, board, user):
-        return board.can_access(user)
+        # Пароль проверяем и здесь, а не только на странице: без этого холст
+        # можно было бы получить по сокету, минуя окно ввода пароля.
+        if not board.can_access(user):
+            return False
+        # Сессию не разворачиваем в словарь: у неё есть .get(), а полное
+        # чтение лишний раз ходило бы в хранилище сессий.
+        return board.password_passed(user, self.scope.get('session'))
 
     @database_sync_to_async
     def _load_elements(self, board_id):

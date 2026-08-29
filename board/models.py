@@ -18,6 +18,7 @@ import string
 
 from django.conf import settings
 from django.contrib.auth.hashers import make_password, check_password
+from django.utils import timezone
 from django.db import models
 
 
@@ -72,6 +73,9 @@ class Board(models.Model):
     # (в дополнение к ролям, которые решают «что участник может делать внутри»).
     password_hash = models.CharField('Пароль (хеш)', max_length=256, blank=True, default='')
     password_enabled = models.BooleanField('Требовать пароль при входе', default=False)
+    # Когда пароль задали или сменили. Нужен, чтобы «уже входил раньше» не
+    # работало как вечный пропуск: пароль, включённый позже, спросят у всех.
+    password_set_at = models.DateTimeField('Пароль задан', null=True, blank=True)
 
     # PROTECT, а не CASCADE: удаление учётки уносило вместе с ней ВСЕ её доски
     # со всем содержимым, молча и без спроса. Достаточно было отчислить старого
@@ -154,14 +158,47 @@ class Board(models.Model):
         if raw:
             self.password_hash = make_password(raw)
             self.password_enabled = True
+            # Отметка меняется при КАЖДОЙ смене пароля: она же и есть пропуск,
+            # который лежит в сессии браузера. Сменили пароль — все прежние
+            # пропуска разом перестают годиться.
+            self.password_set_at = timezone.now()
         else:
             self.password_hash = ''
             self.password_enabled = False
+            self.password_set_at = None
 
     def verify_password(self, raw):
         """Верен ли введённый пароль (учитывается, только когда пароль включён)."""
         return bool(self.password_enabled and self.password_hash
                     and check_password((raw or '').strip(), self.password_hash))
+
+    def password_key(self):
+        """Пропуск, который кладём в сессию браузера после верного пароля.
+
+        В нём зашит момент установки пароля, поэтому смена пароля обесценивает
+        все выданные пропуска сама собой — хранить их список не нужно.
+        """
+        if not self.password_enabled:
+            return ''
+        # Отметки может не быть у доски, где пароль поставили ещё до появления
+        # этого поля. Пустым пропуск оставлять нельзя — он бы никогда не сошёлся
+        # сам с собой, и доска не открылась бы даже по верному паролю.
+        return self.password_set_at.isoformat() if self.password_set_at else 'v1'
+
+    def password_passed(self, user, session):
+        """Прошёл ли этот человек в этом браузере пароль доски.
+
+        Владельца и суперпользователя не спрашиваем: пароль ставит владелец, и
+        запирать себя же бессмысленно. Всех остальных — включая давних
+        участников: иначе пароль, включённый позже, не значил бы ничего.
+        """
+        if not self.password_enabled:
+            return True
+        if not (user and user.is_authenticated):
+            return False
+        if user.is_superuser or self.owner_id == user.pk:
+            return True
+        return (session or {}).get('board_pw_' + self.code) == self.password_key()
 
     def needs_password(self, user):
         """Нужно ли этому пользователю ввести пароль перед входом.

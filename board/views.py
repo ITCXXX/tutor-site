@@ -146,12 +146,18 @@ def board_room(request, code):
     if board.is_banned(user):
         return render(request, 'board/board_no_access.html', {'board': board}, status=403)
 
-    # Пароль доски: спрашиваем только у новых (не владелец/участник/суперюзер).
-    # Верный пароль присоединяет к доске — дальше вход как обычно.
-    if board.needs_password(user):
+    # Пароль доски. Пока он не введён в этом браузере, страница доски не
+    # отдаётся вовсе — человек видит только окно ввода и даже не знает, что на
+    # доске нарисовано. Раньше пароль спрашивали лишь у тех, кто ещё не в
+    # участниках: достаточно было один раз войти по ссылке ДО того, как пароль
+    # включили, — и он не спрашивался больше никогда.
+    if not board.password_passed(user, request.session):
         error = ''
         if request.method == 'POST':
             if board.verify_password(request.POST.get('password')):
+                # Пропуск живёт в сессии этого браузера и обесценивается сам,
+                # как только владелец сменит пароль (см. Board.password_key).
+                request.session['board_pw_' + board.code] = board.password_key()
                 board.members.add(user)
                 return redirect('board:room', code=board.code)
             error = 'Неверный пароль'
@@ -196,7 +202,10 @@ def board_set_password(request, code):
     if board.owner_id != request.user.id and not request.user.is_superuser:
         return JsonResponse({'error': 'Пароль может менять только владелец'}, status=403)
     board.set_password(request.POST.get('password'))
-    board.save(update_fields=['password_hash', 'password_enabled', 'updated_at'])
+    # password_set_at обязателен в списке: именно он служит пропуском в сессии.
+    # Без него смена пароля не доезжала до базы, и старый пропуск продолжал
+    # годиться — то есть сменить пароль было нельзя.
+    board.save(update_fields=['password_hash', 'password_enabled', 'password_set_at', 'updated_at'])
     return JsonResponse({'ok': True, 'enabled': board.password_enabled})
 
 

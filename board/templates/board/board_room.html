@@ -386,18 +386,25 @@
         /* Верхняя плашка: на узком экране в строку влезают только связь и код.
            Остальные кнопки продублированы в листе, разделом «Занятие». */
         #board-topbar { top: 60px; right: 8px; gap: 8px; padding: 5px 11px; font-size: 13px; }
+        /* «Участники» на планшете НЕ прячем: вести и следовать нужны именно
+           там, а раньше все три кнопки занятия исчезали с узкого экрана. */
         #board-topbar .tb-sep, #board-topbar #import-btn,
-        #board-topbar #reveal-hidden, #board-topbar #present-btn, #board-topbar #follow-btn,
-        #board-topbar #access-btn, #board-topbar #peers,
+        #board-topbar #reveal-hidden, #board-topbar #peers,
         #board-topbar #screen-btn { display: none; }
         #board-head { top: 60px; left: 8px; max-width: 42vw; }
         #settings-btn { top: 106px; right: 8px; }
         #zoom-control { bottom: 14px; right: 12px; }
         /* Всплывающие панели не должны вылезать за край экрана. */
-        #board-menu, #history-panel, #access-panel, #voice-panel, .settings-panel, .conn-panel, #color-palette {
+        #board-menu, #history-panel, #people-panel, #voice-panel, .settings-panel, .conn-panel, #color-palette {
             max-width: calc(100vw - 16px);
         }
         #history-panel { left: 8px; }
+        /* Меню доски на планшете начинается ниже (плашка сдвинута) и должно
+           умещаться до низа экрана. */
+        #board-menu { top: 100px; max-height: calc(100vh - 112px); }
+        #board-menu-btn { padding: 7px; }
+        #board-menu-btn svg { width: 22px; height: 22px; }
+        #people-panel { top: 100px; right: 8px; max-height: calc(100vh - 112px); }
         #board-menu { left: 8px; }
         /* Крупнее цели для пальца в меню. */
         .bm-item { padding: 10px 8px; font-size: 14px; }
@@ -640,9 +647,16 @@
     #reveal-hidden { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
     #reveal-hidden:hover { background: #e4e8f5; }
     #reveal-hidden.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
-    #present-btn, #follow-btn, #access-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
-    #present-btn:hover, #follow-btn:hover, #access-btn:hover { background: #e4e8f5; }
-    #present-btn.on, #follow-btn.on, #access-btn.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    #people-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+    #people-btn:hover { background: #e4e8f5; }
+    #people-btn.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    /* Число участников прямо на кнопке: сколько человек на доске, видно не открывая панель. */
+    #people-count { display: inline-block; min-width: 16px; margin-left: 2px; padding: 0 4px; border-radius: 8px;
+        background: #dfe3ec; color: #45454e; font-size: 11px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+    #people-btn.on #people-count { background: #4d7cfe; color: #fff; }
+    /* Кто-то ведёт меня или я веду — кнопка светится, чтобы это не было тайной. */
+    #people-btn.live { background: #eaf7ee; border-color: #57ad6e; color: #1f7a3a; }
+    #people-btn.live #people-count { background: #57ad6e; color: #fff; }
     #bg-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
     #bg-btn:hover { background: #e4e8f5; }
     #bg-btn.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
@@ -655,11 +669,17 @@
         background: #d63333; color: #fff; font-size: 13px; font-weight: 600; padding: 6px 16px;
         border-radius: 20px; box-shadow: 0 6px 20px rgba(214,51,51,.35);
     }
-    #board-menu-btn { border: none; background: transparent; color: #6b6b76; cursor: pointer; border-radius: 7px; padding: 3px; display: flex; }
-    #board-menu-btn svg { width: 18px; height: 18px; }
+    /* Три точки: раньше были бледно-серые и величиной с ноготь — на планшете
+       их попросту не находили. Теперь контрастнее и крупнее. */
+    #board-menu-btn { border: none; background: #f2f3f7; color: #4a4a55; cursor: pointer; border-radius: 7px; padding: 5px; display: flex; }
+    #board-menu-btn svg { width: 20px; height: 20px; }
     #board-menu-btn:hover { background: #eef1f7; color: #2b2b33; }
     #board-menu-btn.on { background: #e7efff; color: #2b5bd7; }
-    #board-menu { position: fixed; top: 104px; left: 16px; z-index: 60; width: 250px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    /* max-height + прокрутка: меню длинное, и на невысоком экране планшета
+       нижняя половина (экспорт, история, удаление доски) просто уходила за
+       край без всякой возможности до неё добраться. */
+    #board-menu { position: fixed; top: 104px; left: 16px; z-index: 60; width: 250px; max-height: calc(100vh - 118px); overflow-y: auto;
+        background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
     #board-menu[hidden] { display: none; }
     .bm-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #9a9aa4; margin: 2px 0 6px; }
     .bm-label { font-size: 12px; color: #6b6b76; margin: 8px 0 4px; }
@@ -700,9 +720,33 @@
     .bgpick::-moz-color-swatch { border: none; border-radius: 50%; opacity: 0; }
     #role-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #eef0f4; color: #55555f; }
     #role-badge.viewer { background: #fff2d6; color: #9a6b12; }
-    #access-panel { position: fixed; top: 44px; right: 12px; z-index: 60; width: 260px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 12px; font-size: 13px; }
-    #access-panel .ap-title { font-weight: 600; color: #2b2b33; margin: 4px 0 6px; }
-    #access-panel .ap-hint { font-size: 11px; color: #8a8a94; margin: 4px 0 10px; }
+    #people-panel { position: fixed; top: 44px; right: 12px; z-index: 60; width: 292px; max-height: calc(100vh - 60px); overflow-y: auto;
+        background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px 12px; font-size: 13px; }
+    #people-panel[hidden] { display: none; }
+    #people-panel .ap-title { font-weight: 600; color: #2b2b33; margin: 10px 0 6px; }
+    #people-panel .ap-hint { font-size: 11px; color: #8a8a94; margin: 4px 0 6px; }
+    /* Две общие кнопки над списком: вести всех разом и перестать следовать. */
+    .pp-all { display: flex; gap: 6px; margin: 2px 0 4px; }
+    .pp-all button { flex: 1; border: 1px solid #d3d6de; background: #fff; color: #3a3a42; border-radius: 7px; padding: 5px 6px; font-size: 12px; cursor: pointer; }
+    .pp-all button:hover { background: #eef1f7; }
+    .pp-all button.on { background: #4d7cfe; border-color: #4d7cfe; color: #fff; }
+    .pp-all button:disabled { opacity: .45; cursor: default; }
+    .pp-row { display: flex; align-items: center; gap: 5px; padding: 6px 0; border-top: 1px solid #f0f0f3; }
+    .pp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pp-me { color: #9a9aa2; font-weight: 400; font-size: 11px; }
+    .pp-empty { color: #9a9aa2; font-size: 12px; padding: 8px 0; border-top: 1px solid #f0f0f3; }
+    /* Значки «следовать» и «вести». На планшете это единственный способ ими
+       пользоваться, поэтому кнопки не меньше 28px — в палец. */
+    .pp-act { flex: none; width: 30px; height: 28px; border: 1px solid #d9d9e0; background: #fff; color: #6b6b76;
+        border-radius: 7px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+    .pp-act:hover { background: #eef1f7; color: #2b2b33; }
+    .pp-act.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    .pp-act svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .pp-pw { display: flex; align-items: center; gap: 8px; }
+    .pp-pw-state { flex: 1; min-width: 0; color: #55555f; }
+    .pp-pw-state.on { color: #1f7a3a; font-weight: 600; }
+    .pp-pw button { flex: none; border: 1px solid #d3d6de; background: #fff; color: #2b5bd7; border-radius: 7px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
+    .pp-pw button:hover { background: #eef3ff; border-color: #4d7cfe; }
     .ap-seg { display: inline-flex; border: 1px solid #d3d6de; border-radius: 7px; overflow: hidden; }
     .ap-seg button { border: none; background: #fff; color: #3a3a42; padding: 3px 12px; font-size: 12px; cursor: pointer; }
     .ap-seg button + button { border-left: 1px solid #d3d6de; }
@@ -712,7 +756,7 @@
     #bg-seg button { flex: 1; padding: 4px 2px; text-align: center; }
     .ap-person { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px solid #f0f0f3; }
     .ap-person .ap-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #ap-people .ap-empty { color: #9a9aa2; font-size: 12px; padding: 6px 0; }
+    #pp-people .ap-empty { color: #9a9aa2; font-size: 12px; padding: 6px 0; }
     .ap-kick { flex: none; border: 1px solid #ecc7cc; background: #fff; color: #d63333; border-radius: 7px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
     .ap-kick:hover { background: #fdeef0; }
     .ap-back { flex: none; border: 1px solid #cfd8ec; background: #fff; color: #2b5bd7; border-radius: 7px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
@@ -1232,13 +1276,13 @@
             <div class="tool active" data-tool="pen" title="Карандаш (P)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/><path d="M14 6l3 3"/></svg>
             </div>
-            <div class="tool" data-tool="marker" title="Маркер (выделитель)">
+            <div class="tool" data-tool="marker" title="Маркер, выделитель (K)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17l3 3 11-11-3-3z" fill="currentColor" fill-opacity=".25"/><path d="M5 17l-1 4 4-1"/><path d="M15 5l4 4"/></svg>
             </div>
             <div class="tool" data-tool="laser" title="Лазер: гаснущий след (не сохраняется, виден участникам)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" opacity=".7"/></svg>
             </div>
-            <div class="tool" data-tool="eraser_full" title="Ластик: стирает мазок карандаша/маркера целиком">
+            <div class="tool" data-tool="eraser_full" title="Ластик (E): стирает мазок карандаша/маркера целиком">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h12"/><path d="M15.5 4.5l4 4a2 2 0 0 1 0 2.8L11 20H7l-3-3a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0z"/><path d="M9 9l6 6"/></svg>
             </div>
             <div class="tool" data-tool="eraser_fine" title="Точный ластик: стирает часть мазка (радиус настраивается)">
@@ -1584,7 +1628,7 @@
             <div id="macro-list"></div>
         </div>
     </div>
-    <div class="tool" data-tool="select" title="Выделение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift или Ctrl — добавить, ПОВТОРНЫЙ клик по этой кнопке — режим перемещения доски (тяните мышью или пальцем; Esc — выйти), Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
+    <div class="tool" data-tool="select" title="Выделение (V). Клик — выбрать, рамкой по пустому — выделить несколько, Shift или Ctrl — добавить, ПОВТОРНЫЙ клик по этой кнопке или клавиша M — режим перемещения доски (тяните мышью или пальцем; Esc — выйти), Ctrl+G — группировать, Ctrl+Shift+G — разгруппировать, Del — удалить">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3l7 17 2.5-6.5L20 11z"/></svg>
     </div>
     <hr>
@@ -1620,11 +1664,9 @@
     <button id="import-btn" title="Импорт картинки или PDF (PDF можно листать и извлекать страницы)">Импорт</button>
     <button id="reveal-hidden" title="Скрытие: нажмите — и щелчок левой кнопкой прячет объект или возвращает его. Скрытое видно полупрозрачным. Клавиша H прячет выделенное, Shift+H включает режим">Скрыть</button>
     <span class="tb-sep"></span>
-    <button id="present-btn" title="Вести: транслировать свой вид (панораму/зум) участникам">Вести</button>
-    <button id="follow-btn" title="Следовать: подстраивать вид под ведущего">Следовать</button>
+    <button id="people-btn" title="Участники: кто сейчас на доске, кого вести и за кем следовать; роли и пароль доски">Участники <span id="people-count">1</span></button>
     <button id="voice-btn" title="Голосовая связь с участниками доски. Звук идёт напрямую между браузерами">Голос</button>
     <span class="tb-sep"></span>
-    <button id="access-btn" title="Доступ: роль по ссылке и роли участников" hidden>Доступ</button>
     <span id="role-badge" hidden></span>
     <span id="peers" class="text-muted"></span>
 </div>
@@ -1707,15 +1749,27 @@
     <div class="vp-hint">Звук идёт напрямую между браузерами, минуя сервер. Если кого-то не слышно — проверьте, что браузер разрешил микрофон.</div>
 </div>
 <div id="voice-audio" hidden></div>
-<div id="access-panel" hidden>
-    <div class="ap-title">Все, кто по ссылке</div>
-    <div class="ap-seg" id="ap-default">
-        <button data-role="editor">Редактор</button>
-        <button data-role="viewer">Наблюдатель</button>
+<div id="people-panel" hidden>
+    <div class="bm-head"><span>Участники</span><button id="people-close" title="Закрыть">&times;</button></div>
+    <div class="pp-all">
+        <button type="button" id="lead-all-btn" title="Показать всем свой вид: доска у остальных поедет вслед за вашей">Вести всех</button>
+        <button type="button" id="unfollow-btn" title="Перестать повторять чужой вид и двигать доску самостоятельно">Смотреть самому</button>
     </div>
-    <div class="ap-hint">Роль по умолчанию для каждого, кому не назначена личная.</div>
-    <div class="ap-title">Участники сейчас</div>
-    <div id="ap-people"></div>
+    <div id="pp-people"></div>
+    <div id="pp-owner" hidden>
+        <div class="ap-title">Все, кто по ссылке</div>
+        <div class="ap-seg" id="ap-default">
+            <button data-role="editor">Редактор</button>
+            <button data-role="viewer">Наблюдатель</button>
+        </div>
+        <div class="ap-hint">Роль по умолчанию для каждого, кому не назначена личная.</div>
+        <div class="ap-title">Пароль доски</div>
+        <div class="pp-pw">
+            <span id="pp-pw-state" class="pp-pw-state">Пароль не задан</span>
+            <button type="button" id="pp-pw-btn">Настроить…</button>
+        </div>
+        <div class="ap-hint">Пока пароль включён, зашедший по ссылке видит только окно ввода пароля. Самой доски он не видит, пока не введёт пароль.</div>
+    </div>
     <div id="ap-removed-wrap" hidden>
         <div class="ap-title">Убранные с доски</div>
         <div id="ap-removed"></div>
@@ -1808,7 +1862,7 @@
     <div class="dp-row" id="dp-thick-row">
         <span class="dp-lbl" id="dp-thick-lbl">Толщина</span>
         <input type="range" id="dp-thick" min="0.5" max="24" step="0.5" value="3">
-        <span class="dp-val" id="dp-thick-val">4</span>
+        <span class="dp-val" id="dp-thick-val">3</span>
     </div>
     <div class="dp-row" id="dp-opacity-row">
         <span class="dp-lbl">Прозрачность</span>
@@ -1858,8 +1912,8 @@
     <label class="ps-check" id="fs-onlynew-row"><input type="checkbox" id="fs-onlynew"> Применять только к новым</label>
     <div class="ps-row"><span class="ps-lbl">Цвет</span><div class="cp-grid" id="fs-colors"></div></div>
     <div class="ps-row"><span class="ps-lbl">Толщина</span>
-        <input type="range" id="fs-width-range" class="ps-range" min="1" max="16">
-        <input type="number" id="fs-width-num" class="ps-num" min="1" max="16">
+        <input type="range" id="fs-width-range" class="ps-range" min="0.5" max="16" step="0.5">
+        <input type="number" id="fs-width-num" class="ps-num" min="0.5" max="16" step="0.5">
     </div>
     <div class="ps-row"><span class="ps-lbl">Стиль</span><div class="ps-seg" id="fs-style">
         <button data-style="solid">сплошная</button><button data-style="dashed">пунктир</button><button data-style="dotted">точки</button>
@@ -1922,8 +1976,8 @@
     </div>
     <div class="cn-pop ps-hidden" id="st-width-pop">
         <div class="cn-wrow"><span class="cn-wlbl">Толщина</span>
-            <input type="range" id="st-width-range" class="cn-range" min="1" max="40">
-            <input type="number" id="st-width-num" class="cn-num" min="1" max="40">
+            <input type="range" id="st-width-range" class="cn-range" min="0.5" max="40" step="0.5">
+            <input type="number" id="st-width-num" class="cn-num" min="0.5" max="40" step="0.5">
         </div>
         <div class="cn-wrow" id="st-opacity-row"><span class="cn-wlbl">Прозрачность</span>
             <input type="range" id="st-opacity-range" class="cn-range" min="10" max="100">
@@ -1968,8 +2022,8 @@
     <div class="cn-pop ps-hidden" id="sp-border-pop">
         <div class="cp-grid" id="sp-border-colors"></div>
         <div class="cn-wrow"><span class="cn-wlbl">Толщина</span>
-            <input type="range" id="sp-border-range" class="cn-range" min="0" max="24">
-            <input type="number" id="sp-border-num" class="cn-num" min="0" max="24">
+            <input type="range" id="sp-border-range" class="cn-range" min="0" max="24" step="0.5">
+            <input type="number" id="sp-border-num" class="cn-num" min="0" max="24" step="0.5">
         </div>
     </div>
     <div class="cn-pop ps-hidden" id="sp-fill-pop">
@@ -2193,16 +2247,25 @@ window.BOARD_CONFIG = {
     const pwState = document.getElementById('bpw-state');
     const pwInput = document.getElementById('bpw-input');
     function pwRefreshState() { if (pwState) pwState.textContent = pwEnabled ? 'Пароль установлен. Введите новый, чтобы сменить, или снимите.' : 'Пароль не задан — доска открыта по ссылке.'; }
+    // Та же правда, но короткой строкой в панели участников.
+    function pwRefreshPanel() {
+        const st = document.getElementById('pp-pw-state'); if (!st) return;
+        st.textContent = pwEnabled ? 'Пароль включён' : 'Пароль не задан';
+        st.classList.toggle('on', pwEnabled);
+    }
+    pwRefreshPanel();
     function openPwDialog() { closeMenu(); if (!pwDlg) return; pwInput.value = ''; pwRefreshState(); pwDlg.hidden = false; setTimeout(() => { try { pwInput.focus(); } catch (e) {} }, 30); }
     function closePwDialog() { if (pwDlg) pwDlg.hidden = true; }
     function savePw(raw) {
         post('/board/' + code + '/password/', { password: raw }).then(r => {
-            if (r.ok) { pwEnabled = !!r.enabled; closePwDialog(); }
+            if (r.ok) { pwEnabled = !!r.enabled; pwRefreshPanel(); closePwDialog(); }
             else alert(r.error || 'Не удалось');
         });
     }
     const pwb = document.getElementById('password-board-btn');
     if (pwb) pwb.addEventListener('click', openPwDialog);
+    const pwb2 = document.getElementById('pp-pw-btn');
+    if (pwb2) pwb2.addEventListener('click', openPwDialog);
     const pwCancel = document.getElementById('bpw-cancel');
     if (pwCancel) pwCancel.addEventListener('click', closePwDialog);
     const pwClear = document.getElementById('bpw-clear');
