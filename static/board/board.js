@@ -11357,7 +11357,8 @@
       if (b.dataset.lead) { const u = b.dataset.lead; setLead(u, !(leadAll || leadUids.has(u))); return; }
       // «Убрать»: спрашиваем подтверждение — действие видно всем и рвёт связь участнику.
       if (b.dataset.kick) {
-        const name = (b.closest('.pp-row').querySelector('.pp-name') || {}).textContent || 'участника';
+        const строка = b.closest('.pp-row');   // имя лежит в верхней подстроке
+        const name = ((строка && строка.querySelector('.pp-name')) || {}).textContent || 'участника';
         if (confirm('Убрать ' + name + ' с доски?\n\nОн выйдет сейчас же и не сможет войти по ссылке, пока вы не вернёте доступ.')) {
           send({ action: 'member_remove', target: b.dataset.kick });
         }
@@ -11666,26 +11667,29 @@
     // Владельцу показываем и тех, кому назначена личная роль, даже если их
     // сейчас нет на доске: иначе роль некуда было бы вернуть.
     if (boardIsOwner) Object.keys(boardRoles).forEach((uid) => { if (uid !== String(myId) && ids.indexOf(uid) < 0) ids.push(uid); });
-    let html = '<div class="pp-row"><span class="pp-name">' + escapeHtml(myLabel || 'Вы')
-      + ' <span class="pp-me">' + (boardIsOwner ? '· вы, владелец' : '· вы') + '</span></span></div>';
+    let html = '<div class="pp-row"><div class="pp-line"><span class="pp-name">' + escapeHtml(myLabel || 'Вы')
+      + ' <span class="pp-me">' + (boardIsOwner ? '· вы, владелец' : '· вы') + '</span></span></div></div>';
     if (!ids.length) html += '<div class="pp-empty">Больше на доске никого нет</div>';
     ids.forEach((uid) => {
       const тут = peers.has(Number(uid)) || peers.has(uid);
       const label = labels[uid] || ('участник #' + uid);
       const r = boardRoles[uid], eff = (r === 'viewer' || r === 'editor') ? r : boardDefaultRole;
       const слежу = String(followUid) === uid, веду = leadAll || leadUids.has(uid);
-      html += '<div class="pp-row"><span class="pp-name">' + escapeHtml(label)
+      // Верхняя строка — имя и значки видов (нужны всем), нижняя — роль и
+      // «Убрать» (только владельцу). В одну строку имя было не разглядеть.
+      html += '<div class="pp-row"><div class="pp-line"><span class="pp-name">' + escapeHtml(label)
         + (тут ? '' : ' <span class="pp-me">· не на доске</span>') + '</span>';
       if (тут) {
         html += '<button class="pp-act' + (слежу ? ' on' : '') + '" data-follow="' + uid + '" title="Следовать: ваша доска повторяет его вид">' + PP_FOLLOW_SVG + '</button>'
           + '<button class="pp-act' + (веду ? ' on' : '') + '" data-lead="' + uid + '" title="Вести: его доска повторяет ваш вид">' + PP_LEAD_SVG + '</button>';
       }
+      html += '</div>';
       if (boardIsOwner) {
-        html += '<div class="ap-seg" data-uid="' + uid + '">'
+        html += '<div class="pp-line"><div class="ap-seg" data-uid="' + uid + '">'
           + '<button data-r="editor"' + (eff === 'editor' ? ' class="on"' : '') + '>Ред.</button>'
           + '<button data-r="viewer"' + (eff === 'viewer' ? ' class="on"' : '') + '>Набл.</button>'
           + '</div>'
-          + '<button class="ap-kick" data-kick="' + uid + '" title="Убрать с доски: выйдет сейчас и не войдёт по ссылке">Убрать</button>';
+          + '<button class="ap-kick" data-kick="' + uid + '" title="Убрать с доски: выйдет сейчас и не войдёт по ссылке">Убрать</button></div>';
       }
       html += '</div>';
     });

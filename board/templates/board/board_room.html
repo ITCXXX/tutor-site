@@ -377,38 +377,7 @@
     .ms-swatch { width: 34px; height: 34px; border-radius: 9px; border: 1px solid #d5d5dc; box-shadow: inset 0 0 0 2px #fff; flex: none; }
     .ms-hint { font-size: 11px; color: #9a9aa4; padding: 8px 4px 0; }
 
-    @media (max-width: 820px) {
-        #board-toolbar { display: none; }
-        #mobile-fab { display: flex; }
-        #mobile-sheet { display: flex; }
-        #mobile-backdrop:not([hidden]) { display: block; }
 
-        /* Верхняя плашка: на узком экране в строку влезают только связь и код.
-           Остальные кнопки продублированы в листе, разделом «Занятие». */
-        #board-topbar { top: 60px; right: 8px; gap: 8px; padding: 5px 11px; font-size: 13px; }
-        /* «Участники» на планшете НЕ прячем: вести и следовать нужны именно
-           там, а раньше все три кнопки занятия исчезали с узкого экрана. */
-        #board-topbar .tb-sep, #board-topbar #import-btn,
-        #board-topbar #reveal-hidden, #board-topbar #peers,
-        #board-topbar #screen-btn { display: none; }
-        #board-head { top: 60px; left: 8px; max-width: 42vw; }
-        #settings-btn { top: 106px; right: 8px; }
-        #zoom-control { bottom: 14px; right: 12px; }
-        /* Всплывающие панели не должны вылезать за край экрана. */
-        #board-menu, #history-panel, #people-panel, #voice-panel, .settings-panel, .conn-panel, #color-palette {
-            max-width: calc(100vw - 16px);
-        }
-        #history-panel { left: 8px; }
-        /* Меню доски на планшете начинается ниже (плашка сдвинута) и должно
-           умещаться до низа экрана. */
-        #board-menu { top: 100px; max-height: calc(100vh - 112px); }
-        #board-menu-btn { padding: 7px; }
-        #board-menu-btn svg { width: 22px; height: 22px; }
-        #people-panel { top: 100px; right: 8px; max-height: calc(100vh - 112px); }
-        #board-menu { left: 8px; }
-        /* Крупнее цели для пальца в меню. */
-        .bm-item { padding: 10px 8px; font-size: 14px; }
-    }
 
 
     /* Встроенная страница (iframe). Пока сверху «крышка», объект можно таскать;
@@ -661,8 +630,10 @@
     #bg-btn:hover { background: #e4e8f5; }
     #bg-btn.on { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
     /* Название доски + меню (три точки), слева сверху над инструментами. */
-    #board-head { position: fixed; top: 64px; left: 16px; z-index: 31; display: flex; align-items: center; gap: 4px; background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 4px 6px 4px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.07); max-width: 260px; }
-    #board-title { font-weight: 600; font-size: 14px; color: #2b2b33; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Высота плашки задана отступами вокруг кнопки меню: та выросла до 30px,
+       и при прежних 4px по краям занимала три четверти плашки — тесно и криво. */
+    #board-head { position: fixed; top: 64px; left: 16px; z-index: 31; display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; padding: 8px 9px 8px 16px; box-shadow: 0 4px 16px rgba(0,0,0,.08); max-width: 320px; }
+    #board-title { font-weight: 600; font-size: 16px; color: #2b2b33; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #board-title.editing { outline: 1.5px solid #4d7cfe; border-radius: 5px; padding: 0 5px; background: #fff; overflow: visible; cursor: text; }
     #conn-banner {
         position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 3000; display: none;
@@ -678,7 +649,7 @@
     /* max-height + прокрутка: меню длинное, и на невысоком экране планшета
        нижняя половина (экспорт, история, удаление доски) просто уходила за
        край без всякой возможности до неё добраться. */
-    #board-menu { position: fixed; top: 104px; left: 16px; z-index: 60; width: 250px; max-height: calc(100vh - 118px); overflow-y: auto;
+    #board-menu { position: fixed; top: 118px; left: 16px; z-index: 60; width: 250px; max-height: calc(100vh - 132px); overflow-y: auto;
         background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
     #board-menu[hidden] { display: none; }
     .bm-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #9a9aa4; margin: 2px 0 6px; }
@@ -690,7 +661,7 @@
     .bm-item:hover { background: #eef1f7; }
     .bm-item.danger { color: #d63030; }
     .bm-item.danger:hover { background: #fdecec; }
-    #history-panel { position: fixed; top: 104px; left: 280px; z-index: 60; width: 260px; max-height: 60vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    #history-panel { position: fixed; top: 118px; left: 280px; z-index: 60; width: 260px; max-height: 60vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
     #history-panel[hidden] { display: none; }
     .bm-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: #2b2b33; margin-bottom: 6px; }
     .bm-head button { border: none; background: transparent; font-size: 18px; line-height: 1; color: #9a9aa4; cursor: pointer; }
@@ -720,7 +691,9 @@
     .bgpick::-moz-color-swatch { border: none; border-radius: 50%; opacity: 0; }
     #role-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #eef0f4; color: #55555f; }
     #role-badge.viewer { background: #fff2d6; color: #9a6b12; }
-    #people-panel { position: fixed; top: 44px; right: 12px; z-index: 60; width: 292px; max-height: calc(100vh - 60px); overflow-y: auto;
+    /* 106px — ниже верхней плашки (она занимает 64..98). На 44px панель
+       заезжала под шапку сайта, и её собственный заголовок был не виден. */
+    #people-panel { position: fixed; top: 106px; right: 12px; z-index: 60; width: 292px; max-height: calc(100vh - 60px); overflow-y: auto;
         background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px 12px; font-size: 13px; }
     #people-panel[hidden] { display: none; }
     #people-panel .ap-title { font-weight: 600; color: #2b2b33; margin: 10px 0 6px; }
@@ -731,7 +704,11 @@
     .pp-all button:hover { background: #eef1f7; }
     .pp-all button.on { background: #4d7cfe; border-color: #4d7cfe; color: #fff; }
     .pp-all button:disabled { opacity: .45; cursor: default; }
-    .pp-row { display: flex; align-items: center; gap: 5px; padding: 6px 0; border-top: 1px solid #f0f0f3; }
+    /* Две строки, а не одна: в одну не влезали имя, два значка, переключатель
+       роли и «Убрать» — от имени оставалась одна буква с многоточием. */
+    .pp-row { padding: 7px 0; border-top: 1px solid #f0f0f3; }
+    .pp-line { display: flex; align-items: center; gap: 6px; }
+    .pp-line + .pp-line { margin-top: 6px; }
     .pp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pp-me { color: #9a9aa2; font-weight: 400; font-size: 11px; }
     .pp-empty { color: #9a9aa2; font-size: 12px; padding: 8px 0; border-top: 1px solid #f0f0f3; }
@@ -1234,6 +1211,47 @@
     .remote-cursor .name {
         display: inline-block; margin-top: -2px; margin-left: 10px;
         padding: 1px 6px; border-radius: 6px; color: #fff; font-weight: 600;
+    }
+    /* ВНИМАНИЕ: этот блок должен оставаться ПОСЛЕДНИМ в стилях. При равной
+       силе селектора побеждает правило, записанное ниже, — стоя выше описаний
+       панелей, блок не перебивал их, и вся подгонка под планшет молча не
+       применялась. */
+    @media (max-width: 820px) {
+        #board-toolbar { display: none; }
+        #mobile-fab { display: flex; }
+        #mobile-sheet { display: flex; }
+        #mobile-backdrop:not([hidden]) { display: block; }
+
+        /* Верхняя плашка: на узком экране в строку влезают только связь и код.
+           Остальные кнопки продублированы в листе, разделом «Занятие». */
+        #board-topbar { top: 60px; right: 8px; gap: 8px; padding: 5px 11px; font-size: 13px; }
+        /* «Участники» на планшете НЕ прячем: вести и следовать нужны именно
+           там, а раньше все три кнопки занятия исчезали с узкого экрана. */
+        #board-topbar .tb-sep, #board-topbar #import-btn,
+        #board-topbar #reveal-hidden, #board-topbar #peers,
+        #board-topbar #screen-btn { display: none; }
+        /* Плашка названия и верхняя плашка стоят в одной строке и делят её
+           ширину. 42vw хватало прежней узкой плашке; выросшая налезала на
+           соседку — на телефоне ровно на три пикселя. */
+        #board-head { top: 60px; left: 8px; max-width: 36vw; padding: 7px 7px 7px 12px; }
+        #board-title { font-size: 15px; }
+        #settings-btn { top: 106px; right: 8px; }
+        #zoom-control { bottom: 14px; right: 12px; }
+        /* Всплывающие панели не должны вылезать за край экрана. */
+        #board-menu, #history-panel, #people-panel, #voice-panel, .settings-panel, .conn-panel, #color-palette {
+            max-width: calc(100vw - 16px);
+        }
+        #history-panel { left: 8px; }
+        /* Меню доски на планшете начинается ниже (плашка сдвинута) и должно
+           умещаться до низа экрана. */
+        #board-menu { top: 114px; max-height: calc(100vh - 126px); }
+        #history-panel { top: 114px; max-height: calc(100vh - 126px); }
+        #board-menu-btn { padding: 7px; }
+        #board-menu-btn svg { width: 22px; height: 22px; }
+        #people-panel { top: 106px; right: 8px; max-height: calc(100vh - 118px); }
+        #board-menu { left: 8px; }
+        /* Крупнее цели для пальца в меню. */
+        .bm-item { padding: 10px 8px; font-size: 14px; }
     }
 </style>
 {% endblock %}
