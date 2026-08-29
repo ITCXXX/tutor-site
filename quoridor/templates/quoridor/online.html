@@ -14,24 +14,34 @@
     <div>
       <a class="q-back" href="{% url 'quoridor:play' %}">← Заборы</a>
       <h1>Партия <span class="q-codebig">{{ game.code }}</span></h1>
-      <p class="q-sub">
+      <p class="q-sub" id="qRole">
         {% if my_side %}
           Вы играете {% if my_side == 'red' %}красными и ходите первым{% else %}синими{% endif %}.
+        {% elif can_join %}
+          Сажаем вас за свободное место…
         {% else %}
           Вы смотрите за партией со стороны.
         {% endif %}
       </p>
     </div>
 
-    <div class="q-invite">
+    <div class="q-invite" id="qInvite">
       {% if can_join %}
-        <form method="post" action="{% url 'quoridor:join' code=game.code %}">
+        {# Обычно место занимает сам скрипт, как только страница открылась.
+           Форма остаётся запасным путём: без JS кнопка сделает то же самое. #}
+        <form method="post" action="{% url 'quoridor:join' code=game.code %}" id="qJoinForm">
           {% csrf_token %}
-          <button type="submit" class="q-btn">Занять место синего</button>
+          <button type="submit" class="q-btn">
+            Занять место {% if free_side == 'red' %}красного{% else %}синего{% endif %}
+          </button>
         </form>
       {% elif game.status == 'waiting' %}
-        <button id="qCopy" type="button" class="q-btn ghost">Скопировать ссылку</button>
-        <div class="q-invite-hint">Отправьте её сопернику — партия начнётся, как только он войдёт.</div>
+        <label class="q-link-label" for="qLink">Ссылка для соперника</label>
+        <div class="q-linkrow">
+          <input id="qLink" class="q-link" type="text" readonly value="{{ request.build_absolute_uri }}">
+          <button id="qCopy" type="button" class="q-btn ghost">Скопировать</button>
+        </div>
+        <div class="q-invite-hint">Партия начнётся сама, как только соперник её откроет.</div>
       {% endif %}
     </div>
   </div>
@@ -39,9 +49,20 @@
   <div class="q-grid">
 
     <div class="q-boardbox">
-      <div id="qTurn" class="q-turn wait">Загружаем партию…</div>
-      <canvas id="qBoard"></canvas>
-      <div id="qMsg" class="q-msg"></div>
+      {# role/aria-live: чья очередь и почему ход не принят — единственная
+         обратная связь на странице, и читалка должна её проговаривать. #}
+      <div id="qTurn" class="q-turn wait" role="status" aria-live="polite">Загружаем партию…</div>
+      <canvas id="qBoard" aria-label="Доска 9 на 9"></canvas>
+      <div id="qMsg" class="q-msg" role="status" aria-live="assertive"></div>
+      <noscript>
+        <div class="q-error">
+          Сетевая партия работает только со включённым JavaScript: без него
+          страница не узнает о ходах соперника.
+        </div>
+      </noscript>
+      <div class="q-actions">
+        <button id="qResign" type="button" class="q-btn ghost danger" hidden>Сдаться</button>
+      </div>
     </div>
 
     <aside class="q-panel">
@@ -79,6 +100,7 @@
               переключается правой кнопкой или клавишей <kbd>R</kbd>.</li>
           <li>Забор не имеет права полностью отрезать сопернику путь.</li>
           <li>Ход соперника появится сам — страницу обновлять не нужно.</li>
+          <li>Кнопка «Сдаться» под доской заканчивает партию досрочно.</li>
         </ul>
       </div>
 
@@ -96,7 +118,10 @@
 import { boot } from "{% static 'quoridor/js/online.js' %}?v={{ asset_v }}";
 boot({
   state: "{% url 'quoridor:state' code=game.code %}",
-  move: "{% url 'quoridor:move' code=game.code %}"
+  move: "{% url 'quoridor:move' code=game.code %}",
+  join: "{% url 'quoridor:join' code=game.code %}",
+  lobby: "{% url 'quoridor:play' %}",
+  resign: "{% url 'quoridor:resign' code=game.code %}"
 }, document.querySelector('[name=csrfmiddlewaretoken]').value);
 </script>
 {% endblock %}

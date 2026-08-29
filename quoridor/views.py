@@ -14,6 +14,7 @@ quoridor/views.py
 """
 
 import json
+import secrets
 import time
 
 from django.conf import settings
@@ -22,6 +23,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 
 # Игра живёт внутри раздела игр, значит и правила доступа у неё те же.
@@ -32,6 +34,9 @@ from games.utils import display_for_games
 
 from . import engine
 from .models import QuoridorGame
+
+
+OPEN_GAMES_LIMIT = 5      # сколько партий один человек вправе держать в ожидании
 
 
 def asset_version():
@@ -53,9 +58,12 @@ def lobby(request):
         Q(red_player=user) | Q(blue_player=user)
     ).order_by('-updated_at')[:20]
 
+    # Свободным может быть любое из двух мест: создатель выбирает цвет сам,
+    # так что ждать соперника может и синий.
     open_games = QuoridorGame.objects.filter(
-        status=QuoridorGame.STATUS_WAITING, blue_player__isnull=True,
-    ).exclude(red_player=user).order_by('-created_at')[:10]
+        Q(status=QuoridorGame.STATUS_WAITING)
+        & (Q(red_player__isnull=True) | Q(blue_player__isnull=True))
+    ).exclude(red_player=user).exclude(blue_player=user).order_by('-created_at')[:10]
 
     return render(request, 'quoridor/lobby.html', {
         'my_games': my_games,
@@ -74,9 +82,43 @@ def play_local(request):
 
 @login_required
 @games_section_required
-@require_POST
 def game_create(request):
-    game = QuoridorGame.create_for(red_player=request.user)
+    """
+    Выбор цвета, а затем создание партии.
+
+    Цвет решает не только внешний вид: красный ходит первым, и в «Заборах»
+    это заметное преимущество. Поэтому сначала спрашиваем, а не сажаем молча.
+    """
+    # Брошенные партии копятся в лобби и мешают всем остальным, поэтому
+    # больше пяти неначатых партий одновременно держать нельзя.
+    pending = QuoridorGame.objects.filter(
+        Q(red_player=request.user) | Q(blue_player=request.user),
+        status=QuoridorGame.STATUS_WAITING,
+    ).count()
+
+    if request.method != 'POST':
+        return render(request, 'quoridor/new.html', {
+            'asset_v': asset_version(),
+            'pending': pending,
+            'limit': OPEN_GAMES_LIMIT,
+        })
+
+    if pending >= OPEN_GAMES_LIMIT:
+        return render(request, 'quoridor/new.html', {
+            'asset_v': asset_version(),
+            'pending': pending,
+            'limit': OPEN_GAMES_LIMIT,
+            'error': 'Слишком много партий ждут соперника. Закройте лишние — '
+                     'кнопкой «Отменить партию» на их страницах.',
+        }, status=400)
+
+    side = request.POST.get('side')
+    if side == 'random':
+        side = secrets.choice([engine.RED, engine.BLUE])
+    elif side not in (engine.RED, engine.BLUE):
+        side = engine.RED
+
+    game = QuoridorGame.create_for(request.user, side)
     return redirect('quoridor:game', code=game.code)
 
 
@@ -86,44 +128,80 @@ def game_detail(request, code):
     """Страница сетевой партии."""
     game = get_object_or_404(QuoridorGame, code=code)
     side = game.player_side(request.user)
-    can_join = (
-        side is None
-        and game.status == QuoridorGame.STATUS_WAITING
-        and game.blue_player_id is None
-        and game.red_player_id != request.user.id
-    )
     return render(request, 'quoridor/online.html', {
         'game': game,
         'my_side': side or '',
-        'can_join': can_join,
+        'can_join': game.can_seat(request.user),
+        'free_side': game.free_side() or '',
         'red_label': game.label_for(engine.RED),
         'blue_label': game.label_for(engine.BLUE),
         'asset_v': asset_version(),
     })
 
 
+@never_cache
 @login_required
 @games_section_required
 @require_POST
 def game_join(request, code):
     """
-    Войти в партию вторым игроком.
+    Занять свободное место в партии.
 
-    Занятие места идёт в транзакции с блокировкой строки: иначе два человека,
-    открывшие ссылку одновременно, оба увидели бы «партия свободна» и второй
+    Место занимается в транзакции с блокировкой строки: иначе два человека,
+    открывшие ссылку одновременно, оба увидели бы «место свободно» и второй
     затёр бы первого.
+
+    Отвечает либо редиректом (обычная форма — запасной путь на случай, когда
+    JS не работает), либо состоянием партии, если попросили JSON: страница
+    сажает гостя сама, как только он открыл ссылку.
     """
     user = request.user
     with transaction.atomic():
         game = get_object_or_404(
             QuoridorGame.objects.select_for_update(), code=code
         )
-        if game.blue_player_id is None and game.red_player_id != user.id \
-                and game.status == QuoridorGame.STATUS_WAITING:
-            game.blue_player = user
-            game.status = QuoridorGame.STATUS_ACTIVE
-            game.save(update_fields=['blue_player', 'status', 'updated_at'])
+        took = game.seat(user)
+        if took:
+            game.save(update_fields=['red_player', 'blue_player',
+                                     'status', 'updated_at'])
+        payload = _state_payload(game, user)
+
+    if request.headers.get('X-Requested-With') == 'fetch':
+        payload['ok'] = True
+        payload['took'] = took or ''
+        return JsonResponse(payload)
     return redirect('quoridor:game', code=code)
+
+
+@never_cache
+@login_required
+@games_section_required
+@require_POST
+def game_resign(request, code):
+    """
+    Уйти из партии: до первого хода — освободить место, дальше — сдаться.
+
+    Уход — такое же событие партии, как ход: он попадает в last_move, и второй
+    игрок узнаёт о нём обычным опросом, ничего не обновляя руками.
+    """
+    user = request.user
+    with transaction.atomic():
+        game = get_object_or_404(
+            QuoridorGame.objects.select_for_update(), code=code
+        )
+        side = game.player_side(user)
+        if side is None:
+            return JsonResponse({'error': 'Вы не участник этой партии.'}, status=403)
+
+        outcome = game.resign(side)
+        if outcome is None:
+            return JsonResponse({'error': 'Эта партия уже закончена.'}, status=400)
+        game.save()
+        payload = _state_payload(game, user)
+
+    payload['ok'] = True
+    payload['outcome'] = outcome      # 'left' | 'cancel' | 'resign'
+    return JsonResponse(payload)
 
 
 # ────────────────────────── обмен ──────────────────────────
@@ -137,6 +215,8 @@ def _state_payload(game, user):
         'winner': game.winner,
         'last_move': game.last_move,
         'my_side': game.player_side(user) or '',
+        'can_seat': game.can_seat(user),
+        'free_side': game.free_side() or '',
         'red_label': game.label_for(engine.RED),
         'blue_label': game.label_for(engine.BLUE),
         'paths': {
@@ -149,6 +229,7 @@ def _state_payload(game, user):
     }
 
 
+@never_cache
 @login_required
 @games_section_required
 def game_state(request, code):
@@ -157,6 +238,7 @@ def game_state(request, code):
     return JsonResponse(_state_payload(game, request.user))
 
 
+@never_cache
 @login_required
 @games_section_required
 @require_POST

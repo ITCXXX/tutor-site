@@ -1,0 +1,53 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Заборы — новая сетевая партия{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'quoridor/css/quoridor.css' %}?v={{ asset_v }}">
+{% endblock %}
+
+{% block content %}
+<div class="q-wrap q-lobby">
+
+  <a class="q-back" href="{% url 'quoridor:play' %}">← Заборы</a>
+  <h1>Каким цветом играете?</h1>
+  <p class="q-sub">
+    Красный ходит первым и бежит снизу вверх, синий — сверху вниз. Первый ход
+    в «Заборах» стоит темпа, так что цвет тут не только про внешний вид.
+    Сопернику достанется оставшийся.
+  </p>
+
+  {% if error %}<div class="q-error">{{ error }}</div>{% endif %}
+
+  <form method="post" class="q-colors">
+    {% csrf_token %}
+
+    <button type="submit" name="side" value="red" class="q-color red">
+      <span class="q-color-dot"></span>
+      <span class="q-color-title">Красными</span>
+      <span class="q-color-desc">Старт на e1, цель — 9-я горизонталь. Ход первый.</span>
+    </button>
+
+    <button type="submit" name="side" value="blue" class="q-color blue">
+      <span class="q-color-dot"></span>
+      <span class="q-color-title">Синими</span>
+      <span class="q-color-desc">Старт на e9, цель — 1-я горизонталь. Ход второй.</span>
+    </button>
+
+    <button type="submit" name="side" value="random" class="q-color any">
+      <span class="q-color-dot"></span>
+      <span class="q-color-title">Как выпадет</span>
+      <span class="q-color-desc">Цвет выберет сервер — по-честному, монеткой.</span>
+    </button>
+  </form>
+
+  <p class="q-note">
+    После выбора откроется доска, а ссылку на партию можно будет скопировать
+    одной кнопкой и отправить сопернику. Партия начнётся сама, как только он
+    её откроет — нажимать ничего не нужно.
+    {% if pending %}Сейчас соперника ждут ваших партий: {{ pending }} из {{ limit }}.{% endif %}
+  </p>
+
+</div>
+{% endblock %}

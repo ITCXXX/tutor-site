@@ -27,13 +27,10 @@
       <div class="q-choice-title">Против компьютера</div>
       <div class="q-choice-desc">Соперник бежит по кратчайшему пути и ставит заборы, когда отстаёт.</div>
     </a>
-    <form method="post" action="{% url 'quoridor:create' %}" class="q-choice-form">
-      {% csrf_token %}
-      <button type="submit" class="q-choice q-choice-btn">
-        <div class="q-choice-title">По сети</div>
-        <div class="q-choice-desc">Создать партию и отправить сопернику ссылку. Ходы проверяет сервер.</div>
-      </button>
-    </form>
+    <a class="q-choice q-choice-btn" href="{% url 'quoridor:create' %}">
+      <div class="q-choice-title">По сети</div>
+      <div class="q-choice-desc">Выбрать цвет, создать партию и отправить сопернику ссылку. Ходы проверяет сервер.</div>
+    </a>
   </div>
 
   {% if my_games %}
@@ -43,12 +40,12 @@
       {% for g in my_games %}
       <a class="q-game {{ g.status }}" href="{% url 'quoridor:game' code=g.code %}">
         <span class="q-code">{{ g.code }}</span>
-        <span class="q-vs">
-          {{ g.red_player.get_username|default:'—' }} против {{ g.blue_player.get_username|default:'…' }}
-        </span>
+        <span class="q-vs">{{ g.red_label }} против {{ g.blue_label }}</span>
         <span class="q-status">
           {% if g.status == 'waiting' %}ждёт соперника
-          {% elif g.status == 'finished' %}завершена — победил {% if g.winner == 'red' %}красный{% else %}синий{% endif %}
+          {% elif g.status == 'finished' %}завершена — победил
+            {% if g.winner == 'red' %}красный{% elif g.winner == 'blue' %}синий{% else %}никто{% endif %}
+          {% elif g.status == 'cancelled' %}отменена
           {% else %}идёт{% endif %}
         </span>
         <span class="q-when">{{ g.updated_at|date:"d.m H:i" }}</span>
@@ -65,8 +62,10 @@
       {% for g in open_games %}
       <a class="q-game waiting" href="{% url 'quoridor:game' code=g.code %}">
         <span class="q-code">{{ g.code }}</span>
-        <span class="q-vs">создал {{ g.red_player.get_username }}</span>
-        <span class="q-status">свободно место синего</span>
+        <span class="q-vs">создал {% if g.red_player %}{{ g.red_label }}{% else %}{{ g.blue_label }}{% endif %}</span>
+        <span class="q-status">
+          {% if g.red_player %}свободен синий{% else %}свободен красный — ходит первым{% endif %}
+        </span>
         <span class="q-when">{{ g.created_at|date:"d.m H:i" }}</span>
       </a>
       {% endfor %}

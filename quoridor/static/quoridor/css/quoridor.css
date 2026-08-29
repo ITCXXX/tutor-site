@@ -87,7 +87,6 @@ kbd { font-family: Consolas, monospace; font-size: .75rem; background: #fff; bor
                   box-shadow: 0 8px 20px -14px rgba(15,23,42,.45); }
 .q-choice-title { font-weight: 600; font-size: 1rem; margin-bottom: .25rem; }
 .q-choice-desc { font-size: .82rem; color: #64748b; line-height: 1.45; }
-.q-choice-form { margin: 0; display: flex; }
 .q-choice-btn { border-color: #0d5d50; }
 .q-choice-btn .q-choice-title { color: #0d5d50; }
 
@@ -115,3 +114,41 @@ kbd { font-family: Consolas, monospace; font-size: .75rem; background: #fff; bor
 .q-player.is-me { box-shadow: 0 0 0 2px #0d948833 inset; }
 .q-player.is-turn { background: #f0fdfa; }
 .q-player.is-me .q-name::after { content: ' — вы'; color: #0d9488; font-weight: 500; font-size: .8rem; }
+
+/* ── выбор цвета перед созданием сетевой партии ── */
+.q-colors { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: .8rem; margin: 1.4rem 0 1rem; }
+.q-color { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto;
+           gap: .1rem .7rem; text-align: left; background: #fff; border: 1px solid #e2e8f0;
+           border-radius: .55rem; padding: 1rem 1.1rem; font: inherit; color: inherit;
+           cursor: pointer; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+.q-color:hover { transform: translateY(-2px); border-color: #cbd5e1;
+                 box-shadow: 0 8px 20px -14px rgba(15,23,42,.45); }
+.q-color-dot { grid-row: 1 / span 2; align-self: center; width: 26px; height: 26px;
+               border-radius: 50%; box-shadow: inset 0 -3px 6px rgba(15,23,42,.25); }
+.q-color.red .q-color-dot { background: #dc2626; }
+.q-color.blue .q-color-dot { background: #2563eb; }
+.q-color.any .q-color-dot { background: linear-gradient(135deg, #dc2626 0 50%, #2563eb 50% 100%); }
+.q-color-title { font-weight: 600; }
+.q-color-desc { font-size: .8rem; color: #64748b; line-height: 1.4; }
+.q-note { font-size: .82rem; color: #94a3b8; }
+
+/* ── приглашение: ссылка, которую можно выделить и скопировать ── */
+.q-link-label { display: block; font-size: .7rem; text-transform: uppercase;
+                letter-spacing: .08em; color: #94a3b8; margin-bottom: .25rem; }
+.q-linkrow { display: flex; gap: .35rem; }
+.q-link { flex: 1 1 15rem; min-width: 0; font: inherit; font-size: .8rem;
+          padding: .45rem .6rem; border: 1px solid #cbd5e1; border-radius: .35rem;
+          background: #f8fafc; color: #334155; }
+.q-link:focus { outline: 2px solid #0d948855; outline-offset: 1px; }
+
+/* ── сдаться ── */
+.q-actions { display: flex; justify-content: center; margin-top: .6rem; }
+.q-btn.danger { flex: 0 0 auto; color: #b91c1c; border-color: #fecaca; }
+.q-btn.danger:hover { background: #fef2f2; }
+.q-btn.danger.armed { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+.q-btn.danger.armed:hover { background: #991b1b; }
+.q-game.cancelled { border-left: 3px solid #e2e8f0; opacity: .6; }
+.q-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+           border-radius: .45rem; padding: .7rem .9rem; font-size: .87rem;
+           margin: 1.2rem 0 0; }
