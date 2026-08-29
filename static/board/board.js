@@ -751,7 +751,7 @@
         if (el.type === 'venn') { d._labSig = null; }
         if (el.type === 'rect') { node.width(d.width || 0); node.height(d.height || 0); node.fill(shapeFillStyle(d, null)); }
         if (el.type === 'ellipse') { node.radiusX(d.radiusX || 0); node.radiusY(d.radiusY || 0); node.fill(shapeFillStyle(d, null)); }
-        if (el.type === 'image') { if (d.width) node.width(d.width); if (d.height) node.height(d.height); loadImageInto(node, el); }
+        if (el.type === 'image') { if (d.width) node.width(d.width); if (d.height) node.height(d.height); loadImageInto(node, el); applyCrop(node, el); }
         if (el.type === 'pdf') { if (d.width) node.width(d.width); if (d.height) node.height(d.height); renderPdfInto(node, el); }
         if (el.type === 'latex') {
           if (d.width) node.width(d.width);
@@ -5705,6 +5705,7 @@
     img.onload = () => {
       node._imgFail = false;
       node.image(img); node.width(el.data.width || img.naturalWidth); node.height(el.data.height || img.naturalHeight);
+      applyCrop(node, el);   // окно кадра задаётся ПОСЛЕ картинки, иначе Konva его потеряет
       layer.batchDraw();
     };
     img.onerror = () => {
@@ -5718,6 +5719,20 @@
       boardHint('Картинка не загрузилась — двойной щелчок по ней, чтобы попробовать снова');
     };
     img.src = url;
+  }
+  // Показ обрезанной картинки. Konva рисует часть изображения сама, если задать
+  // окно кадра; нули означают «обрезки нет, показываем целиком».
+  function applyCrop(node, el) {
+    const c = el.data && el.data.crop;
+    if (c && c.w > 0 && c.h > 0) { node.cropX(c.x); node.cropY(c.y); node.cropWidth(c.w); node.cropHeight(c.h); }
+    else { node.cropX(0); node.cropY(0); node.cropWidth(0); node.cropHeight(0); }
+  }
+  // Размер исходного файла в пикселях. Нужен, чтобы обрезать «от целого», когда
+  // обрезки ещё не было.
+  function imageNatural(node) {
+    const im = node.image(); if (!im) return null;
+    const w = im.naturalWidth || im.width, h = im.naturalHeight || im.height;
+    return (w && h) ? { w: w, h: h } : null;
   }
   // Повторная попытка: сбрасываем сторож кеша и грузим заново.
   function reloadImage(id) {
@@ -6233,6 +6248,16 @@
   stage.on('mousedown touchstart', (e) => {
     if (e.evt && e.evt.button === 2) return;  // правая кнопка двигает доску
     if (rmbPan) return;                       // правой уже тянут — не мешаем
+    // Идёт обрезка: нажатие начинает рамку, а не выделение.
+    if (cropId) {
+      const p = worldPoint(), b = cropBox();
+      if (p && b) {
+        cropDrag = { x0: Math.max(b.x, Math.min(p.x, b.x + b.w)), y0: Math.max(b.y, Math.min(p.y, b.y + b.h)) };
+        cropRect.x(cropDrag.x0); cropRect.y(cropDrag.y0); cropRect.width(0); cropRect.height(0);
+      }
+      if (e.evt) e.evt.preventDefault();
+      return;
+    }
     if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не выделяем
     if (tool !== 'select') return;
     // Клик по ручке/рамке трансформера — отдать Konva (ресайз), не обрабатывать.
@@ -6492,6 +6517,7 @@
     else if (isEraser(tool)) { eraserMove(); positionEraserRing(); }
     else if (tool === 'lasso') lassoMove();
     if (drawing) moveDraw(!!(e && e.evt && e.evt.shiftKey));
+    if (cropId && cropDrag) cropMove();
     if (marquee) updateMarquee();
     if (frameMove) doFrameMove();
     if (framePan) doFramePan();
@@ -6506,6 +6532,7 @@
   // уровне окна, поэтому все end-функции внутри устроены так, что повторный
   // вызов ничего не делает.
   function abortActiveInput() {
+    if (cropId) { finishCrop(); return; }
     endDraw(); endMarquee(); endFrameDrag(); endResize();
     laserUp(); eraserUp(); lassoUp();
     if (eraserRing) eraserRing.style.display = 'none';
@@ -9132,6 +9159,95 @@
     if (pasteBoardClip(at)) e.preventDefault();
   });
 
+  // ── Обрезка картинки ───────────────────────────────────────────────────
+  // Рамкой по картинке: что обвели, то и осталось. Прямоугольник живёт в
+  // пикселях ИСХОДНОГО файла, поэтому не зависит от того, как картинку потом
+  // растянут на доске.
+  let cropId = null, cropDrag = null;
+  const cropRect = new Konva.Rect({
+    stroke: '#3b62d8', strokeWidth: 1.5, dash: [6, 4], fill: 'rgba(59,98,216,0.10)',
+    listening: false, visible: false,
+  });
+  layer.add(cropRect);
+  function startCropMode(id) {
+    const el = elements.get(id), n = nodes.get(id);
+    if (!el || el.type !== 'image' || !n) { boardHint('Обрезать можно только картинку'); return; }
+    if (!imageNatural(n)) { boardHint('Картинка ещё не загрузилась'); return; }
+    cropId = id; cropDrag = null;
+    cropRect.visible(false); cropRect.moveToTop(); layer.batchDraw();
+    stageEl.style.cursor = 'crosshair';
+    boardHint('Обведите часть, которую нужно оставить. Escape — отмена');
+  }
+  function endCropMode() {
+    cropId = null; cropDrag = null;
+    cropRect.visible(false); layer.batchDraw();
+    stageEl.style.cursor = (tool === 'select') ? 'default' : 'crosshair';
+  }
+  function cropBox() {
+    const el = elements.get(cropId); if (!el) return null;
+    return { x: el.data.x || 0, y: el.data.y || 0, w: el.data.width || 0, h: el.data.height || 0 };
+  }
+  function cropMove() {
+    if (!cropDrag) return;
+    const p = worldPoint(); if (!p) return;
+    const b = cropBox(); if (!b) return;
+    // Рамку держим внутри картинки: обрезать «наружу» нечего.
+    const x = Math.max(b.x, Math.min(p.x, b.x + b.w));
+    const y = Math.max(b.y, Math.min(p.y, b.y + b.h));
+    cropRect.x(Math.min(cropDrag.x0, x)); cropRect.y(Math.min(cropDrag.y0, y));
+    cropRect.width(Math.abs(x - cropDrag.x0)); cropRect.height(Math.abs(y - cropDrag.y0));
+    cropRect.visible(true); cropRect.moveToTop();
+    layer.batchDraw();
+  }
+  function finishCrop() {
+    if (!cropDrag) { endCropMode(); return; }
+    const el = elements.get(cropId), n = nodes.get(cropId);
+    const nat = n && imageNatural(n);
+    const b = cropBox();
+    const rx = cropRect.x(), ry = cropRect.y(), rw = cropRect.width(), rh = cropRect.height();
+    if (!el || !nat || !b || rw < 6 || rh < 6) { boardHint('Слишком маленькая рамка — обрезка отменена'); endCropMode(); return; }
+    const d = el.data;
+    // Что показывается сейчас: либо прежнее окно кадра, либо весь файл.
+    const c0 = (d.crop && d.crop.w > 0) ? d.crop : { x: 0, y: 0, w: nat.w, h: nat.h };
+    // Сколько пикселей доски приходится на пиксель исходника.
+    const kx = b.w / c0.w, ky = b.h / c0.h;
+    if (!(kx > 0 && ky > 0)) { endCropMode(); return; }
+    const before = clone(el);
+    d.crop = {
+      x: c0.x + (rx - b.x) / kx,
+      y: c0.y + (ry - b.y) / ky,
+      w: rw / kx,
+      h: rh / ky,
+    };
+    // Оставленная часть остаётся ровно там, где была: границы объекта совпадают
+    // с обведённой рамкой, масштаб картинки не меняется.
+    d.x = rx; d.y = ry; d.width = rw; d.height = rh;
+    n.x(rx); n.y(ry); n.width(rw); n.height(rh);
+    applyCrop(n, el);
+    histUpd(before, el); send({ action: 'element_update', element: stripPrivate(el) });
+    endCropMode(); refreshTransformer(); layer.batchDraw();
+    boardHint('Обрезано. Вернуть — правая кнопка → «Сбросить обрезку»');
+  }
+  function resetCrop(id) {
+    const el = elements.get(id), n = nodes.get(id);
+    if (!el || el.type !== 'image' || !el.data.crop) return;
+    const nat = n && imageNatural(n); if (!nat) return;
+    const before = clone(el);
+    const c0 = el.data.crop;
+    // Возвращаем весь файл, сохранив масштаб: размер объекта растёт во столько
+    // же раз, во сколько окно кадра меньше исходника.
+    const kx = (el.data.width || 1) / c0.w, ky = (el.data.height || 1) / c0.h;
+    el.data.x = (el.data.x || 0) - c0.x * kx;
+    el.data.y = (el.data.y || 0) - c0.y * ky;
+    el.data.width = nat.w * kx; el.data.height = nat.h * ky;
+    delete el.data.crop;
+    n.x(el.data.x); n.y(el.data.y); n.width(el.data.width); n.height(el.data.height);
+    applyCrop(n, el);
+    histUpd(before, el); send({ action: 'element_update', element: stripPrivate(el) });
+    refreshTransformer(); layer.batchDraw();
+    boardHint('Обрезка снята');
+  }
+
   // ── Порядок слоёв ──────────────────────────────────────────────────────
   // dir: 'front' | 'back' — сразу наверх или вниз; 'up' | 'down' — на один шаг,
   // то есть поменяться местами с ближайшим соседом по глубине. Шаг нужен, когда
@@ -9305,6 +9421,8 @@
     { label: 'На передний план', act: () => moveElZ(Array.from(selected), 'front') },
     { label: 'На задний план', act: () => moveElZ(Array.from(selected), 'back') },
     { sep: true },
+    { label: 'Обрезать', act: () => { const id = Array.from(selected)[0]; if (id) startCropMode(id); } },
+    { label: 'Сбросить обрезку', act: () => { Array.from(selected).forEach(resetCrop); } },
     { label: 'Загрузить картинку снова', act: () => { Array.from(selected).forEach(reloadImage); } },
     { label: 'Копировать ссылку', act: () => { const id = Array.from(selected)[0]; if (id) copyText(boardLink(id), 'Ссылка на объект:'); } },
     { label: 'Связать с…', act: () => askLinkFor(Array.from(selected)) },
@@ -9440,7 +9558,12 @@
     // «Загрузить снова» имеет смысл только для картинки — прочим он бы мешал.
     const _естьКартинка = _ids.some((id) => { const e = elements.get(id); return e && e.type === 'image'; });
     CTX_ITEMS.forEach((it) => {
-      if (it.label === 'Загрузить картинку снова') { if (_естьКартинка) put(it); return; }
+      if (it.label === 'Загрузить картинку снова' || it.label === 'Обрезать') { if (_естьКартинка) put(it); return; }
+      if (it.label === 'Сбросить обрезку') {
+        const есть = _ids.some((id) => { const e2 = elements.get(id); return e2 && e2.type === 'image' && e2.data && e2.data.crop; });
+        if (есть) put(it);
+        return;
+      }
       if (it.label === 'Заблокировать') put(Object.assign({}, it, { label: allLocked(_ids) ? 'Разблокировать' : 'Заблокировать' }));
       else put(it);
     });
@@ -9995,6 +10118,7 @@
     bar.addEventListener('pointercancel', (e) => { if (src && e.pointerId === pid) finish(e, false); });
     // Esc во время перетаскивания — отменить.
     document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && cropId) { endCropMode(); boardHint('Обрезка отменена'); return; }
       if (e.key === 'Escape' && panMode && !dragging) { setPanMode(false); return; }
     if (e.key === 'Escape' && dragging) {
         const btn = src; cleanup(); src = null; pid = null; dragging = false;
