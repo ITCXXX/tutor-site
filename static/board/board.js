@@ -266,7 +266,7 @@
       x: d.x || 0,
       y: d.y || 0,
       stroke: d.stroke || '#1f2937',
-      strokeWidth: d.strokeWidth || 3,
+      strokeWidth: d.strokeWidth || 2,
       draggable: false,
     };
     let node;
@@ -364,7 +364,7 @@
     } else if (el.type === 'vector') {
       // Вектор AB — стрелка, следует за точками.
       const vc = d.color || d.stroke || '#1f2937';
-      node = new Konva.Arrow({ id: el.id, x: 0, y: 0, points: vecEnds(el) || [0, 0, 0, 0], stroke: vc, fill: vc, strokeWidth: d.strokeWidth || 2.5, pointerLength: 11, pointerWidth: 10, lineCap: 'round', lineJoin: 'round', hitStrokeWidth: 14, draggable: false });
+      node = new Konva.Arrow({ id: el.id, x: 0, y: 0, points: vecEnds(el) || [0, 0, 0, 0], stroke: vc, fill: vc, strokeWidth: d.strokeWidth || 2, pointerLength: 11, pointerWidth: 10, lineCap: 'round', lineJoin: 'round', hitStrokeWidth: 14, draggable: false });
     } else if (el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit' || el.type === 'xcurve') {
       // Анализ функций / неявная кривая / образ при инверсии — sceneFunc по окну;
       // живёт в группе окна.
@@ -522,7 +522,7 @@
     // Если излом подводят вплотную к концу, «схлопываем» Z в чистую Г-образную линию
     // (короткий сегмент у наконечника → он бы ломался; вместо этого наконечник повернётся).
     const mainLen = Math.abs(horiz ? dx : dy);
-    if (mainLen > 0) { const frac = Math.min(0.45, (connArrowLen(d.strokeWidth || 3) + 6) / mainLen); if (t < frac) t = 0; else if (t > 1 - frac) t = 1; }
+    if (mainLen > 0) { const frac = Math.min(0.45, (connArrowLen(d.strokeWidth || 2) + 6) / mainLen); if (t < frac) t = 0; else if (t > 1 - frac) t = 1; }
     let pts;
     if (horiz) { const sx = A.x + dx * t; pts = [A, { x: sx, y: A.y }, { x: sx, y: B.y }, B]; }
     else { const sy = A.y + dy * t; pts = [A, { x: A.x, y: sy }, { x: B.x, y: sy }, B]; }
@@ -582,7 +582,7 @@
   function connBounds(d) {
     const pts = connSample(d); let a = Infinity, b = Infinity, c = -Infinity, e = -Infinity;
     pts.forEach((p) => { a = Math.min(a, p.x); b = Math.min(b, p.y); c = Math.max(c, p.x); e = Math.max(e, p.y); });
-    const pad = (d.strokeWidth || 3) + 8; return { x: a - pad, y: b - pad, width: (c - a) + 2 * pad, height: (e - b) + 2 * pad };
+    const pad = (d.strokeWidth || 2) + 8; return { x: a - pad, y: b - pad, width: (c - a) + 2 * pad, height: (e - b) + 2 * pad };
   }
   function connTangent(p0, p1) { const dx = p1.x - p0.x, dy = p1.y - p0.y, L = Math.hypot(dx, dy) || 1; return { x: dx / L, y: dy / L }; }
   // Длина наконечника-стрелки в пикселях (растёт с толщиной).
@@ -654,7 +654,7 @@
   }
   function drawConnector(ctx, shape) {
     const el = elements.get(shape.id()); if (!el) return;
-    const d = el.data, ends = connEnds(d), A = ends.A, B = ends.B, col = d.stroke || '#1f2937', sw = d.strokeWidth || 3, full = connSample(d);
+    const d = el.data, ends = connEnds(d), A = ends.A, B = ends.B, col = d.stroke || '#1f2937', sw = d.strokeWidth || 2, full = connSample(d);
     ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     // СУЖЕНИЕ — самостоятельный тип: ПРЯМАЯ линия, сильно жирнеющая к концу (от
     // острия до толщины sw). Клин со straight-краями; без наконечников/обрезки.
@@ -745,7 +745,7 @@
           node.strokeWidth(el.type === 'pdf' ? 1 : 0);
         } else {
           node.stroke(d.stroke || '#1f2937');
-          node.strokeWidth(d.strokeWidth || 3);
+          node.strokeWidth(d.strokeWidth || 2);
         }
         if (node.getClassName() === 'Line') node.points(d.points || [0, 0]);
         if (el.type === 'venn') { d._labSig = null; }
@@ -2415,7 +2415,7 @@
     return el;
   }
   function createConstruction(type, ids) {
-    const el = { id: uuid(), type, z: 0, data: { color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    const el = { id: uuid(), type, z: 0, data: { color: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), name: nextObjName() } };
     if (type === 'conic') { el.data.pts = ids.slice(0, 5); } // коника по 5 точкам — хранит массив точек, как многоугольник
     else { el.data.a = ids[0]; el.data.b = ids[1]; if (ids.length >= 3) el.data.c = ids[2]; }
     applyTypeDefaults(el.data, type === 'segment' ? 'segment' : type === 'angle' ? 'angle' : 'line'); // по настройкам своего типа
@@ -2440,7 +2440,7 @@
   // Вектор AB (стрелка, следует за точками).
   let vectorPicks = [];
   function createVector(ids) {
-    const el = { id: uuid(), type: 'vector', z: 0, data: { a: ids[0], b: ids[1], color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    const el = { id: uuid(), type: 'vector', z: 0, data: { a: ids[0], b: ids[1], color: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), name: nextObjName() } };
     const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
     const cf = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null; if (cf) el.data.frame = cf;
     upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
@@ -2494,7 +2494,7 @@
   }
   // Перпендикуляр/параллель «по линии»: строит объект со ссылкой на линию-основу и точку.
   function createPerpParallelByLine(type, lineId, throughId, frameId) {
-    const el = { id: uuid(), type, z: 0, data: { color: strokeColor, strokeWidth: Math.max(2, strokeWidth), line: lineId, through: throughId, frame: frameId } };
+    const el = { id: uuid(), type, z: 0, data: { color: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), line: lineId, through: throughId, frame: frameId } };
     applyTypeDefaults(el.data, 'line'); // новые прямые — по настройкам типа
     upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
     const fnode = nodes.get(frameId), h = fnode && fnode.findOne('.fheader');
@@ -2505,7 +2505,7 @@
   const CIRCLE_PICKS = { circ_cp: 2, circ_cr: 1, circ_3: 3, semi: 2, compass: 3 };
   const CIRCLE_KIND = { circ_cp: 'cp', circ_cr: 'cr', circ_3: 'c3', semi: 'semi', compass: 'compass' };
   function createCircle(kind, ids, extra) {
-    const el = { id: uuid(), type: 'circ', z: 0, data: { kind: kind, color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    const el = { id: uuid(), type: 'circ', z: 0, data: { kind: kind, color: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), name: nextObjName() } };
     applyTypeDefaults(el.data, 'circle'); // новые окружности — по настройкам типа
     if (kind === 'cp') { el.data.center = ids[0]; el.data.through = ids[1]; }
     else if (kind === 'cr') { el.data.center = ids[0]; el.data.r = extra.r; }
@@ -2535,7 +2535,7 @@
   }
   // ── Многоугольник по вершинам ──────────────────────────────────────────
   function createPolygon(ids) {
-    const el = { id: uuid(), type: 'polygon', z: 0, data: { pts: ids.slice(), color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    const el = { id: uuid(), type: 'polygon', z: 0, data: { pts: ids.slice(), color: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), name: nextObjName() } };
     applyTypeDefaults(el.data, 'polygon');
     const frs = ids.map((id) => { const e = elements.get(id); return e && e.data ? e.data.frame : null; });
     const commonFrame = (frs[0] && frs.every((f) => f === frs[0])) ? frs[0] : null;
@@ -2571,7 +2571,7 @@
   // ── Правильный многоугольник (центр+вершина / две вершины) ──────────────
   const REGPOLY_KIND = { regpoly_center: 'center', regpoly_edge: 'edge' };
   function createRegPoly(kind, ids, n) {
-    const el = { id: uuid(), type: 'regpoly', z: 0, data: { kind: kind, n: n, color: strokeColor, strokeWidth: Math.max(2, strokeWidth), name: nextObjName() } };
+    const el = { id: uuid(), type: 'regpoly', z: 0, data: { kind: kind, n: n, color: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), name: nextObjName() } };
     applyTypeDefaults(el.data, 'polygon'); // общие дефолты с многоугольником
     if (kind === 'center') { el.data.center = ids[0]; el.data.vertex = ids[1]; }
     else { el.data.a = ids[0]; el.data.b = ids[1]; }
@@ -5793,10 +5793,15 @@
   function closeToolPanels() {
     document.querySelectorAll('#board-toolbar .tool-flyout.open').forEach((f) => f.classList.remove('open'));
     const скрыть = [['color-palette', 'cp-hidden'], ['settings-menu', 'sm-hidden'],
-      ['stroke-panel', 'ps-hidden'], ['shape-panel', 'ps-hidden'], ['dp-pop', 'ps-hidden']];
+      ['stroke-panel', 'ps-hidden'], ['shape-panel', 'ps-hidden']];
     скрыть.forEach(([id, кл]) => { const el = document.getElementById(id); if (el) el.classList.add(кл); });
+    // Всплывашка настроек пера прячется АТРИБУТОМ, а не классом: правила
+    // «#dp-pop.ps-hidden» в стилях нет, и прежняя строка не делала ничего.
+    closeDpPop();
     const bm = document.getElementById('board-menu'), bb = document.getElementById('board-menu-btn');
     if (bm) bm.hidden = true; if (bb) bb.classList.remove('on');
+    // Мобильный лист — тоже панель поверх доски.
+    if (typeof closeMobileSheet === 'function') closeMobileSheet();
   }
   const PEN_MIN_STEP = 2;   // ближе этого (пикселей экрана) точки в штрих не берём
   // Лёгкое сглаживание: каждая внутренняя точка подтягивается к среднему с
@@ -5825,7 +5830,7 @@
         data: { stroke: markerColor, strokeWidth: markerWidth, opacity: markerOpacity, x: p.x, y: p.y, points: [0, 0], marker: true } };
     } else if (tool === 'arrow') {
       drawing = { id: uuid(), type: 'arrow', z: 0,
-        data: { ...base, strokeWidth: Math.max(2, strokeWidth), x: p.x, y: p.y, points: [0, 0, 0, 0], startCap: 'none', endCap: 'arrow' } };
+        data: { ...base, strokeWidth: Math.max(1.5, strokeWidth), x: p.x, y: p.y, points: [0, 0, 0, 0], startCap: 'none', endCap: 'arrow' } };
     } else if (tool === 'line') {
       drawing = { id: uuid(), type: 'line', z: 0,
         data: { ...base, x: p.x, y: p.y, points: [0, 0, 0, 0], startCap: 'none', endCap: 'none' } };
@@ -5846,7 +5851,7 @@
       // Окружность: центр (с привязкой) фиксируем, радиус тянем мышью.
       const c = snapPoint(p);
       drawing = { id: uuid(), type: 'circle', z: 0,
-        data: { stroke: strokeColor, strokeWidth: Math.max(2, strokeWidth), x: c.x, y: c.y, r: 0 } };
+        data: { stroke: strokeColor, strokeWidth: Math.max(1.5, strokeWidth), x: c.x, y: c.y, r: 0 } };
     } else if (tool === 'frame') {
       drawing = { id: uuid(), type: 'frame', z: 0,
         data: { x: p.x, y: p.y, width: 0, height: 0, _ax: p.x, _ay: p.y, cx: 0, cy: 0, unit: 40 } };
@@ -5973,7 +5978,9 @@
   //   • два пальца всегда: щипок — масштаб, движение — панорама.
   // Нажим намеренно не читаем: толщина линии всегда ровная.
 
-  const PEN_SEEN_KEY = 'board-pen-seen-v1';     // на этом устройстве работали пером
+  // Ключ поднят до v2: у тех, у кого доска ошибочно «увидела перо» от пальца,
+  // старая отметка осталась бы в памяти браузера и правка не помогла бы.
+  const PEN_SEEN_KEY = 'board-pen-seen-v2';     // на этом устройстве работали пером
   const FINGER_DRAW_KEY = 'board-finger-draw';  // ручное «всё равно рисовать пальцем»
   let penSeen = false, fingerDrawPref = false;
   try { penSeen = localStorage.getItem(PEN_SEEN_KEY) === '1'; } catch (e) {}
@@ -6004,7 +6011,10 @@
     if (gesture) return true;                   // идёт жест — доска не рисует и не выделяет
     if (!evtIsFinger(e)) return false;          // мышь и перо всегда работают как раньше
     if (penDown) return true;                   // перо ведёт → это ладонь
-    if (penMode()) return true;                 // палец здесь двигает доску, а не рисует
+    // В режиме пера палец не РИСУЕТ, но выделять и нажимать им можно. Раньше
+    // здесь стояло безусловное «нельзя», и тап пальцем не делал ничего: он не
+    // панорамил (не было движения) и не выделял (было запрещено).
+    if (penMode()) return tool !== 'select';
     return false;
   }
 
@@ -6083,10 +6093,12 @@
   // стилуса. Такое касание — это перо, и в жестах оно участвовать не должно:
   // иначе стилус вместо письма таскает доску.
   function stylusEvent(ev) {
-    if (ev.pointerType === 'pen') return true;
-    // Ширина/высота пятна касания у пера практически нулевые, а давление есть
-    // ещё до нажатия. Признак грубый, поэтому он лишь дополняет тип указателя.
-    return ev.pointerType === 'touch' && ev.width <= 1 && ev.height <= 1 && ev.pressure > 0;
+    // ТОЛЬКО честный тип указателя. Прежде здесь была ещё догадка по касанию
+    // (нулевое пятно и давление), и на части планшетов под неё попадал обычный
+    // ПАЛЕЦ: доска запоминала «здесь есть перо» навсегда, после чего пальцем
+    // нельзя было ни выделить объект, ни нажать кнопку на холсте. Современные
+    // планшеты сообщают перо честно, догадка не нужна.
+    return ev.pointerType === 'pen';
   }
   // Палец сдвинулся на столько — значит ведёт доску, а не тыкает.
   const TOUCH_PAN_PX = 8;
@@ -6364,6 +6376,12 @@
     // Правая кнопка двигает доску. Без этой проверки нажатие правой при
     // карандаше НАЧИНАЛО штрих — заодно с меню.
     if (e.evt && e.evt.button === 2) return;
+    // Взялись за холст — панели поверх него убираем. Раньше это делал только
+    // startDraw, а ветки «точка», «отрезок», «текст», «лазер» и вся геометрия
+    // выходят раньше и панели оставляли висеть. На планшете это особенно
+    // заметно: там сторожа «нажали мимо» не срабатывают вовсе, потому что
+    // Konva гасит touchstart при попадании в фигуру.
+    closeToolPanels();
     if (rmbPan) return;                       // правой уже тянут — не мешаем
     if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не рисуем
     if (tool === 'select') return; // в режиме выделения сцена сама панорамит
@@ -6902,7 +6920,7 @@
     const el = {
       id: uuid(), type: 'arrow', z: 0,
       data: {
-        stroke: strokeColor, strokeWidth: Math.max(2, strokeWidth),
+        stroke: strokeColor, strokeWidth: Math.max(1.5, strokeWidth),
         x: A.x, y: A.y, points: [0, 0, 0, 0],
         startCap: 'none', endCap: 'arrow',
         from: { id: anchorForId, side: side },
@@ -8632,16 +8650,22 @@
   // ── Контекстная настройка карандаша/маркера/ластика ──────────────────────
   // 3 пресета-кружка (каждый — толщина+цвет+прозрачность), «своя» толщина/цвет/
   // прозрачность активного, для ластика — радиус. Демо рисуется прямо в кружке.
-  const DP_STORE = 'board_draw_presets_v1';
+  // Ключ поднят до v2 вместе со сменой толщин: сохранённые наборы берутся
+  // ВМЕСТО умолчаний, и без этого новые толщины никто бы не увидел.
+  const DP_STORE = 'board_draw_presets_v2';
   const DP_DEFAULTS = {
-    pen: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 5, c: '#ef4444' }, { w: 10, c: '#3b82f6' }] },
-    marker: { active: 0, presets: [{ w: 16, c: '#ffe14a', o: 0.4 }, { w: 24, c: '#8ef58e', o: 0.4 }, { w: 30, c: '#7cc4ff', o: 0.4 }] },
+    // Толщины смещены в тонкую сторону: прежние 2 / 5 / 10 писали слишком
+    // жирно. Соотношение 1 : 2 : 4 сохранено, чтобы три кружка оставались
+    // различимы на глаз.
+    pen: { active: 0, presets: [{ w: 1.5, c: '#1f2937' }, { w: 3, c: '#ef4444' }, { w: 6, c: '#3b82f6' }] },
+    // Маркер тоньше 12 не делаем: выделитель должен перекрывать строку текста.
+    marker: { active: 0, presets: [{ w: 12, c: '#ffe14a', o: 0.4 }, { w: 18, c: '#8ef58e', o: 0.4 }, { w: 26, c: '#7cc4ff', o: 0.4 }] },
     eraser: { active: 0, presets: [{ r: 10 }, { r: 22 }, { r: 40 }] },
     // Линия, стрелка, разделитель — один общий набор: рисуют они одним и тем же
     // пером, и держать им разные настройки значило бы путать самого себя.
-    line: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 4, c: '#ef4444' }, { w: 6, c: '#3b82f6' }] },
+    line: { active: 0, presets: [{ w: 1.5, c: '#1f2937' }, { w: 3, c: '#ef4444' }, { w: 5, c: '#3b82f6' }] },
     // Прямоугольник, эллипс и все фигуры — контур.
-    shape: { active: 0, presets: [{ w: 2, c: '#1f2937' }, { w: 3, c: '#ef4444' }, { w: 5, c: '#3b82f6' }] },
+    shape: { active: 0, presets: [{ w: 1.5, c: '#1f2937' }, { w: 2.5, c: '#ef4444' }, { w: 4, c: '#3b82f6' }] },
   };
   // Сохранённые настройки могли быть записаны до появления новых групп —
   // недостающие ключи добираем из умолчаний, а не сбрасываем всё.
@@ -8724,8 +8748,8 @@
   function renderDpPop(key) {
     const p = dpActive(key);
     const thick = document.getElementById('dp-thick'), tval = document.getElementById('dp-thick-val'), tlbl = document.getElementById('dp-thick-lbl');
-    if (key === 'eraser') { tlbl.textContent = 'Радиус'; thick.min = 5; thick.max = 80; thick.value = p.r; tval.textContent = p.r; }
-    else { tlbl.textContent = 'Толщина'; thick.min = 1; thick.max = (key === 'marker' ? 40 : 24); thick.value = p.w; tval.textContent = p.w; }
+    if (key === 'eraser') { tlbl.textContent = 'Радиус'; thick.min = 5; thick.step = 1; thick.max = 80; thick.value = p.r; tval.textContent = p.r; }
+    else { tlbl.textContent = 'Толщина'; thick.min = 0.5; thick.step = 0.5; thick.max = (key === 'marker' ? 40 : 24); thick.value = p.w; tval.textContent = p.w; }
     // Прозрачность есть только у маркера; у остальных строку прячем ниже.
     const orow = document.getElementById('dp-opacity-row'); orow.style.display = key === 'marker' ? 'flex' : 'none';
     if (key === 'marker') { const o = document.getElementById('dp-opacity'), ov = document.getElementById('dp-opacity-val'); o.value = Math.round(p.o * 100); ov.textContent = Math.round(p.o * 100) + '%'; }
@@ -8786,7 +8810,9 @@
   (function wireDrawPanel() {
     const thick = document.getElementById('dp-thick'); if (!thick) return;
     thick.addEventListener('input', (e) => {
-      const key = drawKey(tool); if (!key) return; const p = dpActive(key); const v = parseInt(e.target.value, 10);
+      // parseFloat, а не parseInt: толщины теперь дробные (1.5, 2.5), и целое
+      // округление съело бы их при первом же касании ползунка.
+      const key = drawKey(tool); if (!key) return; const p = dpActive(key); const v = parseFloat(e.target.value);
       if (key === 'eraser') p.r = v; else p.w = v;
       document.getElementById('dp-thick-val').textContent = v; applyDrawPreset(key); saveDrawCfg();
       const btn = document.querySelectorAll('#dp-presets .dp-preset')[drawCfg[key].active]; if (btn) btn.innerHTML = dpDemoHtml(key, p);
@@ -9916,7 +9942,7 @@
 
   // Ползунок убран с панели; привязку оставляем на случай, если он вернётся.
   const swInput = document.getElementById('stroke-width');
-  if (swInput) swInput.addEventListener('input', (e) => { strokeWidth = parseInt(e.target.value, 10); });
+  if (swInput) swInput.addEventListener('input', (e) => { strokeWidth = parseFloat(e.target.value); });
 
   // ── Палитра цветов ─────────────────────────────────────────────────────
   // 16 базовых цветов + свои (в localStorage). Выделены объекты → перекрашиваем
@@ -10876,8 +10902,11 @@
     // Буквы инструментов — только без модификаторов. Раньше проверки не было, и
     // Ctrl+P (печать) заодно переключал на карандаш, а Ctrl+A — на стрелку.
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // M — режим перемещения доски. Это не инструмент: у него нет data-tool, и
+    // через карту ниже его не повесить. Маркер поэтому переехал на K.
+    if (_L === 'm') { e.preventDefault(); setPanMode(!panMode); return; }
     const map = {
-      v: 'select',  p: 'pen',     m: 'marker',  e: 'eraser_full', q: 'laser',
+      v: 'select',  p: 'pen',     k: 'marker',  e: 'eraser_full', q: 'laser',
       l: 'line',    a: 'arrow',   r: 'rect',    o: 'ellipse',     s: 'sticky',
       t: 'text_plain', f: 'latex', g: 'graph',  c: 'circ_cp',     d: 'point',
       w: 'frame',   b: 'table',
@@ -10898,7 +10927,7 @@
   // неоткуда узнать. Собираем окно из JS, чтобы не плодить разметку.
   const KEYS_HELP = [
     ['Инструменты', [
-      ['V', 'стрелка (выделение)'], ['P', 'карандаш'], ['M', 'маркер'],
+      ['V', 'стрелка (выделение)'], ['P', 'карандаш'], ['K', 'маркер'],
       ['E', 'ластик'], ['Q', 'указка'], ['L', 'линия'], ['A', 'стрелка-объект'],
       ['R', 'прямоугольник'], ['O', 'овал'], ['C', 'окружность'], ['D', 'точка'],
       ['T', 'текст'], ['F', 'формула'], ['G', 'график'], ['S', 'стикер'],
@@ -10918,6 +10947,7 @@
     ]],
     ['Вид', [
       ['Пробел', 'держать — двигать доску'],
+      ['M', 'режим перемещения доски (нажать ещё раз — выйти)'],
       ['Правая кнопка', 'тянуть — двигать доску при любом инструменте'],
       ['Стрелки', 'двигать доску'],
       ['Shift+стрелки', 'быстрее'], ['Ctrl+0', 'масштаб 100%'],
