@@ -5672,14 +5672,57 @@
     });
     Promise.all(tasks).then((ids) => { const good = ids.filter(Boolean); if (good.length >= 2) autoGridArrange(good); });
   }
+  // Заглушка вместо не загрузившейся картинки. Рисуем её в отдельный холст и
+  // отдаём узлу как изображение: тогда она масштабируется вместе с объектом и
+  // не требует ни нового слоя, ни разметки. Без заглушки объект оставался
+  // невидимым, но кликабельным — человек не понимал, что вообще произошло.
+  function brokenImageCanvas(w, h) {
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(80, Math.round(w || 200)); cv.height = Math.max(60, Math.round(h || 140));
+    const g = cv.getContext('2d');
+    g.fillStyle = '#f6f2ef'; g.fillRect(0, 0, cv.width, cv.height);
+    g.strokeStyle = '#d9a37a'; g.lineWidth = 2; g.setLineDash([7, 5]);
+    g.strokeRect(1, 1, cv.width - 2, cv.height - 2);
+    g.setLineDash([]);
+    g.fillStyle = '#a5673f';
+    g.font = '600 ' + Math.max(11, Math.min(16, Math.round(cv.width / 16))) + 'px sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('Картинка не загрузилась', cv.width / 2, cv.height / 2 - 9);
+    g.font = Math.max(10, Math.min(13, Math.round(cv.width / 20))) + 'px sans-serif';
+    g.fillStyle = '#b98a67';
+    g.fillText('двойной щелчок — загрузить снова', cv.width / 2, cv.height / 2 + 12);
+    return cv;
+  }
   // Картинка: грузим в узел (при создании и при обновлении url).
   function loadImageInto(node, el) {
     const url = el.data.url; if (!url) return;
-    if (node._src === url) { node.width(el.data.width || node.width()); node.height(el.data.height || node.height()); return; }
-    node._src = url;
+    if (node._src === url && !node._imgFail) { node.width(el.data.width || node.width()); node.height(el.data.height || node.height()); return; }
+    node._src = url; node._imgFail = false;
     const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => { node.image(img); node.width(el.data.width || img.naturalWidth); node.height(el.data.height || img.naturalHeight); layer.batchDraw(); };
+    img.onload = () => {
+      node._imgFail = false;
+      node.image(img); node.width(el.data.width || img.naturalWidth); node.height(el.data.height || img.naturalHeight);
+      layer.batchDraw();
+    };
+    img.onerror = () => {
+      // Адрес у картинки всегда свой, локальный, значит файл на месте — не дошёл
+      // именно этот участник. Сторож кеша сбрасываем, иначе повторить попытку
+      // было бы нельзя: узел остался бы «отравленным» навсегда.
+      node._imgFail = true; node._src = null;
+      node.image(brokenImageCanvas(el.data.width, el.data.height));
+      node.width(el.data.width || 200); node.height(el.data.height || 140);
+      layer.batchDraw();
+      boardHint('Картинка не загрузилась — двойной щелчок по ней, чтобы попробовать снова');
+    };
     img.src = url;
+  }
+  // Повторная попытка: сбрасываем сторож кеша и грузим заново.
+  function reloadImage(id) {
+    const el = elements.get(id), n = nodes.get(id);
+    if (!el || !n || el.type !== 'image') return;
+    n._src = null; n._imgFail = false;
+    boardHint('Загружаю картинку заново…');
+    loadImageInto(n, el);
   }
   function createImageElement(url, name) {
     return new Promise((resolve) => {
@@ -6342,6 +6385,17 @@
     const w = stage.getRelativePointerPosition();
     const g = w ? pickObjectAtWorld(w) : null;
     if (g && g.data && g.data.link) openObjectLink(g);
+  });
+  // Двойной щелчок по не загрузившейся картинке — попробовать ещё раз.
+  stage.on('dblclick dbltap', (e) => {
+    let n = e.target;
+    while (n && n !== stage && !(n.id && nodes.has(n.id()))) n = n.getParent();
+    const id = (n && n.id && nodes.has(n.id())) ? n.id() : null;
+    const el = id ? elements.get(id) : null;
+    if (el && el.type === 'image' && nodes.get(id) && nodes.get(id)._imgFail) {
+      if (e.evt) e.evt.preventDefault();
+      reloadImage(id);
+    }
   });
   // Двойной клик по тексту — открыть редактор с его содержимым (в любом режиме).
   stage.on('dblclick dbltap', (e) => {
@@ -9245,6 +9299,7 @@
     { label: 'На передний план', act: () => moveElZ(Array.from(selected), 'front') },
     { label: 'На задний план', act: () => moveElZ(Array.from(selected), 'back') },
     { sep: true },
+    { label: 'Загрузить картинку снова', act: () => { Array.from(selected).forEach(reloadImage); } },
     { label: 'Копировать ссылку', act: () => { const id = Array.from(selected)[0]; if (id) copyText(boardLink(id), 'Ссылка на объект:'); } },
     { label: 'Связать с…', act: () => askLinkFor(Array.from(selected)) },
     { label: 'Комментировать', act: () => insertComment(ctxWorld) },
@@ -9376,7 +9431,10 @@
     }
     // Замок — переключатель, поэтому подпись зависит от текущего состояния.
     const _ids = Array.from(selected);
+    // «Загрузить снова» имеет смысл только для картинки — прочим он бы мешал.
+    const _естьКартинка = _ids.some((id) => { const e = elements.get(id); return e && e.type === 'image'; });
     CTX_ITEMS.forEach((it) => {
+      if (it.label === 'Загрузить картинку снова') { if (_естьКартинка) put(it); return; }
       if (it.label === 'Заблокировать') put(Object.assign({}, it, { label: allLocked(_ids) ? 'Разблокировать' : 'Заблокировать' }));
       else put(it);
     });
