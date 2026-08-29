@@ -12128,9 +12128,16 @@
   const VOICE_ICE = (cfg && cfg.iceServers && cfg.iceServers.length)
     ? cfg.iceServers
     : [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  // Есть ли в списке сервер-ретранслятор. Без него примерно у каждого пятого
+  // домашний роутер прямую связь не пропускает — и человеку стоит сказать
+  // именно это, а не «не удалось соединиться».
+  const HAS_TURN = VOICE_ICE.some((s) => [].concat(s.urls || s.url || []).some((u) => /^turns?:/i.test(String(u))));
   // Сейчас все соединяются со всеми — при двух-трёх это лучший вариант. Дальше
   // растёт квадратично, поэтому честно предупреждаем, а не молча тормозим.
   const MESH_SOFT_LIMIT = 5;
+  // Браузер не даёт играть звуку на странице, где человек ничего не нажимал.
+  // Слушателю нажимать незачем, поэтому ловим отказ и играем с первого щелчка.
+  let audioBlocked = false;
 
   let myPeer = null;              // id этого соединения (вкладки), приходит с сервера
   let voiceOn = false;            // мы в разговоре
@@ -12184,6 +12191,10 @@
       voicePeers.forEach((p) => {
         const sp = levelOf(p) > SPEAK_LEVEL;
         if (sp !== p.speaking) { p.speaking = sp; changed = true; }
+        // Подпись меняется и сама по себе — когда сосед наконец включил
+        // микрофон и пошёл звук. Без этой проверки список бы не обновился.
+        const t = peerStateText(p);
+        if (t !== p._shownState) { p._shownState = t; changed = true; }
       });
       if (changed) renderVoiceList();
     }, 180);
@@ -12199,6 +12210,23 @@
   // браузер сам попросит переспросить состав связи. Если обе стороны заговорят
   // одновременно, «вежливая» (та, у кого id меньше) уступает и переспрашивает
   // заново. Без этого показ экрана посреди разговора рвал бы соединение.
+  // Своё описание связи БЕЗ АРГУМЕНТА: браузер сам решает, предложение сейчас
+  // уместно или ответ. Именно этого не хватало — обработчик «нужны переговоры»
+  // готовил предложение заранее и пытался применить его уже после того, как
+  // принято чужое, а браузер отвечал «не в том состоянии».
+  function setLocalAuto(pc) {
+    try {
+      const p = pc.setLocalDescription();
+      if (p && typeof p.then === 'function') return p;
+    } catch (e) { /* старый браузер: без аргумента нельзя */ }
+    return (pc.signalingState === 'have-remote-offer' ? pc.createAnswer() : pc.createOffer())
+      .then((d) => pc.setLocalDescription(d));
+  }
+  function sendLocalDesc(pid, pc) {
+    const d = pc.localDescription;
+    if (!d) return;
+    rtcSend(d.type === 'answer' ? 'answer' : 'offer', pid, { type: d.type, sdp: d.sdp });
+  }
   function ensurePeer(pid, label) {
     let p = voicePeers.get(pid);
     if (p) { if (label) p.label = label; return p; }
@@ -12220,10 +12248,9 @@
     pc.onicecandidate = (e) => { if (e.candidate) rtcSend('ice', pid, e.candidate.toJSON ? e.candidate.toJSON() : e.candidate); };
     pc.onnegotiationneeded = () => {
       p.makingOffer = true;
-      pc.createOffer()
-        .then((o) => pc.setLocalDescription(o))
-        .then(() => rtcSend('offer', pid, { type: pc.localDescription.type, sdp: pc.localDescription.sdp }))
-        .catch(() => {})
+      setLocalAuto(pc)
+        .then(() => sendLocalDesc(pid, pc))
+        .catch((e) => { try { console.warn('голос: не удалось предложить связь', e); } catch (_) {} })
         .then(() => { p.makingOffer = false; });
     };
     pc.ontrack = (e) => {
@@ -12236,16 +12263,25 @@
         p.audio = a;
       }
       p.audio.srcObject = stream;
-      const go = p.audio.play();
-      if (go && go.catch) go.catch(() => boardHint('Нажмите на доску, чтобы разрешить звук'));
+      p.hasAudio = true;
+      playPeerAudio(p);
       watchLevel(p, stream);
     };
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState;
       p.state = (st === 'connected') ? 'на связи' : (st === 'connecting' ? 'связываемся' : st);
       if (st === 'failed') {
-        p.state = 'не удалось соединиться';
-        boardHint('С участником «' + p.label + '» не удалось соединиться напрямую');
+        // Одна попытка пересобрать маршрут: обрыв часто лечится этим сам.
+        if (!p.retried && pc.restartIce) {
+          p.retried = true; p.state = 'пересобираем связь';
+          try { pc.restartIce(); } catch (e) {}
+          boardHint('Связь с «' + p.label + '» оборвалась — пробуем ещё раз');
+        } else {
+          p.state = 'не удалось соединиться';
+          boardHint(HAS_TURN
+            ? ('С участником «' + p.label + '» не удалось соединиться')
+            : ('С участником «' + p.label + '» нет прямой связи. На сервере не настроен ретранслятор (TURN) — без него примерно у каждого пятого домашний интернет прямую связь не пропускает'));
+        }
       }
       if (st === 'closed') closePeer(pid);
       renderVoiceList();
@@ -12257,6 +12293,25 @@
     renderVoiceList();
     return p;
   }
+
+  // Попытка включить звук собеседника. Отказ — не поломка: браузер запрещает
+  // звук на странице, где человек ещё ничего не нажимал. Запоминаем это и
+  // включаем с первого же щелчка по доске.
+  function playPeerAudio(p) {
+    if (!p.audio) return;
+    const go = p.audio.play();
+    if (go && go.catch) go.catch(() => {
+      audioBlocked = true; p.needsClick = true;
+      boardHint('Браузер не пускает звук — щёлкните по доске, чтобы услышать');
+      renderVoiceList();
+    });
+  }
+  document.addEventListener('click', () => {
+    if (!audioBlocked) return;
+    audioBlocked = false;
+    voicePeers.forEach((p) => { p.needsClick = false; if (p.audio) { const g = p.audio.play(); if (g && g.catch) g.catch(() => {}); } });
+    renderVoiceList();
+  }, true);
 
   // Добавить/убрать дорожку у ВСЕХ собеседников. kind — 'mic' или 'screen',
   // чтобы потом снять именно её, не трогая остальные.
@@ -12301,7 +12356,12 @@
   // Объявиться всем: «я готов к прямой связи». Соединение поднимется у всех,
   // кто это услышит, — даже если сами они ничего не передают, ведь принимать
   // показ экрана они должны.
-  function rtcAnnounce() { rtcSend('ready', null, null); }
+  function rtcAnnounce() { rtcSend('ready', null, null); sendMicState(null); }
+  // Сказать соседям (или одному), включён ли у нас микрофон. Без этого сосед,
+  // который просто открыл доску и голос не включал, значился в списке «на
+  // связи» — соединение-то есть, оно нужно и для показа экрана, — и было
+  // непонятно, почему тишина.
+  function sendMicState(to) { rtcSend('mic', to || null, { on: !!(voiceOn && !voiceMuted) }); }
 
   function handleRtc(m) {
     if (!m || !m.peer || m.peer === myPeer) return;
@@ -12314,6 +12374,12 @@
       // ответ уже не отвечаем — иначе получилась бы бесконечная перекличка.
       if (!m.to) rtcSend('ready', pid, null);
       ensurePeer(pid, m.label);
+      sendMicState(pid);   // и сразу говорим, включён ли у нас микрофон
+      return;
+    }
+    if (m.kind === 'mic') {
+      const p0 = voicePeers.get(pid);
+      if (p0) { p0.micOn = !!(m.data && m.data.on); renderVoiceList(); }
       return;
     }
     // Дальше — служебные сообщения переговоров. Отвечаем на них всегда: даже
@@ -12327,19 +12393,21 @@
       const collision = (m.kind === 'offer') && (p.makingOffer || pc.signalingState !== 'stable');
       p.ignoreOffer = !p.polite && collision;
       if (p.ignoreOffer) return;                  // невежливый игнорирует чужое предложение
-      const ready = collision
-        ? Promise.all([pc.setLocalDescription({ type: 'rollback' }).catch(() => {}), Promise.resolve()])
-        : Promise.resolve();
-      ready
+      // Ручного отката больше нет: приём чужого предложения откатывает своё
+      // сам. Прежний откат вручную открывал окно, в которое успевал вклиниться
+      // обработчик «нужны переговоры», и браузер отказывал.
+      Promise.resolve()
         .then(() => pc.setRemoteDescription(new RTCSessionDescription(desc)))
         .then(() => {
           flushIce(p);
           if (m.kind !== 'offer') return null;
-          return pc.createAnswer()
-            .then((a) => pc.setLocalDescription(a))
-            .then(() => rtcSend('answer', pid, { type: pc.localDescription.type, sdp: pc.localDescription.sdp }));
+          return setLocalAuto(pc).then(() => sendLocalDesc(pid, pc));
         })
-        .catch(() => { p.state = 'ошибка'; renderVoiceList(); });
+        .catch((e) => {
+          // Молчать нельзя: именно проглоченная ошибка и прятала поломку.
+          try { console.warn('голос: переговоры сорвались', e); } catch (_) {}
+          p.state = 'ошибка связи'; renderVoiceList();
+        });
       return;
     }
     if (m.kind === 'ice') addIce(p, m.data);
@@ -12538,13 +12606,15 @@
   }
   function voiceStop() {
     if (!voiceOn) return;
+    voiceOn = false;             // чтобы соседям ушло честное «микрофон выключен»
+    sendMicState(null);
     removeTracksEverywhere('mic');
     // Соединение рвём, только если и экран не показываем: иначе показ оборвётся.
     if (!screenOn) { rtcSend('bye', null, null); closeAllPeers(); }
     stopVoiceMeter();
     if (localStream) { localStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); localStream = null; }
     localHolder.analyser = null; localHolder.speaking = false;
-    voiceOn = false; voiceMuted = false;
+    voiceMuted = false;          // voiceOn сброшен в начале, до рассылки состояния
     updateVoiceUI();
     boardHint('Вы вышли из разговора');
   }
@@ -12552,6 +12622,7 @@
     if (!voiceOn || !localStream) return;
     voiceMuted = !voiceMuted;
     localStream.getAudioTracks().forEach((t) => { t.enabled = !voiceMuted; });
+    sendMicState(null);   // выключенный кнопкой микрофон по трафику неотличим от речи
     updateVoiceUI();
   }
 
@@ -12567,6 +12638,19 @@
     if (mute) { mute.textContent = voiceMuted ? 'Включить микрофон' : 'Выключить микрофон'; mute.classList.toggle('off', voiceMuted); }
     renderVoiceList();
   }
+  // Что написать про соседа. Соединение поднимается и у того, кто голос не
+  // включал (оно нужно и для показа экрана), поэтому «на связи» само по себе
+  // ничего не обещало: человек видел «на связи» и не понимал, почему тишина.
+  function peerStateText(p) {
+    if (p.needsClick) return 'щёлкните по доске, чтобы услышать';
+    const st = p.pc ? p.pc.connectionState : '';
+    if (st !== 'connected') return p.state || 'связываемся';
+    // Состояние микрофона сосед сообщает сам (kind: 'mic'). Определять его по
+    // принятой дорожке я пробовал — признак muted врёт: соединение принимало
+    // сотни килобайт звука, а дорожка всё равно числилась заглушённой.
+    if (p.micOn === false) return 'микрофон выключен';
+    return 'на связи';
+  }
   function renderVoiceList() {
     const box = document.getElementById('vp-list');
     if (!box || !voiceOn) return;
@@ -12576,7 +12660,7 @@
     voicePeers.forEach((p) => {
       html += '<div class="vp-person' + (p.speaking ? ' talking' : '') + '">'
         + '<span class="vp-dot"></span><span class="vp-name">' + escapeHtml(p.label) + '</span>'
-        + '<span class="vp-state">' + escapeHtml(p.state) + '</span></div>';
+        + '<span class="vp-state">' + escapeHtml(peerStateText(p)) + '</span></div>';
     });
     if (!voicePeers.size) html += '<div class="vp-empty">Ждём, пока кто-нибудь тоже включит голос</div>';
     box.innerHTML = html;
@@ -12784,6 +12868,10 @@
           // ниоткуда не узнаёт — сообщение о входе рассылается только в момент
           // входа, и пришедший вторым не видел никого.
           send({ action: 'hello' });
+          // Если мы уже в разговоре или показываем экран — объявляемся и ему.
+          // Раньше объявление уходило только в момент включения голоса, и
+          // вошедший позже про разговор не знал вовсе.
+          if (rtcSending()) rtcAnnounce();
           // Вошедший не слышал прежнего «веду всех»: объявляем заново,
           // иначе он один остался бы со своим видом. То же и для поимённого
           // ведения: у человека могла просто моргнуть связь, и возвращаться он
