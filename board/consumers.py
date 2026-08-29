@@ -122,8 +122,16 @@ def _embed_host_allowed(url):
         host = host[4:]
     return any(host == d or host.endswith('.' + d) for d in _EMBED_HOSTS)
 _MAX_ELEMENTS = 20000             # потолок объектов на доску
-_RATE_MAX = 250                   # не больше N правок в окне
+_RATE_MAX = 250                   # эфемерных сообщений в окне (курсор, лазер, вид)
 _RATE_WINDOW = 1.0                # окно троттлинга, сек
+# Правки холста отбрасывать молча нельзя: потерянная правка не повторяется, и
+# доски участников расходятся навсегда. У них отдельный, гораздо больший предел
+# — он оставлен только против испорченного клиента, при обычной работе его не
+# достать. Превышение не проглатывается, а получает ответ 'rejected'.
+_RATE_MAX_PERSIST = 2000
+# Что можно терять без последствий: следующее сообщение того же рода придёт
+# через мгновение и заменит потерянное.
+_EPHEMERAL_ACTIONS = {'cursor', 'laser', 'view', 'rtc', 'ping', 'presence'}
 _MAX_RTC_BYTES = 64 * 1024        # одно служебное сообщение голоса (описание связи)
 
 
@@ -221,7 +229,15 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         cutoff = now - _RATE_WINDOW
         while rate and rate[0] < cutoff:
             rate.pop(0)
-        if len(rate) >= _RATE_MAX:
+        # Порог зависит от того, можно ли терять это сообщение. Курсор потерять
+        # не жалко, правку холста — нельзя: она не повторится, и доски у
+        # участников разъедутся навсегда.
+        эфемерное = action in _EPHEMERAL_ACTIONS
+        предел = _RATE_MAX if эфемерное else _RATE_MAX_PERSIST
+        if len(rate) >= предел:
+            if not эфемерное:
+                # Молчать нельзя: человек должен узнать, что правка не прошла.
+                await self.send_json({'action': 'rejected', 'reason': 'too_fast'})
             return
         rate.append(now)
 

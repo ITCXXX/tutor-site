@@ -6066,26 +6066,51 @@
   // Слушаем события указателя ДО Konva: браузер шлёт pointerdown раньше
   // touchstart, поэтому к моменту работы обычных обработчиков доски мы уже
   // знаем, чем именно человек прикоснулся к экрану.
+  // Стилус у части устройств приходит не как 'pen', а как касание с признаком
+  // стилуса. Такое касание — это перо, и в жестах оно участвовать не должно:
+  // иначе стилус вместо письма таскает доску.
+  function stylusEvent(ev) {
+    if (ev.pointerType === 'pen') return true;
+    // Ширина/высота пятна касания у пера практически нулевые, а давление есть
+    // ещё до нажатия. Признак грубый, поэтому он лишь дополняет тип указателя.
+    return ev.pointerType === 'touch' && ev.width <= 1 && ev.height <= 1 && ev.pressure > 0;
+  }
+  // Палец сдвинулся на столько — значит ведёт доску, а не тыкает.
+  const TOUCH_PAN_PX = 8;
+  let pendingPan = null;   // палец лежит, но пока непонятно: щелчок это или панорама
+
   stageEl.addEventListener('pointerdown', (ev) => {
     lastDownType = ev.pointerType || 'mouse';
-    if (ev.pointerType === 'pen') { markPenSeen(); penDown = true; return; }
+    if (stylusEvent(ev)) { lastDownType = 'pen'; markPenSeen(); penDown = true; return; }
     if (ev.pointerType !== 'touch') return;
     touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     if (penDown) return;                       // ладонь при письме пером — молчим
     if (gesture) { startGesture(); return; }   // добавился ещё палец — пересчитать опору
-    if (penMode() || panMode || touchPts.size >= 2) startGesture();
+    // Два пальца — щипок сразу, тут гадать нечего.
+    if (touchPts.size >= 2) { pendingPan = null; startGesture(); return; }
+    // Один палец в режиме пера или в режиме перемещения: НЕ хватаем доску сразу.
+    // Сначала ждём движения — иначе пальцем нельзя ни выбрать объект, ни ткнуть
+    // в кнопку на холсте, только возить доску.
+    if (penMode() || panMode) pendingPan = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
   }, true);
 
   stageEl.addEventListener('pointermove', (ev) => {
     if (ev.pointerType !== 'touch') return;
     if (!touchPts.has(ev.pointerId)) return;
     touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    // Палец пошёл — только теперь это панорама.
+    if (pendingPan && ev.pointerId === pendingPan.id && !gesture) {
+      if (Math.hypot(ev.clientX - pendingPan.x, ev.clientY - pendingPan.y) >= TOUCH_PAN_PX) {
+        pendingPan = null; startGesture();
+      }
+    }
     if (gesture) { ev.preventDefault(); updateGesture(); }
   }, true);
 
   function onPointerGone(ev) {
     if (ev.pointerType === 'pen') { penDown = false; return; }
     if (ev.pointerType !== 'touch') return;
+    if (pendingPan && ev.pointerId === pendingPan.id) pendingPan = null;
     touchPts.delete(ev.pointerId);
     if (gesture) {
       if (touchPts.size >= 1) startGesture();  // остались пальцы — продолжаем с новой опорой
@@ -8880,14 +8905,24 @@
   function canDuplicate(el) { return DUP_TYPES.indexOf(el.type) >= 0 || (el.type === 'point' && !el.data.on); }
   function duplicateSelected() {
     const news = [];
-    Array.from(selected).forEach((id) => {
+    // Сортируем по глубине и раздаём НОВЫЕ z по возрастанию поверх доски.
+    // Раньше дубликат получал тот же z, что и оригинал: при равных z порядок
+    // задаётся не глубиной, а тем, как объекты легли на слой, — то есть
+    // обходом множества выделенного. Оттого слои в дубликате и путались.
+    let maxz = 0; elements.forEach((e) => { const z = e.z || 0; if (z > maxz) maxz = z; });
+    const исходники = Array.from(selected)
+      .map((id) => elements.get(id))
+      .filter((el) => el && canDuplicate(el))
+      .sort((a, b) => (a.z || 0) - (b.z || 0));
+    исходники.forEach((src) => {
+      const id = src.id;
       const el = elements.get(id); if (!el || !canDuplicate(el)) return;
       const data = clone(el.data); delete data.hidden;
       if (el.type === 'point') {
         if (data.frame) { data.mx = (data.mx || 0) + 0.5; data.my = (data.my || 0) - 0.5; } else { data.x = (data.x || 0) + 20; data.y = (data.y || 0) + 20; }
         data.label = nextPointLabel(); data.idx = undefined;
       } else { if (data.x != null) data.x += 20; if (data.y != null) data.y += 20; }
-      const nel = { id: uuid(), type: el.type, z: el.z || 0, data: data };
+      const nel = { id: uuid(), type: el.type, z: ++maxz, data: data };
       upsertNode(nel); send({ action: 'element_add', element: nel }); histAdd(nel); news.push(nel.id);
     });
     if (news.length) { selected.clear(); news.forEach((i) => selected.add(i)); refreshTransformer(); layer.batchDraw(); boardHint('Дублировано: ' + news.length); }
@@ -8899,6 +8934,11 @@
   // событием paste: снимок экрана или картинку из переписки иначе пришлось бы
   // сначала сохранять в файл и потом импортировать кнопкой.
   let boardClip = [];
+  // Метка, по которой узнаём СВОЮ запись в системном буфере. Нужна потому, что
+  // системный буфер умеет хранить только текст: кладём в него объекты доски
+  // строкой, а при вставке узнаём их по этой метке.
+  const CLIP_TAG = 'TUTORBOARD/v1:';
+  const CLIP_MAX = 2 * 1024 * 1024;   // очень большую пачку в буфер не пишем
   function copySelected(cut) {
     if (!selected.size) { boardHint('Сначала выделите объекты'); return; }
     boardClip = Array.from(selected)
@@ -8906,6 +8946,15 @@
       .filter((el) => el && canDuplicate(el))
       .map((el) => ({ type: el.type, z: el.z || 0, data: clone(el.data) }));
     if (!boardClip.length) { boardHint('Эти объекты нельзя скопировать'); return; }
+    // Кладём и в системный буфер: иначе Ctrl+V подхватит чужой текст, который
+    // лежал там с прошлого раза. Заодно объекты станут переноситься между
+    // досками и вкладками.
+    try {
+      const строка = CLIP_TAG + JSON.stringify(boardClip);
+      if (строка.length <= CLIP_MAX && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(строка).catch(() => {});
+      }
+    } catch (e) {}
     boardHint((cut ? 'Вырезано: ' : 'Скопировано: ') + boardClip.length);
     if (cut) deleteSelected();
   }
@@ -8964,6 +9013,21 @@
     if (files.length) { e.preventDefault(); importFiles(files); return; }
 
     const text = dt.getData && dt.getData('text/plain');
+    // Своя запись узнаётся по метке и разбирается ПЕРВОЙ. Раньше здесь сразу
+    // проверялся текст, и объекты, скопированные по Ctrl+C, никогда не
+    // доходили до вставки — вместо них появлялся чужой текст из буфера.
+    if (text && text.indexOf(CLIP_TAG) === 0) {
+      e.preventDefault();
+      try {
+        const пачка = JSON.parse(text.slice(CLIP_TAG.length));
+        if (Array.isArray(пачка) && пачка.length) { boardClip = пачка; pasteBoardClip(at); return; }
+      } catch (err) { boardHint('Не удалось разобрать скопированные объекты'); return; }
+      return;
+    }
+    // Свой буфер полон, а в системном лежит текст — значит доступ к буферу нам
+    // не дали при копировании. Своё всё равно важнее: человек только что нажал
+    // Ctrl+C на объектах доски.
+    if (boardClip.length && pasteBoardClip(at)) { e.preventDefault(); return; }
     if (text && text.trim()) { e.preventDefault(); pasteTextAt(text, at); return; }
 
     if (pasteBoardClip(at)) e.preventDefault();
@@ -12140,7 +12204,9 @@
       case 'rejected':
         boardHint(msg.reason === 'too_big'
           ? 'Объект слишком большой — сервер его не сохранил'
-          : 'Сервер не принял изменение');
+          : (msg.reason === 'too_fast'
+            ? 'Слишком много правок разом — часть не прошла. Обновите страницу, чтобы свериться с соседом'
+            : 'Сервер не принял изменение'));
         return;
       case 'pong': break;   // сердцебиение: ответ получен, соединение живо
       case 'init':
