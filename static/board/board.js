@@ -732,8 +732,21 @@
       } else if (el.type === 'line' || el.type === 'arrow') {
         // Кастомный Shape: sceneFunc берёт данные из elements; широкую hit-зону не трогаем.
       } else {
-        node.stroke(d.stroke || '#1f2937');
-        node.strokeWidth(d.strokeWidth || 3);
+        // Картинка, PDF, формула и текст — это Konva.Image, и при СОЗДАНИИ им
+        // обводка не назначается (у PDF своя, светло-серая в один пиксель).
+        // Раньше все они попадали в общее правило ниже и при первом же
+        // обновлении получали почти чёрную рамку в три пикселя. У себя это не
+        // было видно: сервер не шлёт эхо отправителю, поэтому рамку получал
+        // ТОЛЬКО второй участник — тот, кто картинку не трогал.
+        const безОбводки = (el.type === 'image' || el.type === 'pdf'
+          || el.type === 'latex' || el.type === 'text');
+        if (безОбводки) {
+          node.stroke(el.type === 'pdf' ? '#d9d9e0' : undefined);
+          node.strokeWidth(el.type === 'pdf' ? 1 : 0);
+        } else {
+          node.stroke(d.stroke || '#1f2937');
+          node.strokeWidth(d.strokeWidth || 3);
+        }
         if (node.getClassName() === 'Line') node.points(d.points || [0, 0]);
         if (el.type === 'venn') { d._labSig = null; }
         if (el.type === 'rect') { node.width(d.width || 0); node.height(d.height || 0); node.fill(shapeFillStyle(d, null)); }
