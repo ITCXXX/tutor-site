@@ -11095,17 +11095,29 @@
       cursors.set(uid, c);
     }
     c.x = wx; c.y = wy;
-    placeCursor(c);
+    placeCursor(c, true);   // сосед двинул курсор — пусть скользит
   }
 
-  function placeCursor(c) {
+  // плавно = true — сосед действительно передвинул курсор, метке положено
+  // скользить. плавно = false — сдвинулся ВИД доски, и метка обязана ехать
+  // вместе с холстом мгновенно: холст перерисовывается сразу, а метка с
+  // анимацией отставала бы на кадр и дёргалась, хотя сосед стоит на месте.
+  function placeCursor(c, плавно) {
     // world → экран: умножаем на масштаб и прибавляем смещение сцены.
     const sx = c.x * stage.scaleX() + stage.x();
     const sy = c.y * stage.scaleY() + stage.y();
+    if (!плавно) c.el.style.transition = 'none';
     c.el.style.left = sx + 'px';
     c.el.style.top = sy + 'px';
+    if (!плавно) {
+      // Заставляем браузер применить координаты ПРЯМО СЕЙЧАС, пока анимация
+      // выключена. Без этого оба изменения стиля применились бы разом, уже
+      // после возврата плавности, и метка всё равно поехала бы с анимацией.
+      void c.el.offsetHeight;
+      c.el.style.transition = '';
+    }
   }
-  function repositionCursors() { cursors.forEach(placeCursor); repositionGGB(); repositionWidgets(); if (activeFrameId) updateFuncEditor(); updatePdfControls(); sendView(); }
+  function repositionCursors() { cursors.forEach((c) => placeCursor(c)); repositionGGB(); repositionWidgets(); if (activeFrameId) updateFuncEditor(); updatePdfControls(); sendView(); }
 
   // ── Лазер: гаснущий след (эфемерный, синхронизируется) ─────────────────
   // Рисуешь лазером — остаётся яркая линия, которая тает по возрасту точек
