@@ -6731,13 +6731,18 @@
     wheelZoom = !!on;
     try { localStorage.setItem(WHEEL_STORE, wheelZoom ? '1' : '0'); } catch (e) {}
     const c = document.getElementById('wheel-zoom'); if (c) c.checked = wheelZoom;
-    boardHint(wheelZoom ? 'Колесо приближает; с Ctrl — двигает доску'
-                        : 'Колесо двигает доску; с Ctrl — приближает');
+    boardHint(wheelZoom ? 'Колесо и два пальца приближают. Щипок на тачпаде — тоже'
+                        : 'Колесо и два пальца двигают доску; щипок на тачпаде приближает');
   }
+  // Значит ли этот жест «приблизить». Щипок на тачпаде браузер шлёт как колесо
+  // с ctrlKey (своего события для щипка нет), и это ВСЕГДА приближение — жест
+  // единый во всех программах. Настройка ниже про мышь, а у мыши щипка нет.
+  //
+  // Прежде здесь стояло «wheelZoom !== ev.ctrlKey», и при включённой настройке
+  // выходило наоборот задуманного: прокрутка приближала, а щипок двигал доску.
+  function wheelMeansZoom(ev) { return ev.ctrlKey || wheelZoom; }
   function boardWheel(ev, center) {
-    // Ctrl всегда делает ПРОТИВОПОЛОЖНОЕ выбранному — как в графических
-    // редакторах: одна рука на клавише, и поведение временно меняется.
-    if (wheelZoom !== ev.ctrlKey) {
+    if (wheelMeansZoom(ev)) {
       const factor = Math.min(1.15, Math.max(0.85, Math.exp(-ev.deltaY * 0.01)));
       zoomTo(stage.scaleX() * factor, center);
     } else {
@@ -6761,7 +6766,10 @@
     // Ctrl — отходной путь: с ним колесо работает наоборот, как настроено в меню.
     const wpz = stage.getRelativePointerPosition();
     const fz = wpz && frameAtWorld(wpz.x, wpz.y, true);
-    if (fz && activeFrameId === fz.id && !ev.ctrlKey) { frameZoomAt(fz, wpz, ev.deltaY); return; }
+    // Внутри выбранного окна приближаем его плоскость — тем же жестом, каким
+    // приближают доску снаружи, иначе щипок над окном вёл бы себя иначе, чем
+    // прокрутка над ним же.
+    if (fz && activeFrameId === fz.id && wheelMeansZoom(ev)) { frameZoomAt(fz, wpz, ev.deltaY); return; }
     boardWheel(ev, stage.getPointerPosition());
   });
 
