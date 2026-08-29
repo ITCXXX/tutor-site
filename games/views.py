@@ -64,6 +64,22 @@ def games_section_required(view_func):
 
 @login_required
 @games_section_required
+def games_hub(request):
+    """
+    Единый вход в раздел игр: отсюда выбирают, во что играть.
+
+    Раньше на /games/ сразу открывался список партий УТТТ. Игр стало две,
+    и списку партий место внутри своей игры, а не на входе в раздел.
+    Доступ у хаба тот же, что у всего раздела, — иначе выбор игр видели бы
+    те, кому играть не разрешено.
+    """
+    return render(request, 'games/hub.html', {
+        'display_name': display_for_games(request.user),
+    })
+
+
+@login_required
+@games_section_required
 def games_list(request):
     """Список своих партий + кнопка «Новая партия». Также форма ника, если он
     не задан — без ника создавать партии не имеет смысла."""

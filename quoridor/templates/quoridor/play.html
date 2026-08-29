@@ -1,0 +1,95 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Заборы — игра на 9×9{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'quoridor/css/quoridor.css' %}?v={{ asset_v }}">
+{% endblock %}
+
+{% block content %}
+<div class="q-wrap">
+
+  <div class="q-head">
+    <div>
+      <a class="q-back" href="{% url 'games:hub' %}">← Все игры</a>
+      <h1>Заборы</h1>
+      <p class="q-sub">
+        Красный стоит на e1, синий на e9. Кто первым добежит до противоположного края —
+        тот и выиграл. У каждого 10 заборов длиной в две клетки, чтобы мешать сопернику.
+      </p>
+    </div>
+    <div class="q-mode">
+      <label><input type="radio" name="qMode" value="hotseat" checked> вдвоём за одним экраном</label>
+      <label><input type="radio" name="qMode" value="bot"> против компьютера</label>
+    </div>
+  </div>
+
+  <div class="q-grid">
+
+    <div class="q-boardbox">
+      <div id="qTurn" class="q-turn red">Ход: красный</div>
+      <canvas id="qBoard"></canvas>
+      <div id="qMsg" class="q-msg"></div>
+    </div>
+
+    <aside class="q-panel">
+      <div class="q-players">
+        <div class="q-player red">
+          <span class="q-dot"></span>
+          <div>
+            <div class="q-name">Красный</div>
+            <div class="q-meta">бежит наверх, на 9-ю</div>
+          </div>
+          <div class="q-nums">
+            <div><b id="qRedWalls">10</b><span>заборов</span></div>
+            <div><b id="qRedPath">8</b><span>шагов до цели</span></div>
+          </div>
+        </div>
+        <div class="q-player blue">
+          <span class="q-dot"></span>
+          <div>
+            <div class="q-name">Синий</div>
+            <div class="q-meta">бежит вниз, на 1-ю</div>
+          </div>
+          <div class="q-nums">
+            <div><b id="qBlueWalls">10</b><span>заборов</span></div>
+            <div><b id="qBluePath">8</b><span>шагов до цели</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="q-actions">
+        <button id="qNew" class="q-btn">Новая партия</button>
+        <button id="qUndo" class="q-btn ghost">Отменить ход</button>
+      </div>
+
+      <div class="q-rules">
+        <div class="q-rules-title">Как играть</div>
+        <ul>
+          <li>За ход — <b>либо</b> шаг фишкой на соседнюю клетку, <b>либо</b> забор. И то и другое сразу нельзя.</li>
+          <li>Клик по клетке с зелёной точкой — ход. Клик в паз между клетками — забор.</li>
+          <li>Ориентация забора берётся из паза под курсором. На пересечении переключается
+              правой кнопкой или клавишей <kbd>R</kbd>.</li>
+          <li>Забор не имеет права полностью отрезать сопернику путь к его краю —
+              такой ход игра не примет.</li>
+          <li>Если фишки встретились нос к носу, можно перепрыгнуть соперника.
+              Если за ним стена или край поля — обойти по диагонали.</li>
+          <li>Фишкой можно ходить и стрелками, отмена хода — <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</li>
+        </ul>
+      </div>
+
+      <div class="q-rules-title mt">Ходы</div>
+      <div id="qLog" class="q-log"></div>
+    </aside>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script type="module">
+import { boot } from "{% static 'quoridor/js/board.js' %}?v={{ asset_v }}";
+boot();
+</script>
+{% endblock %}

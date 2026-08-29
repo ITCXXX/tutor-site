@@ -82,7 +82,9 @@
 {% block content %}
 <section style="padding-top: 80px; padding-bottom: 3rem;">
     <div class="container games-wrap">
-        <h1 class="fw-bold mb-3">Игры — Ultimate Tic Tac Toe</h1>
+        <a href="{% url 'games:hub' %}"
+           style="display:inline-block;font-size:.85rem;color:#64748b;text-decoration:none;margin-bottom:.4rem;">← Все игры</a>
+        <h1 class="fw-bold mb-3">Ultimate Tic Tac Toe</h1>
 
         {% if not has_nickname %}
         <div class="nick-card">

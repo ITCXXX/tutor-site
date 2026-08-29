@@ -1,0 +1,76 @@
+/* quoridor — «Заборы», игра на поле 9×9. */
+
+.q-wrap { max-width: 1080px; margin: 0 auto; padding-top: 90px; }
+.q-back { display: inline-block; font-size: .85rem; color: #64748b;
+          text-decoration: none; margin-bottom: .4rem; }
+.q-back:hover { color: #0d5d50; }
+
+.q-head { display: flex; justify-content: space-between; align-items: flex-start;
+          gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.q-head h1 { font-size: 1.6rem; margin: 0 0 .3rem; }
+.q-sub { color: #64748b; font-size: .92rem; margin: 0; max-width: 62ch; }
+
+.q-mode { display: flex; flex-direction: column; gap: .3rem; font-size: .85rem; color: #334155;
+          background: #f8fafc; border: 1px solid #e2e8f0; border-radius: .5rem; padding: .6rem .8rem; }
+.q-mode label { display: flex; align-items: center; gap: .4rem; cursor: pointer; white-space: nowrap; }
+
+.q-grid { display: grid; grid-template-columns: auto minmax(280px, 1fr); gap: 1.5rem; align-items: start; }
+@media (max-width: 980px) { .q-grid { grid-template-columns: 1fr; } }
+
+/* ── доска ── */
+.q-boardbox { display: flex; flex-direction: column; align-items: center; gap: .6rem; }
+#qBoard { border: 1px solid #e2e8f0; border-radius: .6rem; box-shadow: 0 2px 12px -6px rgba(15,23,42,.3);
+          touch-action: manipulation; }
+
+.q-turn { font-size: .95rem; font-weight: 600; padding: .4rem 1rem; border-radius: 999px;
+          border: 1px solid transparent; }
+.q-turn.red  { color: #dc2626; background: #fef2f2; border-color: #fecaca; }
+.q-turn.blue { color: #2563eb; background: #eff6ff; border-color: #bfdbfe; }
+.q-turn.win  { font-size: 1.05rem; }
+
+.q-msg { min-height: 1.3rem; font-size: .85rem; color: #b45309; opacity: 0;
+         transition: opacity .25s; text-align: center; }
+
+/* ── панель ── */
+.q-panel { display: flex; flex-direction: column; gap: 1rem; }
+
+.q-players { display: flex; flex-direction: column; gap: .5rem; }
+.q-player { display: grid; grid-template-columns: auto 1fr auto; gap: .1rem .7rem; align-items: center;
+            background: #fff; border: 1px solid #e2e8f0; border-radius: .5rem; padding: .7rem .9rem; }
+.q-player.red  { border-left: 3px solid #dc2626; }
+.q-player.blue { border-left: 3px solid #2563eb; }
+.q-dot { width: 18px; height: 18px; border-radius: 50%; }
+.q-player.red .q-dot  { background: #dc2626; }
+.q-player.blue .q-dot { background: #2563eb; }
+.q-name { font-weight: 600; font-size: .95rem; }
+.q-meta { font-size: .74rem; color: #94a3b8; }
+.q-nums { display: flex; gap: .9rem; text-align: right; }
+.q-nums div { display: flex; flex-direction: column; }
+.q-nums b { font-size: 1.15rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.q-nums span { font-size: .62rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }
+
+.q-actions { display: flex; gap: .5rem; }
+.q-btn { flex: 1; font: inherit; font-size: .85rem; padding: .5rem .9rem; border-radius: .35rem;
+         border: 1px solid #0d5d50; background: #0d5d50; color: #fff; cursor: pointer; }
+.q-btn:hover { background: #0a4a40; }
+.q-btn.ghost { background: #fff; color: #334155; border-color: #cbd5e1; }
+.q-btn.ghost:hover { background: #f1f5f9; }
+.q-btn:disabled { opacity: .45; cursor: default; }
+.q-btn:disabled:hover { background: #fff; }
+
+.q-rules { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: .5rem; padding: .8rem 1rem; }
+.q-rules-title { font-size: .7rem; text-transform: uppercase; letter-spacing: .09em;
+                 color: #475569; font-weight: 700; margin-bottom: .5rem; }
+.q-rules-title.mt { margin-top: .3rem; }
+.q-rules ul { margin: 0; padding-left: 1.1rem; }
+.q-rules li { font-size: .82rem; color: #475569; margin-bottom: .4rem; line-height: 1.45; }
+.q-rules b { color: #0f172a; }
+kbd { font-family: Consolas, monospace; font-size: .75rem; background: #fff; border: 1px solid #cbd5e1;
+      border-bottom-width: 2px; border-radius: .25rem; padding: 0 .3rem; }
+
+.q-log { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px;
+         border: 1px solid #e2e8f0; border-radius: .4rem; background: #fff; padding: .3rem; }
+.q-log:empty::after { content: 'Партия ещё не начата.'; color: #94a3b8; font-size: .8rem; padding: .4rem; }
+.q-log-row { font-size: .8rem; padding: .25rem .45rem; border-radius: .25rem; }
+.q-log-row.red  { color: #b91c1c; background: #fef2f2; }
+.q-log-row.blue { color: #1d4ed8; background: #eff6ff; }

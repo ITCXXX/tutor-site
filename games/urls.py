@@ -4,7 +4,12 @@ from . import views
 app_name = 'games'
 
 urlpatterns = [
-    path('', views.games_list, name='list'),
+    # Хаб — единый вход в раздел. Партии УТТТ переехали на /games/uttt/,
+    # имя маршрута 'list' сохранено, поэтому все ссылки на него продолжают
+    # работать. Оба конкретных пути обязаны идти ДО '<str:code>/', иначе
+    # он перехватит их как код партии.
+    path('', views.games_hub, name='hub'),
+    path('uttt/', views.games_list, name='list'),
     path('new/', views.game_create, name='create'),
     path('nickname/', views.set_nickname, name='nickname'),
     path('<str:code>/', views.game_detail, name='detail'),
