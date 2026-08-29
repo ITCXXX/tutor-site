@@ -5,13 +5,13 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    # Р Р°Р·РґРµР» РёРіСЂ: РµРґРёРЅС‹Р№ РІС…РѕРґ вЂ” С…Р°Р± РЅР° /games/. РљРѕРЅРєСЂРµС‚РЅС‹Р№ РїСѓС‚СЊ РґРѕ Р·Р°Р±РѕСЂРѕРІ
-    # РѕР±СЏР·Р°РЅ РёРґС‚Рё Р РђРќР¬РЁР• include, РёРЅР°С‡Рµ '<str:code>/' РІРЅСѓС‚СЂРё games РїСЂРёРјРµС‚
-    # 'zabory' Р·Р° РєРѕРґ РїР°СЂС‚РёРё.
+    # Раздел игр: единый вход — хаб на /games/. Конкретный путь до заборов
+    # обязан идти РАНЬШЕ include, иначе '<str:code>/' внутри games примет
+    # 'zabory' за код партии.
     path('games/zabory/', include('quoridor.urls', namespace='quoridor')),
     path('games/', include('games.urls', namespace='games')),
     path('board/', include('board.urls', namespace='board')),
-    path('', include('users.urls')),  # РџРѕРґРєР»СЋС‡Р°РµРј Р’РЎР• РјР°СЂС€СЂСѓС‚С‹ РёР· РїСЂРёР»РѕР¶РµРЅРёСЏ users
+    path('', include('users.urls')),  # Подключаем ВСЕ маршруты из приложения users
 ]
 
 if settings.DEBUG:

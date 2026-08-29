@@ -6,5 +6,13 @@ from . import views
 app_name = 'quoridor'
 
 urlpatterns = [
-    path('', views.play, name='play'),
+    # Конкретные пути обязаны идти ДО '<str:code>/', иначе он перехватит
+    # слова «local» и «new» как коды партий.
+    path('', views.lobby, name='play'),
+    path('local/', views.play_local, name='local'),
+    path('new/', views.game_create, name='create'),
+    path('<str:code>/', views.game_detail, name='game'),
+    path('<str:code>/join/', views.game_join, name='join'),
+    path('<str:code>/state/', views.game_state, name='state'),
+    path('<str:code>/move/', views.game_move, name='move'),
 ]

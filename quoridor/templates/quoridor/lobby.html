@@ -1,0 +1,78 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Заборы{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'quoridor/css/quoridor.css' %}?v={{ asset_v }}">
+{% endblock %}
+
+{% block content %}
+<div class="q-wrap q-lobby">
+
+  <a class="q-back" href="{% url 'games:hub' %}">← Все игры</a>
+  <h1>Заборы</h1>
+  <p class="q-sub">
+    Поле 9×9, две фишки бегут навстречу друг другу к противоположному краю.
+    У каждого 10 заборов, чтобы удлинить сопернику дорогу — но запереть его
+    насмерть правила не позволяют.
+  </p>
+
+  <div class="q-choose">
+    <a class="q-choice" href="{% url 'quoridor:local' %}">
+      <div class="q-choice-title">Вдвоём за одним экраном</div>
+      <div class="q-choice-desc">Ходите по очереди на одном устройстве. Ничего создавать не нужно.</div>
+    </a>
+    <a class="q-choice" href="{% url 'quoridor:local' %}?mode=bot">
+      <div class="q-choice-title">Против компьютера</div>
+      <div class="q-choice-desc">Соперник бежит по кратчайшему пути и ставит заборы, когда отстаёт.</div>
+    </a>
+    <form method="post" action="{% url 'quoridor:create' %}" class="q-choice-form">
+      {% csrf_token %}
+      <button type="submit" class="q-choice q-choice-btn">
+        <div class="q-choice-title">По сети</div>
+        <div class="q-choice-desc">Создать партию и отправить сопернику ссылку. Ходы проверяет сервер.</div>
+      </button>
+    </form>
+  </div>
+
+  {% if my_games %}
+  <div class="q-section">
+    <div class="q-section-title">Мои сетевые партии</div>
+    <div class="q-games">
+      {% for g in my_games %}
+      <a class="q-game {{ g.status }}" href="{% url 'quoridor:game' code=g.code %}">
+        <span class="q-code">{{ g.code }}</span>
+        <span class="q-vs">
+          {{ g.red_player.get_username|default:'—' }} против {{ g.blue_player.get_username|default:'…' }}
+        </span>
+        <span class="q-status">
+          {% if g.status == 'waiting' %}ждёт соперника
+          {% elif g.status == 'finished' %}завершена — победил {% if g.winner == 'red' %}красный{% else %}синий{% endif %}
+          {% else %}идёт{% endif %}
+        </span>
+        <span class="q-when">{{ g.updated_at|date:"d.m H:i" }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if open_games %}
+  <div class="q-section">
+    <div class="q-section-title">Партии, куда можно войти</div>
+    <div class="q-games">
+      {% for g in open_games %}
+      <a class="q-game waiting" href="{% url 'quoridor:game' code=g.code %}">
+        <span class="q-code">{{ g.code }}</span>
+        <span class="q-vs">создал {{ g.red_player.get_username }}</span>
+        <span class="q-status">свободно место синего</span>
+        <span class="q-when">{{ g.created_at|date:"d.m H:i" }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -8,35 +8,10 @@
  * не заставлять игрока лишний раз переключать режим.
  */
 
-import { N, W, RED, BLUE, other, initialState, pawnMoves, applyMove, applyWall,
-         wallProblem, shortestPath, cellName, wallName, WALLS_PER_PLAYER } from './rules.js';
+import { RED, BLUE, initialState, pawnMoves, applyMove, applyWall,
+         shortestPath, cellName, wallName } from './rules.js';
 import { botMove } from './bot.js';
-
-const CELL = 52;
-const GAP = 12;                       // толщина забора и ширина паза
-const PAD = 30;                       // поле под подписи координат
-const STEP = CELL + GAP;
-const SIZE = N * CELL + (N - 1) * GAP + PAD * 2;
-
-const COLOR = {
-  boardBg: '#f8fafc',
-  cell: '#ffffff',
-  cellAlt: '#f1f5f9',
-  groove: '#e2e8f0',
-  line: '#cbd5e1',
-  label: '#94a3b8',
-  red: '#dc2626',
-  redSoft: '#fecaca',
-  blue: '#2563eb',
-  blueSoft: '#bfdbfe',
-  wall: '#7c4a21',
-  wallEdge: '#5b3517',
-  ghostOk: 'rgba(124, 74, 33, .45)',
-  ghostBad: 'rgba(220, 38, 38, .35)',
-  hint: '#0d9488',
-};
-
-const FILES = 'abcdefghi';
+import { hitTest, setupCanvas, drawBoard, SIZE } from './render.js';
 
 /* ────────────────────────── состояние экрана ────────────────────────── */
 
@@ -46,162 +21,22 @@ const ui = {
   mode: 'hotseat',                    // 'hotseat' | 'bot'
   botSide: BLUE,
   lastOrient: 'h',
-  hover: null,                        // {type:'cell'|'wall', ...}
+  hover: null,
   log: [],
   busy: false,
 };
 
 let canvas, ctx, dpr = 1;
 
-/* ─────────────────────────── геометрия ─────────────────────────── */
-
-const cellX = (c) => PAD + c * STEP;
-const cellY = (r) => PAD + r * STEP;
-
-function wallRect(wr, wc, kind) {
-  return kind === 'h'
-    ? { x: cellX(wc), y: cellY(wr) + CELL, w: 2 * CELL + GAP, h: GAP }
-    : { x: cellX(wc) + CELL, y: cellY(wr), w: GAP, h: 2 * CELL + GAP };
-}
-
-/** Что находится под курсором: клетка, паз для забора или ничего. */
-function hitTest(mx, my) {
-  const gx = mx - PAD;
-  const gy = my - PAD;
-  if (gx < 0 || gy < 0) return null;
-
-  const ci = Math.floor(gx / STEP);
-  const ri = Math.floor(gy / STEP);
-  const cOff = gx - ci * STEP;
-  const rOff = gy - ri * STEP;
-  if (ci < 0 || ci >= N || ri < 0 || ri >= N) return null;
-
-  const inVGroove = cOff > CELL;      // паз между колонками ci и ci+1
-  const inHGroove = rOff > CELL;      // паз между рядами ri и ri+1
-
-  if (!inVGroove && !inHGroove) return { type: 'cell', r: ri, c: ci };
-
-  const clamp = (x) => Math.max(0, Math.min(W - 1, x));
-  if (inHGroove && inVGroove) {
-    // ровно на пересечении — берём ориентацию, которой играли в прошлый раз
-    return ui.lastOrient === 'h'
-      ? { type: 'wall', wr: clamp(ri), wc: clamp(ci), kind: 'h' }
-      : { type: 'wall', wr: clamp(ri), wc: clamp(ci), kind: 'v' };
-  }
-  if (inHGroove) return { type: 'wall', wr: clamp(ri), wc: clamp(ci), kind: 'h' };
-  return { type: 'wall', wr: clamp(ri), wc: clamp(ci), kind: 'v' };
-}
-
-/* ─────────────────────────── отрисовка ─────────────────────────── */
-
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
+/** Перерисовать доску. Вся геометрия и стиль — в render.js. */
 function draw() {
-  const s = ui.state;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, SIZE, SIZE);
-
-  ctx.fillStyle = COLOR.boardBg;
-  ctx.fillRect(0, 0, SIZE, SIZE);
-
-  // подписи координат
-  ctx.fillStyle = COLOR.label;
-  ctx.font = '600 12px "Golos Text", system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (let c = 0; c < N; c += 1) {
-    ctx.fillText(FILES[c], cellX(c) + CELL / 2, PAD / 2);
-    ctx.fillText(FILES[c], cellX(c) + CELL / 2, SIZE - PAD / 2);
-  }
-  for (let r = 0; r < N; r += 1) {
-    ctx.fillText(String(N - r), PAD / 2, cellY(r) + CELL / 2);
-    ctx.fillText(String(N - r), SIZE - PAD / 2, cellY(r) + CELL / 2);
-  }
-
-  // клетки
-  for (let r = 0; r < N; r += 1) {
-    for (let c = 0; c < N; c += 1) {
-      ctx.fillStyle = (r + c) % 2 ? COLOR.cellAlt : COLOR.cell;
-      roundRect(cellX(c), cellY(r), CELL, CELL, 6);
-      ctx.fill();
-      ctx.strokeStyle = COLOR.line;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
-  }
-
-  // целевые горизонтали — куда кому бежать
-  ctx.globalAlpha = 0.5;
-  for (let c = 0; c < N; c += 1) {
-    ctx.fillStyle = COLOR.redSoft;
-    roundRect(cellX(c), cellY(0), CELL, CELL, 6); ctx.fill();
-    ctx.fillStyle = COLOR.blueSoft;
-    roundRect(cellX(c), cellY(N - 1), CELL, CELL, 6); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  // подсказка: куда может пойти тот, чей сейчас ход
-  const canPlay = !s.winner && !(ui.mode === 'bot' && s.turn === ui.botSide);
-  if (canPlay) {
-    ctx.fillStyle = COLOR.hint;
-    for (const m of pawnMoves(s, s.turn)) {
-      ctx.globalAlpha = ui.hover && ui.hover.type === 'cell'
-        && ui.hover.r === m.r && ui.hover.c === m.c ? 0.85 : 0.35;
-      ctx.beginPath();
-      ctx.arc(cellX(m.c) + CELL / 2, cellY(m.r) + CELL / 2, 9, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  // поставленные заборы
-  for (const [k, kind] of Object.entries(s.walls)) {
-    const [wr, wc] = k.split(',').map(Number);
-    const { x, y, w, h } = wallRect(wr, wc, kind);
-    ctx.fillStyle = COLOR.wall;
-    roundRect(x, y, w, h, 4); ctx.fill();
-    ctx.strokeStyle = COLOR.wallEdge;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-
-  // призрак забора под курсором
-  if (canPlay && ui.hover && ui.hover.type === 'wall') {
-    const { wr, wc, kind } = ui.hover;
-    const bad = wallProblem(s, s.turn, wr, wc, kind);
-    const { x, y, w, h } = wallRect(wr, wc, kind);
-    ctx.fillStyle = bad ? COLOR.ghostBad : COLOR.ghostOk;
-    roundRect(x, y, w, h, 4); ctx.fill();
-  }
-
-  // фишки
-  drawPawn(s.pawns[RED], COLOR.red);
-  drawPawn(s.pawns[BLUE], COLOR.blue);
-}
-
-function drawPawn(p, color) {
-  const x = cellX(p.c) + CELL / 2;
-  const y = cellY(p.r) + CELL / 2;
-  ctx.beginPath();
-  ctx.arc(x, y + 2, 17, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(15,23,42,.18)';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x, y, 17, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x - 5, y - 6, 5, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,.35)';
-  ctx.fill();
+  drawBoard(ctx, dpr, {
+    state: ui.state,
+    hover: ui.hover,
+    canPlay: !ui.state.winner && !(ui.mode === 'bot' && ui.state.turn === ui.botSide),
+    mySide: null,
+    lastMove: null,
+  });
 }
 
 /* ─────────────────────────── интерфейс ─────────────────────────── */
@@ -327,17 +162,22 @@ function newGame() {
 /* ─────────────────────────── запуск ─────────────────────────── */
 
 export function boot() {
+  // Режим приходит из лобби ссылкой ?mode=bot — иначе кнопка «против
+  // компьютера» открывала бы обычную игру вдвоём и выбирать пришлось бы заново.
+  const wanted = new URLSearchParams(window.location.search).get('mode');
+  if (wanted === 'bot' || wanted === 'hotseat') {
+    ui.mode = wanted;
+    const radio = document.querySelector(`[name=qMode][value="${wanted}"]`);
+    if (radio) radio.checked = true;
+  }
+
   canvas = $('#qBoard');
   ctx = canvas.getContext('2d');
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = SIZE * dpr;
-  canvas.height = SIZE * dpr;
-  canvas.style.width = SIZE + 'px';
-  canvas.style.height = SIZE + 'px';
+  dpr = setupCanvas(canvas);
 
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, ui.lastOrient);
     const same = JSON.stringify(hit) === JSON.stringify(ui.hover);
     ui.hover = hit;
     canvas.style.cursor = hit ? 'pointer' : 'default';
@@ -349,7 +189,7 @@ export function boot() {
     if (ui.busy || ui.state.winner) return;
     if (ui.mode === 'bot' && ui.state.turn === ui.botSide) return;
     const rect = canvas.getBoundingClientRect();
-    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, ui.lastOrient);
     if (!hit) return;
     if (hit.type === 'cell') tryMove(hit.r, hit.c);
     else tryWall(hit.wr, hit.wc, hit.kind);

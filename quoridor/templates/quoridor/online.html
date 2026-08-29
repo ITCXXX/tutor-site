@@ -1,0 +1,102 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}Заборы — партия {{ game.code }}{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'quoridor/css/quoridor.css' %}?v={{ asset_v }}">
+{% endblock %}
+
+{% block content %}
+<div class="q-wrap">
+
+  <div class="q-head">
+    <div>
+      <a class="q-back" href="{% url 'quoridor:play' %}">← Заборы</a>
+      <h1>Партия <span class="q-codebig">{{ game.code }}</span></h1>
+      <p class="q-sub">
+        {% if my_side %}
+          Вы играете {% if my_side == 'red' %}красными и ходите первым{% else %}синими{% endif %}.
+        {% else %}
+          Вы смотрите за партией со стороны.
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="q-invite">
+      {% if can_join %}
+        <form method="post" action="{% url 'quoridor:join' code=game.code %}">
+          {% csrf_token %}
+          <button type="submit" class="q-btn">Занять место синего</button>
+        </form>
+      {% elif game.status == 'waiting' %}
+        <button id="qCopy" type="button" class="q-btn ghost">Скопировать ссылку</button>
+        <div class="q-invite-hint">Отправьте её сопернику — партия начнётся, как только он войдёт.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="q-grid">
+
+    <div class="q-boardbox">
+      <div id="qTurn" class="q-turn wait">Загружаем партию…</div>
+      <canvas id="qBoard"></canvas>
+      <div id="qMsg" class="q-msg"></div>
+    </div>
+
+    <aside class="q-panel">
+      <div class="q-players">
+        <div class="q-player red" data-side="red">
+          <span class="q-dot"></span>
+          <div>
+            <div class="q-name" id="qRedName">{{ red_label }}</div>
+            <div class="q-meta">красный, бежит на 9-ю</div>
+          </div>
+          <div class="q-nums">
+            <div><b id="qRedWalls">10</b><span>заборов</span></div>
+            <div><b id="qRedPath">8</b><span>шагов</span></div>
+          </div>
+        </div>
+        <div class="q-player blue" data-side="blue">
+          <span class="q-dot"></span>
+          <div>
+            <div class="q-name" id="qBlueName">{{ blue_label }}</div>
+            <div class="q-meta">синий, бежит на 1-ю</div>
+          </div>
+          <div class="q-nums">
+            <div><b id="qBlueWalls">10</b><span>заборов</span></div>
+            <div><b id="qBluePath">8</b><span>шагов</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="q-rules">
+        <div class="q-rules-title">Как играть</div>
+        <ul>
+          <li>За ход — <b>либо</b> шаг фишкой, <b>либо</b> забор.</li>
+          <li>Клик по клетке с зелёной точкой — ход. Клик в паз между клетками — забор.</li>
+          <li>Ориентация забора берётся из паза под курсором; на пересечении
+              переключается правой кнопкой или клавишей <kbd>R</kbd>.</li>
+          <li>Забор не имеет права полностью отрезать сопернику путь.</li>
+          <li>Ход соперника появится сам — страницу обновлять не нужно.</li>
+        </ul>
+      </div>
+
+      <div class="q-rules-title mt">Ходы</div>
+      <div id="qLog" class="q-log"></div>
+    </aside>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% csrf_token %}
+<script type="module">
+import { boot } from "{% static 'quoridor/js/online.js' %}?v={{ asset_v }}";
+boot({
+  state: "{% url 'quoridor:state' code=game.code %}",
+  move: "{% url 'quoridor:move' code=game.code %}"
+}, document.querySelector('[name=csrfmiddlewaretoken]').value);
+</script>
+{% endblock %}
