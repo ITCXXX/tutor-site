@@ -38,6 +38,33 @@ from .models import Board, BoardElement, BoardHistory
 
 # Какие действия меняют сохраняемое состояние холста.
 _PERSIST_ACTIONS = {'element_add', 'element_update', 'element_delete'}
+
+# Порция состояния доски при входе. Держим сильно ниже предела daphne в 1 МБ:
+# в него входит и служебная обвязка сообщения, а один объект по правилам доски
+# может весить до 256 КБ (_MAX_ELEMENT_BYTES).
+_INIT_CHUNK_BYTES = 150 * 1024
+
+
+def _chunk_elements(elements):
+    """Режет список объектов на порции по объёму, а не по числу.
+
+    Считаем по факту: объект кладётся в текущую порцию, и как только она
+    перевалила за порог, начинается следующая. Поэтому один тяжёлый объект
+    уезжает отдельным сообщением и не складывается с соседями.
+    """
+    if not elements:
+        return [[]]
+    порции, текущая, размер = [], [], 0
+    for el in elements:
+        вес = len(json.dumps(el, ensure_ascii=False).encode('utf-8'))
+        if текущая and размер + вес > _INIT_CHUNK_BYTES:
+            порции.append(текущая)
+            текущая, размер = [], 0
+        текущая.append(el)
+        размер += вес
+    if текущая:
+        порции.append(текущая)
+    return порции
 # Ограничитель применяется ко ВСЕМ действиям — см. начало receive_json.
 
 # Лимиты защиты (DoS / раздувание БД). Обычное рисование шлёт ~33 правки/с и
@@ -130,9 +157,14 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
         # текущие настройки доступа, чтобы нарисовать панель управления ролями.
         elements = await self._load_elements(self.board_id)
         history = await self._recent_history(self.board_id)
+        # Объекты уезжают порциями: одно сообщение больше 1 МБ daphne не
+        # отправит (websocket_max_message_size), а оборвёт соединение целиком.
+        порции = _chunk_elements(elements)
+        первая = порции[0] if порции else []
         await self.send_json({
             'action': 'init',
-            'elements': elements,
+            'elements': первая,
+            'more': len(порции) > 1,
             'me': self.user_id,
             'peer': self.peer_id,
             'label': self.label,
@@ -148,6 +180,12 @@ class BoardConsumer(AsyncJsonWebsocketConsumer):
             'removed': await self._removed_people(self.board_id) if self.is_owner else [],
             'history': history,
         })
+        for i in range(1, len(порции)):
+            await self.send_json({
+                'action': 'init_more',
+                'elements': порции[i],
+                'done': i == len(порции) - 1,
+            })
 
         # Сообщаем остальным, что кто-то вошёл.
         await self._broadcast({

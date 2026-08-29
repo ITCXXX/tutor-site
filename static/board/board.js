@@ -9027,6 +9027,13 @@
   function boardLink(eid) { return location.origin + location.pathname + '#o=' + encodeURIComponent(eid); }
   // Адрес вида …/board/КОД/#o=<id>: доезжаем до объекта и подсвечиваем его.
   // Картинки и виджеты появляются не сразу, поэтому пробуем ещё раз кадром позже.
+  // Доска догрузилась целиком: только теперь можно пересчитывать построения
+  // (им нужны ВСЕ точки) и ехать по якорю из адреса.
+  function finishInit() {
+    reattachFuncs();     // функции могли загрузиться раньше своих окон
+    recomputeGeometry(); // построения — после загрузки всех точек
+    gotoHashAnchor();    // адрес мог содержать #o=<объект>
+  }
   function gotoHashAnchor() {
     const m = /^#o=(.+)$/.exec(location.hash || ''); if (!m) return;
     const eid = decodeURIComponent(m[1]);
@@ -12148,14 +12155,18 @@
         boardRoles = msg.roles || {};
         boardRemoved = msg.removed || [];
         (msg.elements || []).forEach(upsertNode);
-        reattachFuncs(); // функции могли загрузиться раньше своих окон
-        recomputeGeometry(); // построения — после загрузки всех точек
-        gotoHashAnchor();  // адрес мог содержать #o=<объект> — доезжаем до него
+        // Состояние доски приходит порциями: пересчитывать геометрию и ехать по
+        // якорю есть смысл только когда пришла последняя.
+        if (!msg.more) finishInit();
         applyMyRole();
         if (boardIsOwner) refreshAccessPanel();
         boardHistory = msg.history || [];
         if (historyOpen()) renderHistory();
         flushPending(); // досылаем правки, накопленные в оффлайне (при переподключении)
+        break;
+      case 'init_more':
+        (msg.elements || []).forEach(upsertNode);
+        if (msg.done) finishInit();
         break;
       case 'history':
         applyHistoryEntry(msg.entry);
