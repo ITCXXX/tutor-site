@@ -6831,6 +6831,8 @@
     if (!isEraser(name)) eraserActive = false;
     if (name !== 'lasso') { lassoActive = false; if (lassoLine) lassoLine.visible(false); }
     toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === name));
+    // Табуляция должна приводить к тому инструменту, которым работают сейчас.
+    if (typeof обновитьВходВПанель === 'function') обновитьВходВПанель();
     // Рисующие инструменты пропускают нажатие сквозь текст и виджеты на холст.
     // Инструменты установки текста сюда НЕ входят: там щелчок по существующему
     // блоку должен попадать в него, а не создавать новый блок поверх.
@@ -11399,6 +11401,74 @@
   })();
 
 
+  // ── Доступность с клавиатуры ──────────────────────────────────────────
+  // Панель и палитры собраны из <div>. Для клавиатуры и программы чтения с
+  // экрана такой элемент — пустое место. Переписывать 161 штуку в <button>
+  // рискованно: на них висит перетаскивание на холст, сохраняемый порядок
+  // панели и правила стилей. Поэтому объявляем их кнопками ПО РОЛИ.
+  const A11Y_SEL = '#board-toolbar .tool, .cp-sw';
+  function панельныеКнопки() {
+    const bar = document.getElementById('board-toolbar'); if (!bar) return [];
+    // offsetParent === null значит «скрыт»: свёрнутая всплывашка сюда не идёт.
+    return Array.from(bar.querySelectorAll('.tool')).filter((el) => el.offsetParent !== null);
+  }
+  // Один вход в панель на всю табуляцию — активный инструмент. Если раздать
+  // tabindex=0 всем 89 кнопкам, до холста пришлось бы жать Tab сто раз.
+  function обновитьВходВПанель() {
+    const bar = document.getElementById('board-toolbar'); if (!bar) return;
+    const видимые = панельныеКнопки(); if (!видимые.length) return;
+    const активный = bar.querySelector('.tool[data-tool].active');
+    const цель = (активный && видимые.indexOf(активный) >= 0) ? активный : видимые[0];
+    видимые.forEach((el) => el.setAttribute('tabindex', el === цель ? '0' : '-1'));
+  }
+  function оснаститьДоступность() {
+    document.querySelectorAll(A11Y_SEL).forEach((el) => {
+      if (el.tagName === 'BUTTON') return;          // настоящей кнопке это ни к чему
+      if (!el.hasAttribute('role')) el.setAttribute('role', 'button');
+      // Подпись. title есть у всех, но диктор его читать не обязан, а на
+      // планшете подсказка не показывается вовсе.
+      const t = el.getAttribute('title');
+      if (t && !el.hasAttribute('aria-label')) el.setAttribute('aria-label', t);
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+    });
+    обновитьВходВПанель();
+  }
+  // Образцы цвета и часть кнопок создаются на ходу, когда открывают панель.
+  // Следим за теми узлами, где они появляются, — их немного и меняются они редко.
+  (function следитьЗаНовыми() {
+    if (typeof MutationObserver !== 'function') return;
+    const н = new MutationObserver((записи) => {
+      if (записи.some((з) => з.addedNodes && з.addedNodes.length)) оснаститьДоступность();
+    });
+    ['board-toolbar', 'color-palette', 'board-menu', 'dp-pop', 'figure-settings',
+     'point-settings', 'stroke-panel', 'shape-panel', 'sticky-panel'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) н.observe(el, { childList: true, subtree: true });
+    });
+  })();
+  оснаститьДоступность();
+  // Панель прячется на узком экране, и тогда точку входа ставить не на что.
+  // Повернули планшет в альбом — панель вернулась, вход надо пересчитать.
+  window.addEventListener('resize', () => { if (typeof обновитьВходВПанель === 'function') обновитьВходВПанель(); });
+
+  // Клавиши для «кнопок по роли». Ловим на СПУСКЕ (capture), чтобы опередить
+  // общий разбор горячих клавиш, и глушим событие только когда действительно
+  // обработали — иначе отняли бы Enter у построений.
+  document.addEventListener('keydown', (e) => {
+    const el = e.target;
+    if (!el || !el.matches || el.tagName === 'BUTTON') return;
+    if ((e.key === 'Enter' || e.key === ' ') && el.matches('[role="button"]')) {
+      e.preventDefault(); e.stopPropagation(); el.click(); return;
+    }
+    if (!el.closest || !el.closest('#board-toolbar')) return;
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const список = панельныеКнопки();
+    const i = список.indexOf(el); if (i < 0) return;
+    const шаг = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : -1;
+    const цель = список[(i + шаг + список.length) % список.length];
+    if (цель) { e.preventDefault(); e.stopPropagation(); цель.focus(); }
+  }, true);
+
   // ── Чужие курсоры ─────────────────────────────────────────────────────
   const cursors = new Map(); // userId → { el, x, y, color }
   let showPeerCursors = true; // тумблер «Курсоры участников» в меню доски
@@ -11780,7 +11850,20 @@
     if (historyOpen()) renderHistory();
   }
   function histActionWord(a) { return a === 'add' ? 'добавлен(а)' : a === 'delete' ? 'удалён(а)' : 'изменён(а)'; }
-  function histTime(ts) { if (!ts) return ''; try { const d = new Date(ts); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); } catch (e) { return ''; } }
+  // Время собиралось руками из getHours/getMinutes — то есть навязывало
+  // 24-часовой вид всем. Intl знает, как принято у читателя.
+  const HIST_TIME_FMT = (function () {
+    try { return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }); }
+    catch (e) { return null; }
+  })();
+  function histTime(ts) {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      if (HIST_TIME_FMT) return HIST_TIME_FMT.format(d);
+      return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    } catch (e) { return ''; }
+  }
   function renderHistory() {
     const box = document.getElementById('history-list'); if (!box) return;
     if (!boardHistory.length) { box.innerHTML = '<div class="ap-hint">пока пусто</div>'; return; }

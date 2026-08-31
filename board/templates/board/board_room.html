@@ -172,7 +172,7 @@
     .card-flip:hover { background: rgba(255,255,255,.95); }
     .card-flip svg { display: block; }
     .card-text { min-height: 76px; }
-    .tool-flyout .tool { width: 40px; height: 40px; border: 1px solid transparent; border-radius: 8px; background: #f4f4f7; color: #3a3a42; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all .12s; }
+    .tool-flyout .tool { width: 40px; height: 40px; border: 1px solid transparent; border-radius: 8px; background: #f4f4f7; color: #3a3a42; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; }
     .tool-flyout .tool svg { width: 21px; height: 21px; display: block; }
     .tool-flyout .tool:hover { background: #ebebf0; }
     .tool-flyout .tool.active { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
@@ -1213,6 +1213,67 @@
         display: inline-block; margin-top: -2px; margin-left: 10px;
         padding: 1px 6px; border-radius: 6px; color: #fff; font-weight: 600;
     }
+    /* ═══ Доступность, касания и тема ═══════════════════════════════════
+       Добавлено по разбору Web Interface Guidelines. Каждое правило чинит
+       что-то, что видно руками, а не только программе проверки. */
+
+    /* Доска светлая. Без этой строки браузер на планшете в тёмной теме рисует
+       СВОИ элементы — ползунки, поля чисел, выбор цвета — тёмными поверх наших
+       белых панелей. */
+    :root { color-scheme: light; }
+
+    /* Кольцо фокуса. Именно :focus-visible: от мыши оно не вспыхивает, а с
+       клавиатуры видно, где ты находишься. Раньше по доске нельзя было понять
+       это вовсе. */
+    #board-toolbar .tool:focus-visible,
+    .cp-sw:focus-visible, .bgdot:focus-visible, .dp-preset:focus-visible,
+    .pp-act:focus-visible, .bm-item:focus-visible, .ms-item:focus-visible,
+    button:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
+        outline: 2px solid #4d7cfe;
+        outline-offset: 2px;
+        border-radius: 7px;
+    }
+    /* Поля, где обводка была снята насовсем и ничем не заменена: заметка
+       стикера, ячейка таблицы, заголовок колонки, вопрос голосования, текст. */
+    .stk-text:focus-visible, .tcell-in:focus-visible, .kb-coltitle:focus-visible,
+    .kb-card span:focus-visible, .poll-q:focus-visible, .wgt-table td:focus-visible {
+        outline: 2px solid #4d7cfe;
+        outline-offset: 1px;
+    }
+
+    /* Касания. Серая вспышка браузера поверх кнопки не нужна — у нас свои
+       состояния; touch-action убирает задержку от ожидания двойного тапа. */
+    #board-toolbar .tool, .cp-sw, .bgdot, .dp-preset, .pp-act,
+    .bm-item, .ms-item, button {
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+    }
+    /* Прокрутка внутри панели не должна «протягивать» доску под ней, когда
+       дошла до края. */
+    #board-menu, #history-panel, #people-panel, #mobile-sheet,
+    #board-toolbar, .tool-flyout, .settings-panel {
+        overscroll-behavior: contain;
+    }
+
+    /* Безопасные зоны планшета: закруглённые углы и полоса жеста внизу. */
+    #zoom-control { bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
+    #mobile-fab { bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+
+    /* История держит 200 записей. Браузер не рисует то, что вне видимости —
+       это и есть виртуализация, только без библиотеки. */
+    .hist-row { content-visibility: auto; contain-intrinsic-size: auto 30px; }
+
+    /* Движение можно отключить в системе — уважаем. Доска и без переходов
+       работает полностью: они здесь украшение, а не смысл. */
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            transition-duration: 0.01ms !important;
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            scroll-behavior: auto !important;
+        }
+    }
+
     /* ВНИМАНИЕ: этот блок должен оставаться ПОСЛЕДНИМ в стилях. При равной
        силе селектора побеждает правило, записанное ниже, — стоя выше описаний
        панелей, блок не перебивал их, и вся подгонка под планшет молча не
@@ -1699,7 +1760,7 @@
 <div id="board-menu" hidden>
     <div class="bm-sec">Доска</div>
     <div class="bm-code">
-        <span>Код: <code>{{ board.code }}</code></span>
+        <span>Код: <code translate="no">{{ board.code }}</code></span>
         <button id="copy-code" title="Скопировать ссылку на доску">копировать</button>
     </div>
     <div class="bm-row">
