@@ -15,6 +15,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from .bot import ALL_LEVELS, DEFAULT_LEVEL, LEVELS, level_title
 from .engine import initial_state, score as engine_score, ALL_VARIANTS, VARIANT_CLASSIC, VARIANT_LONG
 
 
@@ -82,6 +83,15 @@ class Game(models.Model):
         'Вариант правил', max_length=10, choices=VARIANT_CHOICES,
         default=VARIANT_CLASSIC,
     )
+    bot_side = models.CharField(
+        'Сторона компьютера', max_length=1, blank=True, default='',
+        help_text='X или O, если соперник — компьютер. Пусто у обычных партий.',
+    )
+    bot_level = models.CharField(
+        'Уровень компьютера', max_length=10, blank=True, default='',
+        choices=[(k, v['title']) for k, v in LEVELS.items()],
+    )
+
     is_local = models.BooleanField(
         'Локальная (hot-seat)', default=False,
         help_text='Два игрока за одним компьютером. Ходы делает один и тот же '
@@ -117,7 +127,7 @@ class Game(models.Model):
 
     @classmethod
     def create_for(cls, x_player, *, variant=VARIANT_CLASSIC, is_local=False,
-                   o_player=None, parent_game=None):
+                   o_player=None, parent_game=None, bot_side='', bot_level=''):
         """Создать новую партию.
 
         x_player    — создатель (всегда сторона X в новой партии).
@@ -137,7 +147,7 @@ class Game(models.Model):
         else:
             raise RuntimeError('Не удалось сгенерировать уникальный код партии')
 
-        # Локальная или реванш с известным O — сразу active.
+        # Локальная, реванш с известным O или партия с компьютером — сразу active.
         if is_local:
             o_player = x_player
             status = cls.STATUS_ACTIVE
@@ -146,10 +156,26 @@ class Game(models.Model):
         else:
             status = cls.STATUS_WAITING
 
+        if bot_side in ('X', 'O'):
+            # Место компьютера остаётся пустым: он не пользователь, и заводить
+            # ему учётную запись только ради колонки в базе — плохая сделка.
+            # Кто именно за него играет, знает bot_side.
+            human = x_player
+            x_player = None if bot_side == 'X' else human
+            o_player = None if bot_side == 'O' else human
+            status = cls.STATUS_ACTIVE
+            if bot_level not in ALL_LEVELS:
+                bot_level = DEFAULT_LEVEL
+        else:
+            bot_side = ''
+            bot_level = ''
+
         return cls.objects.create(
             code=code,
             x_player=x_player,
             o_player=o_player,
+            bot_side=bot_side,
+            bot_level=bot_level,
             variant=variant,
             is_local=is_local,
             parent_game=parent_game,
@@ -173,6 +199,16 @@ class Game(models.Model):
         # Если запрос пришёл от того, кто был O — он стал X, что справедливо.
         # Если запросил X — он стал O. (Стороны всегда меняются.)
         # Если это локальная партия — и x и o = creator, всё ок.
+        if self.is_bot_game:
+            # Стороны меняются и здесь: играл первым — теперь ходит компьютер.
+            return Game.create_for(
+                x_player=requester,
+                variant=self.variant,
+                parent_game=self,
+                bot_side='X' if self.bot_side == 'O' else 'O',
+                bot_level=self.bot_level,
+            )
+
         return Game.create_for(
             x_player=new_x or requester,
             o_player=new_o,
@@ -180,6 +216,14 @@ class Game(models.Model):
             is_local=self.is_local,
             parent_game=self,
         )
+
+    @property
+    def is_bot_game(self):
+        return self.bot_side in ('X', 'O')
+
+    @property
+    def bot_title(self):
+        return level_title(self.bot_level)
 
     @property
     def score_x(self):
@@ -238,6 +282,8 @@ class Game(models.Model):
 
     def label_for(self, side):
         from .utils import display_for_games
+        if self.bot_side == side:
+            return 'Компьютер (%s)' % self.bot_title
         user = self.x_player if side == 'X' else self.o_player
         if user is None:
             return 'ждём…'

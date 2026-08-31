@@ -121,6 +121,22 @@
                         Онлайн (соперник зайдёт по ссылке)</label>
                     <label><input type="radio" name="mode" value="local">
                         Локально (hot-seat, оба на одном экране)</label>
+                    <label><input type="radio" name="mode" value="bot">
+                        Против компьютера</label>
+                </fieldset>
+                <fieldset>
+                    <legend>Компьютер</legend>
+                    <label>Уровень
+                        <select name="level">
+                            <option value="easy">слабый — считает на ход вперёд</option>
+                            <option value="medium" selected>средний — на три полухода</option>
+                            <option value="hard">сильный — на пять</option>
+                        </select>
+                    </label>
+                    <label><input type="radio" name="first" value="me" checked>
+                        Первым ходите вы (X)</label>
+                    <label><input type="radio" name="first" value="bot">
+                        Первым ходит компьютер</label>
                 </fieldset>
                 <fieldset>
                     <legend>Правила</legend>
@@ -167,6 +183,12 @@
                 <span class="vs">
                     {% if g.is_local %}
                         локальная партия
+                    {% elif g.is_bot_game %}
+                        {% comment %}У компьютера нет учётной записи, поэтому его
+                        место в базе пустое: обращаться к нему как к игроку
+                        нельзя.{% endcomment %}
+                        вы ({% if g.bot_side == 'O' %}X{% else %}O{% endif %}) ×
+                        Компьютер ({{ g.bot_title }})
                     {% elif g.x_player_id == user.id %}
                         вы (X) ×
                         {% if g.o_player %}
@@ -174,9 +196,11 @@
                         {% else %}
                             ждёт соперника
                         {% endif %}
-                    {% else %}
+                    {% elif g.x_player %}
                         {{ g.x_player.gamer_nickname|default:g.x_player.username }} (X) ×
                         вы (O)
+                    {% else %}
+                        вы (O) × соперник ушёл
                     {% endif %}
                 </span>
                 {% if g.variant == 'long' %}

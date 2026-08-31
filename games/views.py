@@ -17,6 +17,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from .bot import ALL_LEVELS, DEFAULT_LEVEL, choose_move
 from .engine import apply_move, ALL_VARIANTS, VARIANT_CLASSIC
 from .models import Game, SiteSetting
 from .utils import display_for_games
@@ -98,21 +99,70 @@ def games_list(request):
     })
 
 
+def play_bot_turn(game):
+    """
+    Сходить за компьютер, пока его очередь.
+
+    Ход считается прямо здесь, в том же запросе, — у бота нет ни браузера, ни
+    фоновой очереди. Поэтому у уровней стоит бюджет времени (games/bot.py):
+    самый сильный думает не дольше трети секунды, и ровно столько же длится
+    запрос игрока.
+
+    Цикл, а не одиночный вызов, — страховка: если правила когда-нибудь начнут
+    оставлять очередь за тем же игроком, партия не зависнет молча.
+    """
+    if not game.is_bot_game:
+        return False
+
+    moved = False
+    for _ in range(4):
+        if game.status != Game.STATUS_ACTIVE or game.current != game.bot_side:
+            break
+        move = choose_move(game.state_dict(), game.variant, game.bot_level)
+        if move is None:
+            break
+        new_state, err = apply_move(
+            game.state_dict(), game.bot_side, move[0], move[1], variant=game.variant,
+        )
+        if err:
+            break
+        game.apply_state(new_state)
+        moved = True
+    if moved:
+        game.save()
+    return moved
+
+
 @login_required
 @games_section_required
 @require_POST
 def game_create(request):
     """Создать новую партию. Параметры (опциональны):
-       variant=classic|long, mode=online|local."""
+       variant=classic|long, mode=online|local|bot, level, first=me|bot."""
     variant = request.POST.get('variant', VARIANT_CLASSIC)
     if variant not in ALL_VARIANTS:
         variant = VARIANT_CLASSIC
-    is_local = (request.POST.get('mode') == 'local')
+
+    mode = request.POST.get('mode')
+    bot_side = ''
+    bot_level = ''
+    if mode == 'bot':
+        # Компьютер берёт ту сторону, которая не досталась человеку.
+        bot_side = 'X' if request.POST.get('first') == 'bot' else 'O'
+        bot_level = request.POST.get('level', DEFAULT_LEVEL)
+        if bot_level not in ALL_LEVELS:
+            bot_level = DEFAULT_LEVEL
+
     game = Game.create_for(
         x_player=request.user,
         variant=variant,
-        is_local=is_local,
+        is_local=(mode == 'local'),
+        bot_side=bot_side,
+        bot_level=bot_level,
     )
+    # Компьютер ходит первым — сделаем это сразу, иначе игрок откроет доску
+    # и увидит пустое поле с надписью «ход компьютера».
+    play_bot_turn(game)
     return redirect('games:detail', code=game.code)
 
 
@@ -128,6 +178,9 @@ def game_rematch(request, code):
     if not prev.is_participant(request.user):
         return HttpResponseForbidden('Только участники могут запросить реванш.')
     new_game = prev.make_rematch(request.user)
+    # В реванше стороны меняются: если теперь первым ходит компьютер, его ход
+    # должен уже стоять на доске к тому моменту, как игрок её откроет.
+    play_bot_turn(new_game)
     return redirect('games:detail', code=new_game.code)
 
 
@@ -230,6 +283,11 @@ def game_move(request, code):
 
     game.apply_state(new_state)
     game.save()
+
+    # Ответ компьютера уходит тем же ответом: отдельный запрос за ним не нужен,
+    # а опрос всё равно принёс бы его только через секунду.
+    play_bot_turn(game)
+
     return JsonResponse({
         'ok': True,
         'status': game.status,

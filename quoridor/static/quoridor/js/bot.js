@@ -28,7 +28,7 @@ export const LEVELS = {
     title: 'слабый',
     depth: 1,          // видит только свой ход
     candidates: 6,
-    nodes: 800,
+    budget: 100,       // мс на весь ход — потолок, а не цель
     blunder: 0.25,     // как часто ошибается нарочно
     wallNeed: 1,
   },
@@ -36,7 +36,7 @@ export const LEVELS = {
     title: 'средний',
     depth: 2,          // свой ход и ответ соперника
     candidates: 10,
-    nodes: 8000,
+    budget: 300,
     blunder: 0.05,
     wallNeed: 1,
   },
@@ -44,7 +44,7 @@ export const LEVELS = {
     title: 'сильный',
     depth: 4,          // по два хода с каждой стороны
     candidates: 14,
-    nodes: 20000,      // потолок ради телефона, а не ради силы игры
+    budget: 900,       // на слабом телефоне это и станет ограничителем
     blunder: 0,
     wallNeed: 1,
   },
@@ -163,20 +163,25 @@ function apply(state, side, mv) {
 /**
  * Негамакс с отсечениями. Возвращает оценку позиции для стороны, которая ходит.
  *
- * `budget` — общий счётчик позиций на весь ход. Он не для качества игры, а для
- * телефона: без него сильный уровень на слабом устройстве подвесил бы вкладку
- * на несколько секунд, и это выглядело бы как поломка, а не как раздумье.
- * На замерах потолок почти не срабатывает — время съедает не перебор, а обход
- * поля при отборе заборов, — но он держит редкие тяжёлые позиции.
+ * `budget` — срок, а не счётчик позиций. Считать позиции бесполезно: время
+ * съедает не сам перебор, а обходы поля при отборе заборов, и на замерах
+ * счётчик не срабатывал ни разу, сколько его ни занижай. Часы честнее: они
+ * меряют то самое, ради чего потолок и нужен, — чтобы на слабом телефоне
+ * вкладка не замирала на несколько секунд.
  */
 function search(state, side, depth, alpha, beta, level, budget) {
-  if (state.winner) return state.winner === side ? WIN - depth : -(WIN - depth);
-  if (depth <= 0 || budget.left <= 0) return evaluate(state, side);
+  if (state.winner) {
+    // depth — это ОСТАТОК глубины: у победы, найденной ближе к корню, он
+    // больше. Поэтому близкая победа обязана стоить дороже далёкой, а близкое
+    // поражение — дешевле отложенного. С обратным знаком бот, стоя в шаге от
+    // выигрыша, предпочитал выигрыш «через два хода» и топтался на месте.
+    return state.winner === side ? WIN + depth : -(WIN + depth);
+  }
+  if (depth <= 0 || budget.out()) return evaluate(state, side);
 
   let best = -Infinity;
   for (const mv of candidates(state, side, level.candidates)) {
-    if (budget.left <= 0) break;
-    budget.left -= 1;
+    if (budget.out()) break;
     const next = apply(state, side, mv);
     if (!next) continue;
 
@@ -203,20 +208,21 @@ export function botMove(state, side, levelName = DEFAULT_LEVEL) {
   const worth = list.filter((mv) => mv.kind !== 'wall' || mv.gain >= level.wallNeed);
   const pool = worth.length ? worth : list;
 
-  // Потолок делится поровну между вариантами, а не тратится общей кучей.
-  // С общим счётчиком первые разобранные ходы получали весь перебор, а
-  // последним доставалась голая оценка позиции, — и бот выбирал не лучший ход,
-  // а тот, до которого дошли раньше. На замерах сильный уровень из-за этого
-  // проигрывал среднему.
-  const share = Math.max(300, Math.floor(level.nodes / pool.length));
+  // Срок общий на весь ход, но истечь он может только в самых тяжёлых
+  // позициях; на обычных перебор заканчивается сам задолго до него.
+  const until = Date.now() + level.budget;
+  const budget = { out: () => Date.now() > until };
 
   const scored = [];
   for (const mv of pool) {
     const next = apply(state, side, mv);
     if (!next) continue;
     const score = -search(next, other(side), level.depth - 1,
-                          -Infinity, Infinity, level, { left: share });
+                          -Infinity, Infinity, level, budget);
     scored.push({ mv, score });
+    // Срок вышел — дальше сравнивать было бы нечестно: у оставшихся вариантов
+    // перебор оборвался бы на первом же узле, и они выглядели бы хуже не по делу.
+    if (budget.out()) break;
   }
 
   if (!scored.length) {
