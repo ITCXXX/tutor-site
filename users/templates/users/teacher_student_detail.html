@@ -119,6 +119,51 @@
             </form>
         </div>
 
+        <!-- Ссылки в кабинете ученика -->
+        <div class="section-card">
+            <h2>Ссылки в кабинете</h2>
+            {% if links %}
+            {% for l in links %}
+            <div class="course-link">
+                <span class="title">{{ l.title }}</span>
+                <span class="meta">{% if l.student_id %}только ему{% else %}всем ученикам{% endif %}</span>
+                <a href="{{ l.url }}" target="_blank" rel="noopener noreferrer"
+                   class="meta text-decoration-underline">открыть</a>
+                <form method="post" class="d-inline m-0">
+                    {% csrf_token %}
+                    <button type="submit" name="del_link" value="{{ l.id }}"
+                            class="btn btn-sm btn-link text-danger p-0"
+                            onclick="return confirm('Убрать ссылку «{{ l.title|escapejs }}»?')">убрать</button>
+                </form>
+            </div>
+            {% endfor %}
+            {% else %}
+            <p class="empty">Ссылок пока нет. Ученик увидит их в своём кабинете.</p>
+            {% endif %}
+
+            <form method="post" class="row g-2 align-items-end mt-3">
+                {% csrf_token %}
+                <div class="col-sm-4">
+                    <label class="form-label mb-1" for="link_title">Заголовок</label>
+                    <input type="text" class="form-control form-control-sm" id="link_title"
+                           name="link_title" maxlength="120" placeholder="Наша доска" required>
+                </div>
+                <div class="col-sm-5">
+                    <label class="form-label mb-1" for="link_url">Адрес</label>
+                    <input type="url" class="form-control form-control-sm" id="link_url"
+                           name="link_url" placeholder="https://…" required>
+                </div>
+                <div class="col-sm-3 d-flex align-items-center gap-2">
+                    <div class="form-check mb-0">
+                        <input class="form-check-input" type="checkbox" id="link_all" name="link_all" value="1">
+                        <label class="form-check-label small" for="link_all">всем</label>
+                    </div>
+                    <button type="submit" name="add_link" value="1"
+                            class="btn btn-sm btn-primary">Добавить</button>
+                </div>
+            </form>
+        </div>
+
         <!-- Курсы -->
         <div class="section-card">
             <h2>Курсы</h2>

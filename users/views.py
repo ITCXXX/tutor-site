@@ -1,4 +1,5 @@
 # users/views.py
+from django.core.exceptions import ValidationError
 from django.db.models import Avg, Count, Q, Max, F
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
@@ -9,7 +10,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from .models import (
     Course, Module, Lesson, Assignment,
     Enrollment, User, StudentProfile, LessonProgress,
-    StudentProgress, ManualMark, StudentSubmission, HomeworkAttempt,
+    StudentProgress, ManualMark, StudentSubmission, HomeworkAttempt, StudentLink,
     TestQuestion, AnswerOption, ProblemGenerator, GeneratedProblem,
 )
 from django.http import JsonResponse, HttpResponse, Http404
@@ -136,12 +137,21 @@ def student_dashboard(request):
     courses_count = len(percents)
     progress_pct = round(sum(percents) / courses_count) if courses_count else 0
 
+    # Ссылки от преподавателя: личные плюс общие (те, что он положил всем).
+    # Профиля может не быть — тогда преподаватель неизвестен и общих нет.
+    профиль = getattr(request.user, 'student_profile', None)
+    условие = Q(student=request.user)
+    if профиль and профиль.teacher_id:
+        условие |= Q(student__isnull=True, teacher_id=профиль.teacher_id)
+    links = list(StudentLink.objects.filter(условие).order_by('order', 'id'))
+
     return render(request, 'users/dashboard.html', {
         'user': request.user,
         'title': 'Личный кабинет',
         'has_courses': courses_count > 0,
         'courses_count': courses_count,
         'progress_pct': progress_pct,
+        'links': links,
     })
 
 def _teacher_course_stats(teacher, course):
@@ -575,6 +585,34 @@ def teacher_student_detail(request, student_id):
         profile.save(update_fields=['notes'])
         return redirect('teacher_student_detail', student_id=student.id)
 
+    # ── Ссылки в кабинет ученика ─────────────────────────────────────────
+    if request.method == 'POST' and 'add_link' in request.POST:
+        title = (request.POST.get('link_title') or '').strip()[:120]
+        url = (request.POST.get('link_url') or '').strip()
+        всем = bool(request.POST.get('link_all'))
+        if not title or not url:
+            messages.error(request, 'Нужны и заголовок, и адрес.')
+        else:
+            ссылка = StudentLink(
+                teacher=request.user,
+                student=None if всем else student,
+                title=title, url=url,
+            )
+            try:
+                # full_clean проверит схему адреса: только http и https.
+                ссылка.full_clean()
+                ссылка.save()
+            except ValidationError:
+                messages.error(request, 'Адрес должен начинаться с http:// или https://')
+        return redirect('teacher_student_detail', student_id=student.id)
+
+    if request.method == 'POST' and 'del_link' in request.POST:
+        # teacher=request.user в фильтре обязателен: без него чужую ссылку
+        # можно было бы удалить, подставив её номер.
+        StudentLink.objects.filter(
+            id=request.POST.get('del_link'), teacher=request.user).delete()
+        return redirect('teacher_student_detail', student_id=student.id)
+
     enrollments = (Enrollment.objects.filter(student=student, is_active=True)
                    .select_related('course')
                    .order_by('course__order', 'course__title'))
@@ -590,11 +628,16 @@ def teacher_student_detail(request, student_id):
         by_course.setdefault(course.id, {'course': course, 'items': []})['items'].append(a)
     attempts_by_course = list(by_course.values())
 
+    links = list(StudentLink.objects
+                 .filter(Q(student=student) | Q(student__isnull=True), teacher=request.user)
+                 .order_by('order', 'id'))
+
     return render(request, 'users/teacher_student_detail.html', {
         'student': student,
         'profile': profile,
         'enrollments': enrollments,
         'attempts_by_course': attempts_by_course,
+        'links': links,
         'title': profile.display_name,
     })
 

@@ -1,6 +1,8 @@
 # users/models.py
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
+from django.core.exceptions import ObjectDoesNotExist
+from django.core.validators import URLValidator
 from django.utils import timezone
 
 # --------------------------------------------------
@@ -83,6 +85,22 @@ class User(AbstractBaseUser):
         else:
             self.plaintext_password = raw_password or ''
 
+    @property
+    def display(self):
+        """Как звать человека в интерфейсе: имя из профиля, иначе логин.
+
+        Профиля может не быть вовсе (например, у администратора), а
+        display_name может оказаться пустой строкой — оба случая ведут к логину.
+        """
+        for имя in ('student_profile', 'teacher_profile'):
+            try:
+                p = getattr(self, имя)
+            except ObjectDoesNotExist:
+                continue
+            if p and (p.display_name or '').strip():
+                return p.display_name.strip()
+        return self.username
+
     def __str__(self):
         return f"{self.username} ({self.get_role_display()})"
     
@@ -143,6 +161,44 @@ class TeacherProfile(models.Model):
 # --------------------------------------------------
 # НОВЫЕ МОДЕЛИ ДЛЯ КУРСОВ (добавляем в конец)
 # --------------------------------------------------
+class StudentLink(models.Model):
+    """Ссылка, которую преподаватель кладёт ученику в кабинет.
+
+    student заполнен — ссылка личная, видит только он.
+    student пуст — общая: её видят все ученики этого преподавателя. Так
+    «ссылка на нашу доску» заводится один раз, а не по разу на каждого.
+    """
+    teacher = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='given_links',
+        limit_choices_to={'role': 'teacher'}, verbose_name='Преподаватель',
+    )
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='links',
+        null=True, blank=True, limit_choices_to={'role': 'student'},
+        verbose_name='Ученик',
+        help_text='Пусто — ссылку увидят все ученики этого преподавателя.',
+    )
+    title = models.CharField('Заголовок', max_length=120)
+    # Только http и https. Django по умолчанию пропускает ещё ftp, а без
+    # проверки вовсе в поле прошёл бы javascript: — и ссылка выполняла бы
+    # чужой код в браузере ученика.
+    url = models.URLField(
+        'Адрес', max_length=500,
+        validators=[URLValidator(schemes=['http', 'https'])],
+    )
+    order = models.IntegerField('Порядок', default=0)
+    created_at = models.DateTimeField('Добавлена', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Ссылка для ученика'
+        verbose_name_plural = 'Ссылки для учеников'
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        кому = self.student.username if self.student_id else 'всем'
+        return f'{self.title} ({кому})'
+
+
 class Course(models.Model):
     """Основная модель курса"""
     TRACKING_AUTO = 'auto'
