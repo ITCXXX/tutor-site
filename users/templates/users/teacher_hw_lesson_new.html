@@ -159,11 +159,19 @@
         <form method="post" class="form-card" enctype="multipart/form-data">
             {% csrf_token %}
 
-            <div class="mb-3">
-                <label class="form-label">Название ДЗ *</label>
-                <input type="text" name="lesson_title" class="form-control"
-                       value="{{ form_data.lesson_title|default:'' }}"
-                       placeholder="ДЗ от 5 мая · §3 уравнения" required autofocus>
+            <div class="row g-3 mb-3">
+                <div class="col-md-8">
+                    <label class="form-label" for="lesson_title">Название ДЗ *</label>
+                    <input type="text" name="lesson_title" id="lesson_title" class="form-control"
+                           value="{{ form_data.lesson_title|default:'' }}"
+                           placeholder="ДЗ от 5 мая · §3 уравнения" required autofocus>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label" for="due_date">Срок сдачи</label>
+                    <input type="date" name="due_date" id="due_date" class="form-control"
+                           value="{{ due_value|default:'' }}">
+                    <div class="form-text">Можно не ставить</div>
+                </div>
             </div>
 
             <div class="mb-3">

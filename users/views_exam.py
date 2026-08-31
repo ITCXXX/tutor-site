@@ -3,6 +3,8 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse, Http404
 from django.utils import timezone
+
+from .progress import mark_progress, needed_for
 from django.db import IntegrityError
 from decimal import Decimal, InvalidOperation
 from django.views.decorators.http import require_POST
@@ -352,17 +354,11 @@ def check_db_question_answer(request, assignment_id, question_id):
 
     # Синхронизируем StudentProgress, чтобы экран прогресса
     # (teacher_student_workbook / student_course_progress) видел сданные прототипы.
-    sp, _ = StudentProgress.objects.get_or_create(
-        student=request.user, assignment=assignment,
-    )
-    sp.correct_attempts = solved_count
-    sp.total_attempts = (sp.total_attempts or 0) + 1
-    required = assignment.required_correct or total_count or 1
-    was_completed = sp.is_completed
-    sp.is_completed = total_count > 0 and solved_count >= min(required, total_count)
-    if sp.is_completed and not was_completed:
-        sp.completed_at = timezone.now()
-    sp.save()
+    # Правило зачёта — общее с курсами с ДЗ (users/progress.py): держать его в
+    # двух местах уже приводило к расхождению.
+    if total_count > 0:
+        mark_progress(request.user, assignment, solved_count,
+                      needed_for(assignment, pool_size=total_count))
 
     return JsonResponse({
         'correct': is_correct,

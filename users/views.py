@@ -18,8 +18,11 @@ from urllib.parse import quote
 from django.views.decorators.http import require_POST
 from .decorators import student_required, teacher_required
 from .answer_check import check_answer
+from .progress import mark_progress, needed_for
+from .homework import homework_for
 from django.db import transaction
 from django.utils.text import slugify
+import datetime
 import json
 import re
 from collections import defaultdict
@@ -145,7 +148,11 @@ def student_dashboard(request):
         условие |= Q(student__isnull=True, teacher_id=профиль.teacher_id)
     links = list(StudentLink.objects.filter(условие).order_by('order', 'id'))
 
+    homework = homework_for(request.user)
+
     return render(request, 'users/dashboard.html', {
+        'homework': homework,
+        'overdue_count': sum(1 for h in homework if h['overdue']),
         'user': request.user,
         'title': 'Личный кабинет',
         'has_courses': courses_count > 0,
@@ -393,6 +400,8 @@ def teacher_course_progress(request, slug):
                 hw_lessons.append({
                     'lesson': lesson,
                     'tasks_count': lesson.assignments.count(),
+                    'due': lesson.due_date,
+                    'overdue': bool(lesson.due_date and lesson.due_date < timezone.localdate()),
                 })
 
     return render(request, 'users/teacher_course_progress.html', {
@@ -1313,6 +1322,18 @@ def teacher_course_enroll(request, slug):
     })
 
 
+def _parse_due(raw):
+    """Дата из поля формы. Пустое или мусор — без срока, а не ошибка:
+    срок необязателен, и ронять из-за него сохранение домашки незачем."""
+    raw = (raw or '').strip()
+    if not raw:
+        return None
+    try:
+        return datetime.date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def _parse_hw_tasks(request):
     """Собрать (tasks, errors, raw_rows) из POST.
     tasks — список словарей {condition, answer, image, remove_image, requires_review}.
@@ -1381,6 +1402,7 @@ def teacher_hw_lesson_new(request, slug):
                 'title': 'Новое ДЗ',
                 'course': course,
                 'form_data': request.POST,
+                'due_value': (request.POST.get('due_date') or ''),
                 'rows': raw_rows or [{'condition': '', 'answer': '', 'image_url': '', 'requires_review': False}],
                 'is_edit': False,
                 'lesson_intro': '',
@@ -1391,6 +1413,7 @@ def teacher_hw_lesson_new(request, slug):
             module=wrapper, order=next_order, title=lesson_title,
             content=lesson_intro,
             lesson_type='practice',
+            due_date=_parse_due(request.POST.get('due_date')),
         )
         for i, t in enumerate(tasks, 1):
             Assignment.objects.create(
@@ -1449,7 +1472,8 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
 
         lesson.title = lesson_title
         lesson.content = lesson_intro
-        lesson.save(update_fields=['title', 'content'])
+        lesson.due_date = _parse_due(request.POST.get('due_date'))
+        lesson.save(update_fields=['title', 'content', 'due_date'])
 
         # Diff по стабильному id: задачу с тем же Assignment.id обновляем,
         # новые (без id) создаём, отсутствующие в форме — удаляем. Так прогресс
@@ -1505,6 +1529,9 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
         'course': course,
         'lesson': lesson,
         'form_data': {'lesson_title': lesson.title},
+        # Формат для <input type="date"> строго ГГГГ-ММ-ДД, поэтому готовим
+        # значение здесь, а не в шаблоне: локализованная дата туда не встанет.
+        'due_value': lesson.due_date.isoformat() if lesson.due_date else '',
         'lesson_intro': lesson.content,
         'rows': rows,
         'is_edit': True,
@@ -1777,15 +1804,12 @@ def teacher_review_submission(request, sub_id):
         sub.reviewed_at = timezone.now()
         sub.reviewed_by = request.user
         sub.save()
-        # Засчитываем задачу как выполненную
-        sp, _ = StudentProgress.objects.get_or_create(
-            student=sub.student, assignment=sub.assignment,
-        )
-        if not sp.is_completed:
-            sp.is_completed = True
-            sp.completed_at = timezone.now()
-        sp.correct_attempts = max(sp.correct_attempts or 0, 1)
-        sp.save()
+        # Принятое решение — это и есть зачёт задачи. Считаем тем же
+        # правилом, что и обычный ответ, чтобы не появилась третья копия.
+        mark_progress(sub.student, sub.assignment,
+                      solved=needed_for(sub.assignment),
+                      needed=needed_for(sub.assignment),
+                      count_attempt=False)
     elif action == 'reject':
         sub.status = StudentSubmission.STATUS_REJECTED
         sub.teacher_comment = comment
@@ -1834,18 +1858,19 @@ def check_hw_answer(request, assignment_id):
         answer=user_answer, is_correct=is_correct,
     )
 
-    sp, _ = StudentProgress.objects.get_or_create(
-        student=request.user, assignment=assignment,
-    )
-    sp.total_attempts = F('total_attempts') + 1  # атомарный инкремент, без гонок
-    if is_correct:
-        sp.correct_attempts = max(sp.correct_attempts or 0, 1)
-        if not sp.is_completed:
-            sp.is_completed = True
-            sp.completed_at = timezone.now()
-    sp.save()
+    # Сколько раз ученик уже верно ответил на эту задачу. Обычно нужен один
+    # раз, но required_correct позволяет требовать больше — и теперь это
+    # поле здесь работает, а не игнорируется, как было.
+    решено = HomeworkAttempt.objects.filter(
+        student=request.user, assignment=assignment, is_correct=True,
+    ).count()
+    нужно = needed_for(assignment)
+    mark_progress(request.user, assignment, решено, нужно)
 
-    return JsonResponse({'correct': is_correct, 'message': message})
+    return JsonResponse({
+        'correct': is_correct, 'message': message,
+        'solved': min(решено, нужно), 'needed': нужно,
+    })
 
 
 @require_POST

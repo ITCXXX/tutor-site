@@ -34,6 +34,45 @@
                     </div>
                 </div>
 
+                {% if homework %}
+                <div class="card shadow-sm border-0 mt-4">
+                    <div class="card-body p-4">
+                        <div class="d-flex align-items-center justify-content-between mb-3">
+                            <h5 class="card-title mb-0">Что задано</h5>
+                            {% if overdue_count %}
+                            <span class="badge bg-danger-subtle text-danger-emphasis">просрочено: {{ overdue_count }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="list-group list-group-flush">
+                            {% for h in homework %}
+                            <a class="list-group-item list-group-item-action px-0"
+                               href="{% url 'student_course_progress' h.course.slug %}">
+                                <div class="d-flex align-items-start justify-content-between gap-3">
+                                    <div class="flex-grow-1">
+                                        <div class="fw-semibold">{{ h.lesson.title }}</div>
+                                        <div class="small text-muted">{{ h.course.title }}</div>
+                                    </div>
+                                    <div class="text-end flex-shrink-0">
+                                        <div class="small">осталось {{ h.left }} из {{ h.total }}</div>
+                                        {% if h.due %}
+                                        <div class="small {% if h.overdue %}text-danger fw-semibold{% else %}text-muted{% endif %}">
+                                            {% if h.overdue %}просрочено{% else %}до {{ h.due|date:"j E" }}{% endif %}
+                                        </div>
+                                        {% else %}
+                                        <div class="small text-muted">без срока</div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% if h.pending %}
+                                <div class="small text-muted mt-1">на проверке у преподавателя: {{ h.pending }}</div>
+                                {% endif %}
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
                 {% if links %}
                 <div class="card shadow-sm border-0 mt-4">
                     <div class="card-body p-4">
