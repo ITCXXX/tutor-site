@@ -13004,6 +13004,10 @@
     // 1. Инструменты — по группам исходной панели.
     Array.from(bar.children).forEach((child) => {
       if (!child.classList) return;
+      // Скрытый раздел панели не должен всплывать в мобильном листе: лист
+      // собирается из живой разметки, но про hidden сам не знает и дал бы
+      // пустой заголовок.
+      if (child.hidden) return;
       if (child.classList.contains('tool-group')) {
         const fly = child.querySelector('.tool-flyout');
         if (!fly) return;
