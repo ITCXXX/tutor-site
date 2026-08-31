@@ -63,6 +63,8 @@ urlpatterns = [
          views.teacher_hw_lesson_new, name='teacher_hw_lesson_new'),
     path('teacher/hw-course/<slug:slug>/lesson/<int:lesson_id>/edit/',
          views.teacher_hw_lesson_edit, name='teacher_hw_lesson_edit'),
+    path('teacher/hw-course/<slug:slug>/lesson/<int:lesson_id>/report/',
+         views.teacher_hw_lesson_report, name='teacher_hw_lesson_report'),
     path('teacher/hw-course/<slug:slug>/lesson/<int:lesson_id>/delete/',
          views.teacher_hw_lesson_delete, name='teacher_hw_lesson_delete'),
     path('teacher/hw-course/<slug:slug>/lesson/<int:lesson_id>/duplicate/',

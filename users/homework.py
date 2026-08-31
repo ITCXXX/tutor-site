@@ -8,12 +8,13 @@
 Всё считается пачками. Наивная версия в цикле по урокам делала бы на десятке
 курсов сотни запросов и заметно тормозила бы кабинет.
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from django.utils import timezone
 
 from .models import (
-    Assignment, Course, Enrollment, Lesson, StudentProgress, StudentSubmission,
+    Assignment, Course, Enrollment, HomeworkAttempt, Lesson, StudentProgress,
+    StudentSubmission,
 )
 
 
@@ -88,3 +89,92 @@ def homework_for(student, limit=None):
         r['due'] or сегодня,
     ))
     return строки[:limit] if limit else строки
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Сводка по одной домашке для преподавателя
+# ──────────────────────────────────────────────────────────────────────────
+
+def lesson_report(lesson, students):
+    """Кто как сдал эту домашку и какие задачи не даются.
+
+    Возвращает (по_ученикам, по_задачам). Оба списка считаются тремя
+    запросами на весь экран, сколько бы ни было учеников и задач: наивная
+    версия ходила бы в базу на каждую клетку таблицы.
+    """
+    задачи = list(lesson.assignments.all().order_by('order', 'id'))
+    if not задачи or not students:
+        return [], []
+
+    ids_задач = [a.id for a in задачи]
+    ids_учеников = [s.id for s in students]
+
+    # Кто что сдал.
+    сдал = set()
+    for sid, aid in StudentProgress.objects.filter(
+            student_id__in=ids_учеников, assignment_id__in=ids_задач,
+            is_completed=True).values_list('student_id', 'assignment_id'):
+        сдал.add((sid, aid))
+
+    # Что ждёт проверки.
+    ждёт = set()
+    for sid, aid in StudentSubmission.objects.filter(
+            student_id__in=ids_учеников, assignment_id__in=ids_задач,
+            status=StudentSubmission.STATUS_PENDING,
+    ).values_list('student_id', 'assignment_id'):
+        ждёт.add((sid, aid))
+
+    # Все попытки: нужны и для «с первой попытки», и для частой ошибки.
+    попытки = defaultdict(list)          # задача -> [(ученик, верно, ответ)]
+    for aid, sid, ok, ans in HomeworkAttempt.objects.filter(
+            student_id__in=ids_учеников, assignment_id__in=ids_задач,
+    ).order_by('created_at').values_list(
+            'assignment_id', 'student_id', 'is_correct', 'answer'):
+        попытки[aid].append((sid, ok, ans))
+
+    сегодня = timezone.localdate()
+    просрочено = bool(lesson.due_date and lesson.due_date < сегодня)
+
+    по_ученикам = []
+    for s in students:
+        готово = sum(1 for a in задачи if (s.id, a.id) in сдал)
+        на_проверке = sum(1 for a in задачи if (s.id, a.id) in ждёт)
+        по_ученикам.append({
+            'student': s,
+            'done': готово,
+            'total': len(задачи),
+            'left': len(задачи) - готово,
+            'pending': на_проверке,
+            'finished': готово == len(задачи),
+            # Просрочка — только у тех, кто ещё не закончил: сдавшему вовремя
+            # красная метка ни к чему.
+            'overdue': просрочено and готово < len(задачи),
+        })
+    # Сначала те, с кем надо разбираться.
+    по_ученикам.sort(key=lambda r: (r['finished'], -r['left'], r['student'].username))
+
+    по_задачам = []
+    for a in задачи:
+        строки = попытки.get(a.id, [])
+        первые = {}                       # ученик -> верна ли ПЕРВАЯ попытка
+        неверные = Counter()
+        for sid, ok, ans in строки:
+            if sid not in первые:
+                первые[sid] = ok
+            if not ok and ans:
+                неверные[ans.strip()] += 1
+        решили = sum(1 for s in students if (s.id, a.id) in сдал)
+        частая = неверные.most_common(1)[0] if неверные else None
+        по_задачам.append({
+            'assignment': a,
+            'solved': решили,
+            'tried': len(первые),
+            'first_try': sum(1 for v in первые.values() if v),
+            'wrong_total': sum(неверные.values()),
+            'common_wrong': частая[0] if частая else '',
+            'common_wrong_n': частая[1] if частая else 0,
+            # Задача «трудная», если её пробовали и больше половины
+            # ошиблись с первой попытки. Порог грубый, зато честный.
+            'hard': bool(первые) and sum(1 for v in первые.values() if v) * 2 < len(первые),
+        })
+    return по_ученикам, по_задачам

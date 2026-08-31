@@ -19,7 +19,7 @@ from django.views.decorators.http import require_POST
 from .decorators import student_required, teacher_required
 from .answer_check import check_answer
 from .progress import mark_progress, needed_for
-from .homework import homework_for
+from .homework import homework_for, lesson_report
 from django.db import transaction
 from django.utils.text import slugify
 import datetime
@@ -1535,6 +1535,32 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
         'lesson_intro': lesson.content,
         'rows': rows,
         'is_edit': True,
+    })
+
+
+@teacher_required
+def teacher_hw_lesson_report(request, slug, lesson_id):
+    """Сводка по одной домашке: кто сдал и какие задачи не даются."""
+    course = get_object_or_404(Course, slug=slug, owner=request.user)
+    lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
+
+    # Только свои ученики и только записанные на этот курс: чужих в сводке
+    # быть не должно, даже если они на курсе.
+    students = list(User.objects.filter(
+        role='student',
+        student_profile__teacher=request.user,
+        enrollments__course=course, enrollments__is_active=True,
+    ).select_related('student_profile').distinct().order_by('student_profile__display_name'))
+
+    by_student, by_task = lesson_report(lesson, students)
+    return render(request, 'users/teacher_hw_report.html', {
+        'course': course,
+        'lesson': lesson,
+        'by_student': by_student,
+        'by_task': by_task,
+        'not_finished': sum(1 for r in by_student if not r['finished']),
+        'overdue': sum(1 for r in by_student if r['overdue']),
+        'title': f'{lesson.title} — сводка',
     })
 
 

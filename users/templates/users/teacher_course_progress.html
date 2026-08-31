@@ -130,8 +130,10 @@
             {% for hw in hw_lessons %}
             <div class="hw-lesson-row">
                 <span class="title">{{ hw.lesson.title }}</span>
-                <span class="meta">{{ hw.tasks_count }} задач</span>
+                <span class="meta">{{ hw.tasks_count }} задач{% if hw.due %} · до {{ hw.due|date:"j E" }}{% if hw.overdue %} <b style="color:#b23a3a">срок вышел</b>{% endif %}{% endif %}</span>
                 <div class="actions">
+                    <a href="{% url 'teacher_hw_lesson_report' course.slug hw.lesson.id %}"
+                       class="btn btn-sm btn-primary">Сводка</a>
                     <a href="{% url 'teacher_hw_lesson_edit' course.slug hw.lesson.id %}"
                        class="btn btn-sm btn-outline-primary">Редактировать</a>
                     <form method="post" action="{% url 'teacher_hw_lesson_duplicate' course.slug hw.lesson.id %}">

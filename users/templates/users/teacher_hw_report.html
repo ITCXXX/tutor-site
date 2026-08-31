@@ -1,0 +1,136 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.rep-hero {
+    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+    color: #fff; border-radius: 12px; padding: 1.25rem 1.75rem; margin-bottom: 1.25rem;
+}
+.rep-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .3rem; }
+.rep-hero .meta { opacity: .9; font-size: .9rem; }
+.btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
+.btn-back:hover { color: var(--c-primary-600); }
+
+.section-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--r-lg); padding: 1.1rem 1.4rem; margin-bottom: 1.25rem;
+}
+.section-card h2 { font-size: 1rem; font-weight: 600; margin: 0 0 .25rem; }
+.section-card .hint { font-size: .82rem; color: var(--c-text-muted); margin: 0 0 .9rem; }
+
+.rep-table { width: 100%; font-size: .9rem; border-collapse: collapse; }
+.rep-table th, .rep-table td { padding: .5rem .6rem; border-bottom: 1px solid var(--c-border); text-align: left; vertical-align: top; }
+.rep-table thead th { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--c-text-muted); font-weight: 600; }
+.rep-table tbody tr:last-child td { border-bottom: none; }
+.rep-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.tag { display: inline-block; font-size: .72rem; font-weight: 600; padding: .1rem .5rem; border-radius: 20px; white-space: nowrap; }
+.tag-done { background: #e3f2ec; color: #256b55; }
+.tag-left { background: #eef1f7; color: #55606f; }
+.tag-late { background: #fae9e9; color: #a93a3a; }
+.tag-wait { background: #fbf0dc; color: #8a5a10; }
+.tag-hard { background: #fae9e9; color: #a93a3a; }
+
+.wrong { font-family: ui-monospace, Consolas, monospace; background: var(--c-bg-soft); padding: .05rem .35rem; border-radius: 4px; }
+.cond { color: var(--c-text-muted); font-size: .84rem; display: block; margin-top: .15rem; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty { color: var(--c-text-muted); font-size: .88rem; margin: 0; }
+.scroll { overflow-x: auto; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section style="padding-top: 80px;">
+    <div class="container" style="max-width: 1000px;">
+
+        <a href="{% url 'teacher_course_progress' course.slug %}" class="btn-back">← К курсу</a>
+
+        <div class="rep-hero">
+            <h1>{{ lesson.title }}</h1>
+            <div class="meta">
+                {{ course.title }}
+                {% if lesson.due_date %} · срок {{ lesson.due_date|date:"j E Y" }}{% else %} · без срока{% endif %}
+                {% if not_finished %} · не закончили: {{ not_finished }}{% endif %}
+                {% if overdue %} · просрочили: {{ overdue }}{% endif %}
+            </div>
+        </div>
+
+        <div class="section-card">
+            <h2>Кто сдал</h2>
+            <p class="hint">Сверху те, у кого осталось больше всего. Закончившие — в конце.</p>
+            {% if by_student %}
+            <div class="scroll">
+                <table class="rep-table">
+                    <thead>
+                        <tr><th>Ученик</th><th>Сдано</th><th>Осталось</th><th>Состояние</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in by_student %}
+                        <tr>
+                            <td><a href="{% url 'teacher_student_detail' r.student.id %}">{{ r.student.display }}</a></td>
+                            <td class="num">{{ r.done }} из {{ r.total }}</td>
+                            <td class="num">{% if r.left %}{{ r.left }}{% else %}—{% endif %}</td>
+                            <td>
+                                {% if r.finished %}<span class="tag tag-done">готово</span>
+                                {% elif r.overdue %}<span class="tag tag-late">просрочено</span>
+                                {% else %}<span class="tag tag-left">в работе</span>{% endif %}
+                                {% if r.pending %}<span class="tag tag-wait">на проверке: {{ r.pending }}</span>{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="empty">На курс не записан ни один ваш ученик.</p>
+            {% endif %}
+        </div>
+
+        <div class="section-card">
+            <h2>Что не даётся</h2>
+            <p class="hint">
+                «С первой попытки» — сколько человек ответили верно сразу.
+                Частая ошибка — один и тот же неверный ответ у нескольких: обычно это
+                не «тема не пошла», а конкретная промашка, которую видно по цифре.
+            </p>
+            {% if by_task %}
+            <div class="scroll">
+                <table class="rep-table">
+                    <thead>
+                        <tr><th>Задача</th><th>Решили</th><th>С первой попытки</th><th>Частая ошибка</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for t in by_task %}
+                        <tr>
+                            <td>
+                                <b>{{ t.assignment.title }}</b>
+                                {% if t.hard %}<span class="tag tag-hard">трудная</span>{% endif %}
+                                <span class="cond">{{ t.assignment.description|striptags|truncatechars:70 }}</span>
+                            </td>
+                            <td class="num">{{ t.solved }} из {{ by_student|length }}</td>
+                            <td class="num">
+                                {% if t.tried %}{{ t.first_try }} из {{ t.tried }}{% else %}<span class="empty">не пробовали</span>{% endif %}
+                            </td>
+                            <td>
+                                {% if t.common_wrong_n > 1 %}
+                                <span class="wrong">{{ t.common_wrong }}</span> <span class="num">×{{ t.common_wrong_n }}</span>
+                                {% elif t.wrong_total %}
+                                <span class="empty">разные ошибки ({{ t.wrong_total }})</span>
+                                {% else %}
+                                <span class="empty">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="empty">В этом ДЗ пока нет задач.</p>
+            {% endif %}
+        </div>
+
+    </div>
+</section>
+{% endblock %}
