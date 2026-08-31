@@ -12,6 +12,8 @@ quoridor/models.py
 import secrets
 import string
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -42,6 +44,21 @@ class QuoridorGame(models.Model):
     # Партия, из которой ушли до первого хода, не «завершена»: победителя в ней
     # нет и показывать её как проигранную нечестно. Поэтому отдельный статус.
     LIVE_STATUSES = (STATUS_WAITING, STATUS_ACTIVE)
+    DEAD_STATUSES = (STATUS_FINISHED, STATUS_CANCELLED)
+
+    ACCESS_LINK = 'link'
+    ACCESS_OPEN = 'open'
+    ACCESS_CHOICES = [
+        (ACCESS_LINK, 'Только по ссылке'),
+        (ACCESS_OPEN, 'Видна всем в лобби'),
+    ]
+
+    # Сколько живут сыгранные партии. Удалять сразу нельзя: страница победителя
+    # ещё открыта и опрашивает сервер, да и посмотреть итог человек вправе.
+    KEEP_FINISHED = timedelta(hours=6)
+    # Партия, которую создали и бросили, не дождавшись соперника, — мусор,
+    # но за сутки её вполне могут открыть, поэтому срок больше.
+    KEEP_ABANDONED = timedelta(days=2)
 
     code = models.CharField('Код партии', max_length=10, unique=True, db_index=True)
     red_player = models.ForeignKey(
@@ -53,6 +70,12 @@ class QuoridorGame(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='quoridor_as_blue',
         verbose_name='Синий',
+    )
+
+    access = models.CharField(
+        'Доступ', max_length=8, choices=ACCESS_CHOICES, default=ACCESS_LINK,
+        help_text='Приватная партия не показывается в лобби: войти можно '
+                  'только по ссылке от создателя.',
     )
 
     state = models.JSONField('Состояние партии', default=dict)
@@ -77,15 +100,58 @@ class QuoridorGame(models.Model):
         return f'Заборы {self.code} ({self.get_status_display()})'
 
     @classmethod
-    def create_for(cls, user, side=RED):
+    def expired(cls, ignore_age=False):
+        """
+        Что подлежит удалению: (сыгранные, брошенные).
+
+        Один источник правды для уборки и для её предпросмотра — иначе
+        «посмотреть, что удалится» и «удалить» рано или поздно разойдутся,
+        а у необратимой операции это худший из возможных багов.
+
+        ignore_age снимает срок хранения только с сыгранных. Брошенная партия
+        со сроком не истёкшим — это живое приглашение, которого кто-то ждёт;
+        сносить такие «заодно» нельзя ни по какой просьбе.
+        """
+        now = timezone.now()
+        dead = cls.objects.filter(status__in=cls.DEAD_STATUSES)
+        if not ignore_age:
+            dead = dead.filter(updated_at__lt=now - cls.KEEP_FINISHED)
+
+        abandoned = cls.objects.none() if ignore_age else cls.objects.filter(
+            status=cls.STATUS_WAITING,
+            updated_at__lt=now - cls.KEEP_ABANDONED,
+        )
+        return dead, abandoned
+
+    @classmethod
+    def purge_old(cls, ignore_age=False):
+        """
+        Убрать из базы отыгранное.
+
+        Партия — вещь одноразовая: доиграли, посмотрели итог, забыли. Хранить
+        их вечно незачем, а список «мои партии» от них быстро становится
+        нечитаемым. Возвращает, сколько удалено — по видам, чтобы в журнале
+        было видно, что именно ушло.
+        """
+        dead, abandoned = cls.expired(ignore_age)
+        return {
+            'сыгранные': dead.delete()[0],
+            'брошенные': abandoned.delete()[0],
+        }
+
+    @classmethod
+    def create_for(cls, user, side=RED, access=None):
         """
         Создать партию, посадив создателя выбранным цветом.
 
         Красный ходит первым — поэтому цвет это не только вид фишки, и выбор
-        отдан игроку, а не назначается молча.
+        отдан игроку, а не назначается молча. Доступ по умолчанию приватный:
+        ссылку отправляют конкретному человеку, и место держат для него.
         """
         if side not in (RED, BLUE):
             side = RED
+        if access not in (cls.ACCESS_LINK, cls.ACCESS_OPEN):
+            access = cls.ACCESS_LINK
 
         for _attempt in range(20):
             code = _gen_code()
@@ -99,8 +165,14 @@ class QuoridorGame(models.Model):
             code=code,
             state=initial_state(),
             status=cls.STATUS_WAITING,
+            access=access,
             **seat
         )
+
+    @property
+    def is_open(self):
+        """Видна ли партия в лобби всем подряд."""
+        return self.access == self.ACCESS_OPEN
 
     def free_side(self):
         """Свободный цвет или None, если оба места заняты."""

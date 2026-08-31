@@ -141,6 +141,46 @@ export function shortestPath(walls, from, goalRow) {
 
 export const hasPath = (walls, from, goalRow) => shortestPath(walls, from, goalRow) !== null;
 
+/**
+ * Сам кратчайший путь клетками, а не только его длина.
+ *
+ * Нужен только боту: чтобы не перебирать все 128 заборов, он смотрит, какие
+ * из них перекрывают дорогу сопернику. В серверном движке (engine.py) этой
+ * функции нет намеренно — там правила, а бот живёт целиком в браузере.
+ */
+export function pathTo(walls, from, goalRow) {
+  const prev = new Int16Array(N * N).fill(-1);
+  const seen = new Uint8Array(N * N);
+  const start = from.r * N + from.c;
+  seen[start] = 1;
+  let frontier = [from];
+
+  while (frontier.length) {
+    const next = [];
+    for (const cell of frontier) {
+      if (cell.r === goalRow) {
+        const path = [];
+        for (let at = cell.r * N + cell.c; at !== -1; at = prev[at]) {
+          path.unshift({ r: Math.floor(at / N), c: at % N });
+        }
+        return path;
+      }
+      for (const [dr, dc] of DIRS) {
+        const nr = cell.r + dr;
+        const nc = cell.c + dc;
+        if (!inBoard(nr, nc)) continue;
+        if (seen[nr * N + nc]) continue;
+        if (blocked(walls, cell.r, cell.c, nr, nc)) continue;
+        seen[nr * N + nc] = 1;
+        prev[nr * N + nc] = cell.r * N + cell.c;
+        next.push({ r: nr, c: nc });
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
 /* ───────────────────────── заборы ───────────────────────── */
 
 /**

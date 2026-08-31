@@ -23,10 +23,18 @@
       <div class="q-choice-title">Вдвоём за одним экраном</div>
       <div class="q-choice-desc">Ходите по очереди на одном устройстве. Ничего создавать не нужно.</div>
     </a>
-    <a class="q-choice" href="{% url 'quoridor:local' %}?mode=bot">
+    <div class="q-choice q-choice-levels">
       <div class="q-choice-title">Против компьютера</div>
-      <div class="q-choice-desc">Соперник бежит по кратчайшему пути и ставит заборы, когда отстаёт.</div>
-    </a>
+      <div class="q-choice-desc">
+        Уровни отличаются глубиной расчёта: слабый смотрит на ход вперёд,
+        сильный — на четыре и заранее готовит заборы.
+      </div>
+      <div class="q-levels">
+        <a href="{% url 'quoridor:local' %}?mode=bot&amp;level=easy">слабый</a>
+        <a href="{% url 'quoridor:local' %}?mode=bot&amp;level=medium">средний</a>
+        <a href="{% url 'quoridor:local' %}?mode=bot&amp;level=hard">сильный</a>
+      </div>
+    </div>
     <a class="q-choice q-choice-btn" href="{% url 'quoridor:create' %}">
       <div class="q-choice-title">По сети</div>
       <div class="q-choice-desc">Выбрать цвет, создать партию и отправить сопернику ссылку. Ходы проверяет сервер.</div>
@@ -40,7 +48,10 @@
       {% for g in my_games %}
       <a class="q-game {{ g.status }}" href="{% url 'quoridor:game' code=g.code %}">
         <span class="q-code">{{ g.code }}</span>
-        <span class="q-vs">{{ g.red_label }} против {{ g.blue_label }}</span>
+        <span class="q-vs">
+          {{ g.red_label }} против {{ g.blue_label }}
+          {% if not g.is_open and g.status == 'waiting' %}<span class="q-tag link">по ссылке</span>{% endif %}
+        </span>
         <span class="q-status">
           {% if g.status == 'waiting' %}ждёт соперника
           {% elif g.status == 'finished' %}завершена — победил

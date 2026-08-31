@@ -14,8 +14,9 @@
  * таймеру, который всё это время стоял.
  */
 
-import { RED, BLUE } from './rules.js';
-import { hitTest, setupCanvas, drawBoard } from './render.js';
+import { RED, BLUE, pawnMoves } from './rules.js';
+import { hitTest, setupCanvas, drawBoard, boardPoint } from './render.js';
+import { createWallTool } from './walltool.js';
 
 const POLL_ACTIVE = 1500;    // идёт партия — ждём хода соперника
 const POLL_IDLE = 1500;      // ждём, пока соперник откроет ссылку
@@ -45,9 +46,13 @@ const ui = {
   armedAt: 0,
   armedFor: '',
   stalled: false,          // сервер ответил не тем — дальше опрашивать бессмысленно
+  watching: false,         // пришли по ссылке зрителя — за доску не садимся
+  canSeat: false,          // есть свободное место, и оно доступно нам
+  freeSide: '',
+  gone: false,             // партии больше нет в базе
 };
 
-let canvas, ctx, dpr = 1, timer = null, resignTimer = null;
+let canvas, ctx, scale = 1, timer = null, resignTimer = null, tool = null;
 
 const $ = (sel) => document.querySelector(sel);
 const sideName = (s) => (s === RED ? 'Красный' : 'Синий');
@@ -59,12 +64,13 @@ const myTurn = () => ui.status === 'active' && ui.state && ui.state.turn === ui.
 
 function draw() {
   if (!ui.state) return;
-  drawBoard(ctx, dpr, {
+  drawBoard(ctx, scale, {
     state: ui.state,
     hover: ui.hover,
     canPlay: myTurn(),
     mySide: ui.mySide || null,
     lastMove: ui.lastMove,
+    pending: tool ? tool.pending : null,
   });
 }
 
@@ -109,9 +115,15 @@ function renderRole() {
       ? 'Вы играете красными и ходите первым.'
       : 'Вы играете синими.';
   } else if (!ui.seating) {
-    el.textContent = ui.status === 'waiting' && ui.seatTries >= 3
-      ? 'Сесть за доску не удалось — нажмите кнопку в шапке.'
-      : 'Вы смотрите за партией со стороны.';
+    if (ui.status === 'waiting' && !ui.watching && ui.seatTries >= 3) {
+      el.textContent = $('#qJoinForm')
+        ? 'Сесть за доску не удалось — нажмите кнопку в шапке.'
+        : 'Сесть за доску не удалось — обновите страницу.';
+    } else if (ui.watching && ui.canSeat) {
+      el.textContent = 'Вы смотрите за партией. Место ещё свободно — можно сесть.';
+    } else {
+      el.textContent = 'Вы смотрите за партией со стороны.';
+    }
   }
 }
 
@@ -143,15 +155,35 @@ function renderResign() {
   if (!ui.resignArmed) btn.textContent = leaveLabel();
 }
 
+function renderSit() {
+  const btn = $('#qSit');
+  if (!btn) return;
+  // Зритель вправе передумать, пока место свободно. Обратный ход тоже есть:
+  // до первого хода кнопка ухода освобождает место назад.
+  btn.hidden = !(ui.watching && ui.canSeat && !ui.mySide);
+  btn.textContent = ui.freeSide === RED ? 'Сесть за красных' : 'Сесть за синих';
+}
+
 function renderInvite() {
-  const box = $('#qInvite');
-  if (!box) return;
+  const seat = $('#qSeatInvite');
+  const watch = $('#qWatchBlock');
+  const form = $('#qJoinForm');
 
   // Ссылка «отправьте сопернику» — ровно то место, куда смотрит создатель,
   // пока ждёт. Если её не убрать после начала партии, человек читает старую
-  // подсказку и считает, что соперник так и не зашёл.
-  box.hidden = ui.status !== 'waiting';
-  if (ui.mySide && $('#qJoinForm')) box.innerHTML = '';
+  // подсказку и считает, что соперник так и не зашёл. Зрителю она не нужна
+  // вовсе: звать за доску не ему.
+  if (seat) seat.hidden = !(ui.mySide && ui.status === 'waiting');
+
+  // Зрителя зовут в любой момент, пока партия жива, — но зовут игроки.
+  if (watch) watch.hidden = !ui.mySide || isOver();
+
+  // Нас посадили — запасная форма отработала своё. Убираем только её, чтобы
+  // не снести заодно ссылки рядом.
+  if (form && ui.mySide) form.remove();
+
+  const tag = $('#qAccessTag');
+  if (tag) tag.hidden = isOver();
 }
 
 function renderPanel() {
@@ -178,6 +210,7 @@ function renderPanel() {
   renderRole();
   renderResign();
   renderInvite();
+  renderSit();
 }
 
 function say(msg) {
@@ -225,18 +258,23 @@ function absorb(data) {
   ui.mySide = data.my_side || '';
   ui.labels = { red: data.red_label, blue: data.blue_label };
   ui.paths = { red: data.paths[RED], blue: data.paths[BLUE] };
+  ui.canSeat = !!data.can_seat;
+  ui.freeSide = data.free_side || '';
   if (changed) {
     ui.stamp = data.updated_at;
     ui.lastMove = data.last_move;
     pushLog(data.last_move);
+    // Позиция уехала — примеряемый забор больше не про эту доску.
+    if (tool) tool.clear();
   }
 
   draw();
   renderPanel();
 
   // Гость, открывший ссылку, садится сам: пока он ищет кнопку, создатель
-  // смотрит на «ждём соперника» и думает, что сломалось.
-  if (data.can_seat && !ui.seating && ui.seatTries < 3) takeSeat();
+  // смотрит на «ждём соперника» и думает, что сломалось. Зритель — другое
+  // дело: он пришёл смотреть, и сажать его насильно нельзя.
+  if (data.can_seat && !ui.watching && !ui.seating && ui.seatTries < 3) takeSeat();
 
   return changed;
 }
@@ -261,6 +299,14 @@ async function ask(url, options = {}) {
     headers: { 'X-Requested-With': 'fetch', ...(options.headers || {}) },
   });
 
+  if (res.status === 404) {
+    // Сыгранные партии убираются из базы. Если страница осталась открытой,
+    // честнее сказать это словами, чем молча замереть.
+    ui.gone = true;
+    ui.stalled = true;
+    throw new Error('gone');
+  }
+
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   if (!isJson) {
     // Редирект на страницу входа — это конец: опрашивать дальше нечего, пока
@@ -279,7 +325,14 @@ async function poll() {
     const { res, data } = await ask(ui.urls.state);
     if (res.ok) absorb(data);
   } catch (e) {
-    if (ui.stalled) say('Сессия закончилась — обновите страницу.');
+    if (ui.gone) {
+      // Удаляют и сыгранные, и брошенные — причины разные, и валить их в один
+      // текст нечестно: в брошенной партии не было ни хода, ни победителя.
+      say(ui.status === 'waiting'
+        ? 'Партия удалена: соперник так и не пришёл.'
+        : 'Партия удалена — она давно закончилась.');
+    }
+    else if (ui.stalled) say('Сессия закончилась — обновите страницу.');
     // иначе связь пропала: молча ждём следующего круга, партия не теряется
   } finally {
     ui.polling = false;
@@ -317,12 +370,16 @@ async function takeSeat() {
       absorb(data);
       // Второе окно той же партии получает took='', хотя игрок за доской сидит:
       // место занято им же. Говорить ему «место занято» было бы враньём.
-      if (data.took) say(`Вы играете ${sideWord(data.took)}.`);
+      if (data.took) {
+        ui.watching = false;        // сели по-настоящему — дальше мы игрок
+        say(`Вы играете ${sideWord(data.took)}.`);
+      }
       else if (!data.my_side) say('Место уже занято — вы наблюдаете за партией.');
     }
   } catch (e) {
+    const fallback = $('#qJoinForm') ? 'нажмите кнопку в шапке' : 'обновите страницу';
     say(ui.seatTries >= 3
-      ? 'Не удалось занять место — нажмите кнопку в шапке.'
+      ? `Не удалось занять место — ${fallback}.`
       : 'Не удалось занять место, пробуем ещё раз…');
   } finally {
     // Флаг снимается в любом случае: иначе после неудачи строка роли навсегда
@@ -440,19 +497,55 @@ async function sendResign() {
   }
 }
 
+function bindCopy(btnSel, fieldSel, done) {
+  const btn = $(btnSel);
+  const field = $(fieldSel);
+  if (!btn || !field) return;
+  btn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      say(done);
+    } catch (err) {
+      // Буфер обмена доступен не везде (нет https, отказ в разрешении) —
+      // тогда просто выделяем текст, дальше человек справится сам.
+      field.focus();
+      field.select();
+      say('Скопируйте выделенную ссылку.');
+    }
+  });
+}
+
 /* ───────────────────────── запуск ───────────────────────── */
 
-export function boot(urls, csrf) {
+export function boot(urls, csrf, options = {}) {
   ui.urls = urls;
   ui.csrf = csrf;
+  ui.watching = !!options.watching;
 
   canvas = $('#qBoard');
   ctx = canvas.getContext('2d');
-  dpr = setupCanvas(canvas);
+  scale = setupCanvas(canvas);
+
+  // Палец ставит забор в два касания — примеряет и подтверждает (walltool.js).
+  tool = createWallTool({
+    canvas,
+    // ui.busy — предыдущий ход ещё в полёте: доска пока показывает старую
+    // позицию, и принимать по ней новый ход нельзя.
+    canAct: () => myTurn() && !ui.busy,
+    moves: () => (ui.state ? pawnMoves(ui.state, ui.state.turn) : []),
+    wallsLeft: () => (ui.state ? ui.state.wallsLeft[ui.state.turn] : 0),
+    onMove: (r, c) => send({ kind: 'move', r, c }),
+    onWall: (wr, wc, orient) => { ui.lastOrient = orient; send({ kind: 'wall', wr, wc, orient }); },
+    onChange: draw,
+    say,
+  });
+
+  // Поворот телефона меняет ширину — доску надо пересчитать под новую.
+  window.addEventListener('resize', () => { scale = setupCanvas(canvas); draw(); });
 
   canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, ui.lastOrient);
+    const { x, y } = boardPoint(canvas, e.clientX, e.clientY);
+    const hit = hitTest(x, y, ui.lastOrient);
     if (JSON.stringify(hit) === JSON.stringify(ui.hover)) return;
     ui.hover = hit;
     canvas.style.cursor = hit && myTurn() ? 'pointer' : 'default';
@@ -467,8 +560,9 @@ export function boot(urls, csrf) {
       else say(ui.mySide ? 'Сейчас ход соперника.' : 'Вы наблюдаете за партией.');
       return;
     }
-    const rect = canvas.getBoundingClientRect();
-    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, ui.lastOrient);
+    if (tool && tool.justTouched()) return;  // это эхо касания, его уже обработали
+    const { x, y } = boardPoint(canvas, e.clientX, e.clientY);
+    const hit = hitTest(x, y, ui.lastOrient);
     if (!hit) return;
     if (hit.type === 'cell') send({ kind: 'move', r: hit.r, c: hit.c });
     else { ui.lastOrient = hit.kind; send({ kind: 'wall', wr: hit.wr, wc: hit.wc, orient: hit.kind }); }
@@ -493,20 +587,21 @@ export function boot(urls, csrf) {
   const resignBtn = $('#qResign');
   if (resignBtn) resignBtn.addEventListener('click', onResignClick);
 
-  const copyBtn = $('#qCopy');
-  if (copyBtn) {
-    copyBtn.addEventListener('click', async () => {
-      const field = $('#qLink');
-      const link = field ? field.value : window.location.href;
-      try {
-        await navigator.clipboard.writeText(link);
-        say('Ссылка скопирована — отправьте её сопернику.');
-      } catch (err) {
-        if (field) { field.focus(); field.select(); }
-        say('Скопируйте ссылку из поля выше.');
-      }
+  const sitBtn = $('#qSit');
+  if (sitBtn) {
+    sitBtn.addEventListener('click', () => {
+      if (!ui.canSeat || ui.seating) return;
+      // Флаг «я зритель» тут не снимаем: место может достаться не нам. Снимет
+      // его takeSeat, и только если мы действительно сели. Иначе проигравший
+      // гонку зритель перестал бы быть зрителем и его посадила бы автопосадка
+      // при первом же освободившемся месте — в фоновой вкладке, молча.
+      ui.seatTries = 0;
+      takeSeat();
     });
   }
+
+  bindCopy('#qCopy', '#qLink', 'Ссылка скопирована — отправьте её сопернику.');
+  bindCopy('#qCopyWatch', '#qWatchLink', 'Ссылка для зрителя скопирована.');
 
   // Таймер в фоновой вкладке браузер придерживает — от минуты и дольше.
   // Поэтому спрашиваем сервер сразу, как только на страницу снова смотрят.

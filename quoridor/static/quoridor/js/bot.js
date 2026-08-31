@@ -1,19 +1,64 @@
 /**
- * quoridor/bot.js — соперник для игры в одиночку.
+ * quoridor/bot.js — соперник для игры в одиночку. Три уровня.
  *
- * Никакого перебора вглубь: бот смотрит на один ход вперёд по двум числам —
- * своей длине пути до цели и чужой. Этого достаточно, чтобы он бежал по
- * кратчайшему маршруту и ставил заборы, когда отстаёт. Для тренировки хватает,
- * гроссмейстера здесь никто не обещал.
+ * Уровни отличаются глубиной перебора: слабый смотрит на один полуход,
+ * средний — на два, сильный — на четыре. Всё остальное у них общее.
+ *
+ * Оценка позиции простая и в «Заборах» на удивление точная: разность длин
+ * кратчайших путей до своих краёв плюс небольшая надбавка за оставшиеся
+ * заборы. Никаких весов за центр и прочей эзотерики — в этой игре побеждает
+ * тот, кому осталось меньше шагов, а заборы это ресурс, чтобы шагов у
+ * соперника стало больше.
+ *
+ * Полный перебор невозможен: на каждом ходу доступны 128 мест под забор плюс
+ * ходы фишкой, и уже на третьем полуходе это два миллиона позиций. Поэтому
+ * заборы рассматриваются не все, а только те, что перекрывают сопернику его
+ * нынешний кратчайший путь, — остальные всё равно не меняют счёт. Такой отбор
+ * оставляет полтора десятка вариантов вместо ста двадцати восьми.
  */
 
-import { W, RED, BLUE, other, pawnMoves, shortestPath, wallProblem,
+import { W, RED, BLUE, other, pawnMoves, shortestPath, pathTo, wallProblem,
          applyMove, applyWall } from './rules.js';
 
 const key = (r, c) => `${r},${c}`;
+const WIN = 10000;
 
-/** Насколько бот отстаёт: своя длина пути минус чужая. */
-function race(state, side) {
+export const LEVELS = {
+  easy: {
+    title: 'слабый',
+    depth: 1,          // видит только свой ход
+    candidates: 6,
+    nodes: 800,
+    blunder: 0.25,     // как часто ошибается нарочно
+    wallNeed: 1,
+  },
+  medium: {
+    title: 'средний',
+    depth: 2,          // свой ход и ответ соперника
+    candidates: 10,
+    nodes: 8000,
+    blunder: 0.05,
+    wallNeed: 1,
+  },
+  hard: {
+    title: 'сильный',
+    depth: 4,          // по два хода с каждой стороны
+    candidates: 14,
+    nodes: 20000,      // потолок ради телефона, а не ради силы игры
+    blunder: 0,
+    wallNeed: 1,
+  },
+};
+
+export const DEFAULT_LEVEL = 'medium';
+
+export function levelOf(name) {
+  return LEVELS[name] || LEVELS[DEFAULT_LEVEL];
+}
+
+/* ────────────────────────── оценка ────────────────────────── */
+
+function distances(state, side) {
   const foe = other(side);
   return {
     mine: shortestPath(state.walls, state.pawns[side], state.goalRow[side]),
@@ -21,93 +66,185 @@ function race(state, side) {
   };
 }
 
-/** Лучший шаг фишкой: тот, после которого путь до цели короче всего. */
-function bestStep(state, side) {
-  let best = null;
-  let bestLen = Infinity;
-  for (const m of pawnMoves(state, side)) {
-    const len = shortestPath(state.walls, m, state.goalRow[side]);
-    if (len == null) continue;
-    // при равенстве выбираем случайно, чтобы бот не был предсказуемым
-    if (len < bestLen || (len === bestLen && Math.random() < 0.5)) {
-      bestLen = len;
-      best = m;
-    }
-  }
-  return best;
-}
-
 /**
- * Лучший забор: сильнее всего удлиняет путь сопернику и меньше всего — себе.
- * Перебираются все 128 вариантов (8×8 якорей × две ориентации); каждый стоит
- * двух обходов поля в 81 клетку, так что это мгновенно.
+ * Оценка позиции глазами стороны `side`. Больше — лучше для неё.
+ *
+ * Шаг стоит десяти очков, забор — двух: забор ценен не сам по себе, а тем,
+ * сколько шагов он отнимет, но и разбрасываться ими не стоит.
  */
-function bestWall(state, side) {
+function evaluate(state, side) {
+  if (state.winner) return state.winner === side ? WIN : -WIN;
+  const { mine, theirs } = distances(state, side);
+  if (mine == null || theirs == null) return 0;      // такого быть не должно
   const foe = other(side);
-  const base = race(state, side);
-  let best = null;
-  let bestGain = 0;
-
-  for (let wr = 0; wr < W; wr += 1) {
-    for (let wc = 0; wc < W; wc += 1) {
-      for (const kind of ['h', 'v']) {
-        if (wallProblem(state, side, wr, wc, kind)) continue;
-        const probe = { ...state.walls, [key(wr, wc)]: kind };
-        const theirs = shortestPath(probe, state.pawns[foe], state.goalRow[foe]);
-        const mine = shortestPath(probe, state.pawns[side], state.goalRow[side]);
-        if (theirs == null || mine == null) continue;
-        const gain = (theirs - base.theirs) - (mine - base.mine);
-        if (gain > bestGain) {
-          bestGain = gain;
-          best = { wr, wc, kind, gain };
-        }
-      }
-    }
-  }
-  return best;
+  return (theirs - mine) * 10
+       + (state.wallsLeft[side] - state.wallsLeft[foe]) * 2;
 }
 
-/**
- * Ход бота. Возвращает {state, description} — описание попадает в журнал,
- * чтобы игроку было видно, что именно сделал соперник.
- */
-export function botMove(state, side) {
-  const { mine, theirs } = race(state, side);
+/* ────────────────────────── ходы-кандидаты ────────────────────────── */
 
-  /*
-   * Когда ставить забор.
-   *
-   * Шаг всегда сокращает мой путь на единицу, поэтому забор оправдан только
-   * если он даёт больше. На открытом поле один забор длиной в две клетки
-   * обходится без потерь — выигрыш 0, и бежать выгоднее. Заборы начинают
-   * работать ближе к краю, где обход дорог.
-   *
-   * Но есть случай, когда бежать нельзя: если мой путь ДЛИННЕЕ чужого, чистая
-   * гонка проиграна заранее, сколько ни беги. Тогда годится и выигрыш в один
-   * шаг — он переворачивает исход. Без этой оговорки бот, ходящий вторым,
-   * просто бежал бы к гарантированному поражению.
-   */
-  if (state.wallsLeft[side] > 0 && theirs != null && mine != null) {
-    const behind = mine > theirs;
-    const need = behind ? 1 : 2;
-    const wall = bestWall(state, side);
-    if (wall && wall.gain >= need) {
-      const res = applyWall(state, side, wall.wr, wall.wc, wall.kind);
-      if (!res.error) return { state: res.state, kind: 'wall', wall };
+/**
+ * Заборы, которые перекрывают сопернику его нынешний кратчайший путь.
+ *
+ * Для каждого шага пути берутся два якоря, способные этот шаг закрыть. Всё,
+ * что дальше от дороги, соперник обойдёт не заметив, — считать такие варианты
+ * значит тратить перебор впустую.
+ */
+function wallCandidates(state, side, limit) {
+  if (state.wallsLeft[side] <= 0) return [];
+  const foe = other(side);
+  const path = pathTo(state.walls, state.pawns[foe], state.goalRow[foe]);
+  if (!path || path.length < 2) return [];
+
+  const clamp = (x) => Math.max(0, Math.min(W - 1, x));
+  const seen = new Set();
+  const out = [];
+  const base = distances(state, side);
+
+  for (let i = 0; i + 1 < path.length; i += 1) {
+    const a = path[i];
+    const b = path[i + 1];
+    const spots = [];
+
+    if (b.r !== a.r) {                       // шаг по вертикали режет забор «—»
+      const wr = Math.min(a.r, b.r);
+      spots.push([wr, clamp(a.c - 1), 'h'], [wr, clamp(a.c), 'h']);
+    } else {                                 // шаг вбок режет забор «|»
+      const wc = Math.min(a.c, b.c);
+      spots.push([clamp(a.r - 1), wc, 'v'], [clamp(a.r), wc, 'v']);
+    }
+
+    for (const [wr, wc, kind] of spots) {
+      const id = `${wr},${wc},${kind}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (wallProblem(state, side, wr, wc, kind)) continue;
+
+      const probe = { ...state.walls, [key(wr, wc)]: kind };
+      const theirs = shortestPath(probe, state.pawns[foe], state.goalRow[foe]);
+      const mine = shortestPath(probe, state.pawns[side], state.goalRow[side]);
+      if (theirs == null || mine == null) continue;
+      out.push({
+        kind: 'wall', wr, wc, orient: kind,
+        gain: (theirs - base.theirs) - (mine - base.mine),
+      });
     }
   }
 
-  const step = bestStep(state, side);
-  if (step) {
-    const res = applyMove(state, side, step.r, step.c);
-    if (!res.error) return { state: res.state, kind: 'move', to: step };
+  out.sort((x, y) => y.gain - x.gain);
+  return out.slice(0, limit);
+}
+
+function pawnCandidates(state, side) {
+  const goal = state.goalRow[side];
+  return pawnMoves(state, side)
+    .map((m) => ({
+      kind: 'move', r: m.r, c: m.c,
+      len: shortestPath(state.walls, m, goal),
+    }))
+    .filter((m) => m.len != null)
+    .sort((a, b) => a.len - b.len);
+}
+
+/** Ходы к перебору: сначала шаги покороче, потом заборы повреднее. */
+function candidates(state, side, limit) {
+  return [...pawnCandidates(state, side), ...wallCandidates(state, side, limit)];
+}
+
+function apply(state, side, mv) {
+  const res = mv.kind === 'move'
+    ? applyMove(state, side, mv.r, mv.c)
+    : applyWall(state, side, mv.wr, mv.wc, mv.orient);
+  return res.error ? null : res.state;
+}
+
+/* ────────────────────────── перебор ────────────────────────── */
+
+/**
+ * Негамакс с отсечениями. Возвращает оценку позиции для стороны, которая ходит.
+ *
+ * `budget` — общий счётчик позиций на весь ход. Он не для качества игры, а для
+ * телефона: без него сильный уровень на слабом устройстве подвесил бы вкладку
+ * на несколько секунд, и это выглядело бы как поломка, а не как раздумье.
+ * На замерах потолок почти не срабатывает — время съедает не перебор, а обход
+ * поля при отборе заборов, — но он держит редкие тяжёлые позиции.
+ */
+function search(state, side, depth, alpha, beta, level, budget) {
+  if (state.winner) return state.winner === side ? WIN - depth : -(WIN - depth);
+  if (depth <= 0 || budget.left <= 0) return evaluate(state, side);
+
+  let best = -Infinity;
+  for (const mv of candidates(state, side, level.candidates)) {
+    if (budget.left <= 0) break;
+    budget.left -= 1;
+    const next = apply(state, side, mv);
+    if (!next) continue;
+
+    const score = -search(next, other(side), depth - 1, -beta, -alpha, level, budget);
+    if (score > best) best = score;
+    if (best > alpha) alpha = best;
+    if (alpha >= beta) break;               // соперник сюда не пойдёт
+  }
+  return best === -Infinity ? evaluate(state, side) : best;
+}
+
+/* ────────────────────────── ход бота ────────────────────────── */
+
+/**
+ * Ход бота. Возвращает {state, kind, ...} — по kind клиент пишет строку в журнал.
+ *
+ * @param {string} levelName 'easy' | 'medium' | 'hard'
+ */
+export function botMove(state, side, levelName = DEFAULT_LEVEL) {
+  const level = levelOf(levelName);
+  const list = candidates(state, side, level.candidates);
+  if (!list.length) return { state, kind: 'stuck' };
+
+  const worth = list.filter((mv) => mv.kind !== 'wall' || mv.gain >= level.wallNeed);
+  const pool = worth.length ? worth : list;
+
+  // Потолок делится поровну между вариантами, а не тратится общей кучей.
+  // С общим счётчиком первые разобранные ходы получали весь перебор, а
+  // последним доставалась голая оценка позиции, — и бот выбирал не лучший ход,
+  // а тот, до которого дошли раньше. На замерах сильный уровень из-за этого
+  // проигрывал среднему.
+  const share = Math.max(300, Math.floor(level.nodes / pool.length));
+
+  const scored = [];
+  for (const mv of pool) {
+    const next = apply(state, side, mv);
+    if (!next) continue;
+    const score = -search(next, other(side), level.depth - 1,
+                          -Infinity, Infinity, level, { left: share });
+    scored.push({ mv, score });
   }
 
-  // Бежать некуда — ставим любой допустимый забор, лишь бы не зависнуть.
-  const wall = bestWall(state, side);
-  if (wall) {
-    const res = applyWall(state, side, wall.wr, wall.wc, wall.kind);
-    if (!res.error) return { state: res.state, kind: 'wall', wall };
+  if (!scored.length) {
+    const step = list.find((m) => m.kind === 'move');
+    if (!step) return { state, kind: 'stuck' };
+    return finish(state, side, step);
   }
-  return { state, kind: 'stuck' };
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // Слабый уровень нарочно ошибается: иначе даже одноходовый бот обыгрывает
+  // новичка вчистую, и играть с ним не хочется.
+  let choice = scored[0];
+  if (level.blunder && scored.length > 1 && Math.random() < level.blunder) {
+    choice = scored[1 + Math.floor(Math.random() * (scored.length - 1))];
+  } else {
+    // при равенстве выбираем случайно — чтобы партии не повторялись
+    const top = scored.filter((s) => s.score === scored[0].score);
+    choice = top[Math.floor(Math.random() * top.length)];
+  }
+
+  return finish(state, side, choice.mv);
+}
+
+function finish(state, side, mv) {
+  const next = apply(state, side, mv);
+  if (!next) return { state, kind: 'stuck' };
+  return mv.kind === 'move'
+    ? { state: next, kind: 'move', to: { r: mv.r, c: mv.c } }
+    : { state: next, kind: 'wall', wall: { wr: mv.wr, wc: mv.wc, kind: mv.orient } };
 }

@@ -19,6 +19,7 @@ import time
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Q
 from django.http import JsonResponse
@@ -37,6 +38,22 @@ from .models import QuoridorGame
 
 
 OPEN_GAMES_LIMIT = 5      # сколько партий один человек вправе держать в ожидании
+SWEEP_EVERY = 600         # не чаще раза в 10 минут подметать базу
+
+
+def sweep_old_games():
+    """
+    Убрать отыгранные партии — по дороге, при заходе в лобби.
+
+    Отдельного планировщика ради двух DELETE поднимать не хочется, а лобби
+    открывают достаточно часто. Флаг в кэше держит уборку редкой: даже если
+    кэш локальный для процесса, худшее, что случится, — лишний DELETE,
+    который ничего не найдёт.
+    """
+    if cache.get('quoridor:swept'):
+        return None
+    cache.set('quoridor:swept', True, SWEEP_EVERY)
+    return QuoridorGame.purge_old()
 
 
 def asset_version():
@@ -54,14 +71,18 @@ def asset_version():
 def lobby(request):
     """Выбор режима и список своих сетевых партий."""
     user = request.user
+    sweep_old_games()
+
     my_games = QuoridorGame.objects.filter(
         Q(red_player=user) | Q(blue_player=user)
     ).order_by('-updated_at')[:20]
 
     # Свободным может быть любое из двух мест: создатель выбирает цвет сам,
-    # так что ждать соперника может и синий.
+    # так что ждать соперника может и синий. Приватные партии сюда не попадают
+    # вовсе — про них знает только тот, кому дали ссылку.
     open_games = QuoridorGame.objects.filter(
         Q(status=QuoridorGame.STATUS_WAITING)
+        & Q(access=QuoridorGame.ACCESS_OPEN)
         & (Q(red_player__isnull=True) | Q(blue_player__isnull=True))
     ).exclude(red_player=user).exclude(blue_player=user).order_by('-created_at')[:10]
 
@@ -108,6 +129,9 @@ def game_create(request):
             'asset_v': asset_version(),
             'pending': pending,
             'limit': OPEN_GAMES_LIMIT,
+            # Галочку возвращаем на место: переспрашивать про доступ из-за
+            # чужой по смыслу ошибки — неуважение к человеку.
+            'access_open': request.POST.get('access') == QuoridorGame.ACCESS_OPEN,
             'error': 'Слишком много партий ждут соперника. Закройте лишние — '
                      'кнопкой «Отменить партию» на их страницах.',
         }, status=400)
@@ -118,7 +142,13 @@ def game_create(request):
     elif side not in (engine.RED, engine.BLUE):
         side = engine.RED
 
-    game = QuoridorGame.create_for(request.user, side)
+    # По умолчанию партия приватная: ссылку отправляют конкретному человеку,
+    # и посторонний не должен занять место, которое держат для него.
+    access = (QuoridorGame.ACCESS_OPEN
+              if request.POST.get('access') == QuoridorGame.ACCESS_OPEN
+              else QuoridorGame.ACCESS_LINK)
+
+    game = QuoridorGame.create_for(request.user, side, access)
     return redirect('quoridor:game', code=game.code)
 
 
@@ -128,10 +158,18 @@ def game_detail(request, code):
     """Страница сетевой партии."""
     game = get_object_or_404(QuoridorGame, code=code)
     side = game.player_side(request.user)
+
+    # ?watch=1 — просьба не сажать за доску. Обычная ссылка означает «иди
+    # играть», и место занимается само; ссылка для зрителя — противоположное
+    # намерение, и молча посадить такого человека было бы подменой.
+    watching = request.GET.get('watch') == '1'
+
     return render(request, 'quoridor/online.html', {
         'game': game,
         'my_side': side or '',
-        'can_join': game.can_seat(request.user),
+        'watching': watching,
+        'can_join': game.can_seat(request.user) and not watching,
+        'can_seat': game.can_seat(request.user),
         'free_side': game.free_side() or '',
         'red_label': game.label_for(engine.RED),
         'blue_label': game.label_for(engine.BLUE),
@@ -217,6 +255,7 @@ def _state_payload(game, user):
         'my_side': game.player_side(user) or '',
         'can_seat': game.can_seat(user),
         'free_side': game.free_side() or '',
+        'access': game.access,
         'red_label': game.label_for(engine.RED),
         'blue_label': game.label_for(engine.BLUE),
         'paths': {

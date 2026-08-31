@@ -13,10 +13,17 @@
   <div class="q-head">
     <div>
       <a class="q-back" href="{% url 'quoridor:play' %}">← Заборы</a>
-      <h1>Партия <span class="q-codebig">{{ game.code }}</span></h1>
+      <h1>
+        Партия <span class="q-codebig">{{ game.code }}</span>
+        <span class="q-tag {{ game.access }}" id="qAccessTag">
+          {% if game.is_open %}открытая{% else %}по ссылке{% endif %}
+        </span>
+      </h1>
       <p class="q-sub" id="qRole">
         {% if my_side %}
           Вы играете {% if my_side == 'red' %}красными и ходите первым{% else %}синими{% endif %}.
+        {% elif watching %}
+          Вы смотрите за партией со стороны.
         {% elif can_join %}
           Сажаем вас за свободное место…
         {% else %}
@@ -27,33 +34,59 @@
 
     <div class="q-invite" id="qInvite">
       {% if can_join %}
-        {# Обычно место занимает сам скрипт, как только страница открылась.
-           Форма остаётся запасным путём: без JS кнопка сделает то же самое. #}
+        {% comment %} Обычно место занимает сам скрипт, как только страница открылась.
+           Форма остаётся запасным путём: без JS кнопка сделает то же самое. {% endcomment %}
         <form method="post" action="{% url 'quoridor:join' code=game.code %}" id="qJoinForm">
           {% csrf_token %}
           <button type="submit" class="q-btn">
             Занять место {% if free_side == 'red' %}красного{% else %}синего{% endif %}
           </button>
         </form>
-      {% elif game.status == 'waiting' %}
+      {% endif %}
+
+      {% comment %} Приглашения — дело участников. Зрителю приватной партии готовая ссылка
+         «для соперника» с кнопкой «Скопировать» ни к чему: звать за доску не
+         ему, а тому, чьё это место. Видимостью дальше распоряжается скрипт:
+         серверный шаблон не знает, кем человек станет через секунду. {% endcomment %}
+      <div id="qSeatInvite" hidden>
         <label class="q-link-label" for="qLink">Ссылка для соперника</label>
         <div class="q-linkrow">
-          <input id="qLink" class="q-link" type="text" readonly value="{{ request.build_absolute_uri }}">
+          <input id="qLink" class="q-link" type="text" readonly
+                 value="{{ request.scheme }}://{{ request.get_host }}{% url 'quoridor:game' code=game.code %}">
           <button id="qCopy" type="button" class="q-btn ghost">Скопировать</button>
         </div>
         <div class="q-invite-hint">Партия начнётся сама, как только соперник её откроет.</div>
-      {% endif %}
+      </div>
+
+      {% comment %} Ссылка для зрителя отличается только хвостом ?watch=1: по ней за доску
+         не сажают. Нужна и во время партии — позвать смотреть можно в любой
+         момент, пока партия идёт. {% endcomment %}
+      <details class="q-watchlink" id="qWatchBlock" hidden>
+        <summary>Позвать зрителя</summary>
+        <div class="q-linkrow">
+          <input id="qWatchLink" class="q-link" type="text" readonly
+                 value="{{ request.scheme }}://{{ request.get_host }}{% url 'quoridor:game' code=game.code %}?watch=1">
+          <button id="qCopyWatch" type="button" class="q-btn ghost">Скопировать</button>
+        </div>
+        <div class="q-invite-hint">По этой ссылке смотрят, а не садятся за доску.</div>
+      </details>
     </div>
   </div>
 
   <div class="q-grid">
 
     <div class="q-boardbox">
-      {# role/aria-live: чья очередь и почему ход не принят — единственная
-         обратная связь на странице, и читалка должна её проговаривать. #}
+      {% comment %} role/aria-live: чья очередь и почему ход не принят — единственная
+         обратная связь на странице, и читалка должна её проговаривать. {% endcomment %}
       <div id="qTurn" class="q-turn wait" role="status" aria-live="polite">Загружаем партию…</div>
       <canvas id="qBoard" aria-label="Доска 9 на 9"></canvas>
       <div id="qMsg" class="q-msg" role="status" aria-live="assertive"></div>
+      <div class="q-walltool" id="qWallTool" hidden>
+        <span class="q-walltool-label">Забор <b id="qWallWhere">—</b></span>
+        <button id="qWallRotate" type="button" class="q-btn ghost">Повернуть</button>
+        <button id="qWallPlace" type="button" class="q-btn">Поставить</button>
+        <button id="qWallCancel" type="button" class="q-btn ghost">Отмена</button>
+      </div>
       <noscript>
         <div class="q-error">
           Сетевая партия работает только со включённым JavaScript: без него
@@ -61,6 +94,7 @@
         </div>
       </noscript>
       <div class="q-actions">
+        <button id="qSit" type="button" class="q-btn" hidden>Сесть за доску</button>
         <button id="qResign" type="button" class="q-btn ghost danger" hidden>Сдаться</button>
       </div>
     </div>
@@ -95,9 +129,11 @@
         <div class="q-rules-title">Как играть</div>
         <ul>
           <li>За ход — <b>либо</b> шаг фишкой, <b>либо</b> забор.</li>
-          <li>Клик по клетке с зелёной точкой — ход. Клик в паз между клетками — забор.</li>
-          <li>Ориентация забора берётся из паза под курсором; на пересечении
-              переключается правой кнопкой или клавишей <kbd>R</kbd>.</li>
+          <li>Клетка с зелёной точкой — ход фишкой. Паз между клетками — забор.</li>
+          <li>Мышью забор ставится сразу; ориентация берётся из паза под курсором,
+              а на пересечении переключается правой кнопкой или клавишей <kbd>R</kbd>.</li>
+          <li>Пальцем — в два касания: первое примеряет забор, второе по тому же
+              месту ставит. Под доской появляются «Повернуть» и «Поставить».</li>
           <li>Забор не имеет права полностью отрезать сопернику путь.</li>
           <li>Ход соперника появится сам — страницу обновлять не нужно.</li>
           <li>Кнопка «Сдаться» под доской заканчивает партию досрочно.</li>
@@ -122,6 +158,7 @@ boot({
   join: "{% url 'quoridor:join' code=game.code %}",
   lobby: "{% url 'quoridor:play' %}",
   resign: "{% url 'quoridor:resign' code=game.code %}"
-}, document.querySelector('[name=csrfmiddlewaretoken]').value);
+}, document.querySelector('[name=csrfmiddlewaretoken]').value,
+   {watching: {% if watching %}true{% else %}false{% endif %}});
 </script>
 {% endblock %}

@@ -10,8 +10,9 @@
 
 import { RED, BLUE, initialState, pawnMoves, applyMove, applyWall,
          shortestPath, cellName, wallName } from './rules.js';
-import { botMove } from './bot.js';
-import { hitTest, setupCanvas, drawBoard, SIZE } from './render.js';
+import { botMove, LEVELS, DEFAULT_LEVEL, levelOf } from './bot.js';
+import { hitTest, setupCanvas, drawBoard, boardPoint } from './render.js';
+import { createWallTool } from './walltool.js';
 
 /* ────────────────────────── состояние экрана ────────────────────────── */
 
@@ -19,6 +20,7 @@ const ui = {
   state: initialState(),
   history: [],
   mode: 'hotseat',                    // 'hotseat' | 'bot'
+  level: DEFAULT_LEVEL,               // 'easy' | 'medium' | 'hard'
   botSide: BLUE,
   lastOrient: 'h',
   hover: null,
@@ -26,16 +28,23 @@ const ui = {
   busy: false,
 };
 
-let canvas, ctx, dpr = 1;
+let canvas, ctx, scale = 1, tool = null;
+
+/** Может ли человек сейчас ходить: не конец партии и не очередь компьютера. */
+function canAct() {
+  return !ui.busy && !ui.state.winner
+      && !(ui.mode === 'bot' && ui.state.turn === ui.botSide);
+}
 
 /** Перерисовать доску. Вся геометрия и стиль — в render.js. */
 function draw() {
-  drawBoard(ctx, dpr, {
+  drawBoard(ctx, scale, {
     state: ui.state,
     hover: ui.hover,
-    canPlay: !ui.state.winner && !(ui.mode === 'bot' && ui.state.turn === ui.botSide),
+    canPlay: canAct(),
     mySide: null,
     lastMove: null,
+    pending: tool ? tool.pending : null,
   });
 }
 
@@ -70,7 +79,9 @@ function renderPanel() {
     turnEl.className = 'q-turn win ' + s.winner;
   } else {
     const waiting = ui.mode === 'bot' && s.turn === ui.botSide;
-    turnEl.textContent = waiting ? 'Ход компьютера…' : `Ход: ${sideName(s.turn).toLowerCase()}`;
+    turnEl.textContent = waiting
+      ? `Ход компьютера (${levelOf(ui.level).title})…`
+      : `Ход: ${sideName(s.turn).toLowerCase()}`;
     turnEl.className = 'q-turn ' + s.turn;
   }
   $('#qUndo').disabled = ui.history.length === 0 || ui.busy;
@@ -94,6 +105,7 @@ function remember() {
 }
 
 function afterTurn() {
+  if (tool) tool.clear();
   draw();
   renderPanel();
   if (ui.state.winner) { say(`Победил ${sideName(ui.state.winner).toLowerCase()}!`); return; }
@@ -106,7 +118,7 @@ function afterTurn() {
 
 function runBot() {
   const side = ui.botSide;
-  const res = botMove(ui.state, side);
+  const res = botMove(ui.state, side, ui.level);
   if (res.kind === 'stuck') { say('Компьютер не нашёл хода.'); ui.busy = false; renderPanel(); return; }
   ui.state = res.state;
   pushLog(res.kind === 'move'
@@ -141,6 +153,7 @@ function tryWall(wr, wc, kind) {
 
 function undo() {
   if (!ui.history.length || ui.busy) return;
+  if (tool) tool.clear();          // позиция уехала — примерка больше не про неё
   // в игре с компьютером откатываем пару ходов, иначе ход снова окажется его
   const steps = ui.mode === 'bot' && ui.history.length >= 2 ? 2 : 1;
   for (let i = 0; i < steps; i += 1) ui.state = ui.history.pop();
@@ -150,6 +163,7 @@ function undo() {
 }
 
 function newGame() {
+  if (tool) tool.clear();
   ui.state = initialState();
   ui.history = [];
   ui.log = [];
@@ -164,20 +178,40 @@ function newGame() {
 export function boot() {
   // Режим приходит из лобби ссылкой ?mode=bot — иначе кнопка «против
   // компьютера» открывала бы обычную игру вдвоём и выбирать пришлось бы заново.
-  const wanted = new URLSearchParams(window.location.search).get('mode');
+  const params = new URLSearchParams(window.location.search);
+  const wanted = params.get('mode');
   if (wanted === 'bot' || wanted === 'hotseat') {
     ui.mode = wanted;
     const radio = document.querySelector(`[name=qMode][value="${wanted}"]`);
     if (radio) radio.checked = true;
   }
+  const level = params.get('level');
+  if (level && LEVELS[level]) ui.level = level;
 
   canvas = $('#qBoard');
   ctx = canvas.getContext('2d');
-  dpr = setupCanvas(canvas);
+  scale = setupCanvas(canvas);
+
+  // Палец ставит забор в два касания — примеряет и подтверждает. Почему так,
+  // объяснено в walltool.js; мышь ходит мимо этого модуля, ей хватает клика.
+  tool = createWallTool({
+    canvas,
+    canAct,
+    moves: () => pawnMoves(ui.state, ui.state.turn),
+    wallsLeft: () => ui.state.wallsLeft[ui.state.turn],
+    onMove: tryMove,
+    onWall: tryWall,
+    onChange: draw,
+    say,
+  });
+
+  // Доска подстраивается под ширину экрана, значит и при повороте телефона
+  // её надо пересчитать — иначе останется размер прежней ориентации.
+  window.addEventListener('resize', () => { scale = setupCanvas(canvas); draw(); });
 
   canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, ui.lastOrient);
+    const { x, y } = boardPoint(canvas, e.clientX, e.clientY);
+    const hit = hitTest(x, y, ui.lastOrient);
     const same = JSON.stringify(hit) === JSON.stringify(ui.hover);
     ui.hover = hit;
     canvas.style.cursor = hit ? 'pointer' : 'default';
@@ -186,10 +220,10 @@ export function boot() {
   canvas.addEventListener('mouseleave', () => { ui.hover = null; draw(); });
 
   canvas.addEventListener('click', (e) => {
-    if (ui.busy || ui.state.winner) return;
-    if (ui.mode === 'bot' && ui.state.turn === ui.botSide) return;
-    const rect = canvas.getBoundingClientRect();
-    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, ui.lastOrient);
+    if (!canAct()) return;
+    if (tool && tool.justTouched()) return;   // это эхо касания, его уже обработали
+    const { x, y } = boardPoint(canvas, e.clientX, e.clientY);
+    const hit = hitTest(x, y, ui.lastOrient);
     if (!hit) return;
     if (hit.type === 'cell') tryMove(hit.r, hit.c);
     else tryWall(hit.wr, hit.wc, hit.kind);
@@ -227,11 +261,24 @@ export function boot() {
   });
 
   document.querySelectorAll('[name=qMode]').forEach((r) => {
-    r.addEventListener('change', () => { ui.mode = r.value; newGame(); });
+    r.addEventListener('change', () => { ui.mode = r.value; syncLevelBox(); newGame(); });
   });
+
+  const levelBox = $('#qLevel');
+  if (levelBox) {
+    levelBox.value = ui.level;
+    levelBox.addEventListener('change', () => { ui.level = levelBox.value; newGame(); });
+  }
+  syncLevelBox();
   $('#qNew').addEventListener('click', newGame);
   $('#qUndo').addEventListener('click', undo);
 
   draw();
   renderPanel();
+}
+
+/** Выбор уровня нужен только против компьютера — вдвоём он бессмыслен. */
+function syncLevelBox() {
+  const wrap = $('#qLevelWrap');
+  if (wrap) wrap.hidden = ui.mode !== 'bot';
 }

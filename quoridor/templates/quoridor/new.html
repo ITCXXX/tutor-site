@@ -20,8 +20,19 @@
 
   {% if error %}<div class="q-error">{{ error }}</div>{% endif %}
 
-  <form method="post" class="q-colors">
+  <form method="post">
     {% csrf_token %}
+
+    <label class="q-toggle">
+      <input type="checkbox" name="access" value="open" {% if access_open %}checked{% endif %}>
+      <span>
+        <b>Показать партию в лобби</b>
+        Тогда сесть напротив сможет любой, кто откроет «Заборы». Без галочки
+        партия приватная: попасть в неё можно только по вашей ссылке.
+      </span>
+    </label>
+
+    <div class="q-colors">
 
     <button type="submit" name="side" value="red" class="q-color red">
       <span class="q-color-dot"></span>
@@ -40,12 +51,14 @@
       <span class="q-color-title">Как выпадет</span>
       <span class="q-color-desc">Цвет выберет сервер — по-честному, монеткой.</span>
     </button>
+    </div>
   </form>
 
   <p class="q-note">
     После выбора откроется доска, а ссылку на партию можно будет скопировать
     одной кнопкой и отправить сопернику. Партия начнётся сама, как только он
-    её откроет — нажимать ничего не нужно.
+    её откроет — нажимать ничего не нужно. Там же берётся отдельная ссылка
+    для зрителя: по ней смотрят, но за доску не садятся.
     {% if pending %}Сейчас соперника ждут ваших партий: {{ pending }} из {{ limit }}.{% endif %}
   </p>
 

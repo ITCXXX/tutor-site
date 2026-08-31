@@ -69,14 +69,93 @@ export function hitTest(mx, my, lastOrient = 'h') {
   return { type: 'wall', wr: clamp(ri), wc: clamp(ci), kind };
 }
 
-/** Подгоняет размер канвы под экран и возвращает множитель плотности. */
+/** Насколько далеко от центра клетки палец ещё считается ходом фишки. */
+export const MOVE_RADIUS = 26;
+
+/**
+ * Куда попал палец.
+ *
+ * Расширять паз допуском нельзя: паз и так занимает 12 px из 64, и стоит дать
+ * ему запас с обеих сторон, как от клетки остаётся четверть — пойти фишкой
+ * становится труднее, чем поставить забор, хотя ходят чаще.
+ *
+ * Поэтому решают не полосы, а расстояния, и первыми спрашивают ходы фишкой:
+ * их всегда единицы, они подсвечены зелёными точками, и попадание по такой
+ * точке однозначно. Всё остальное на доске — намерение поставить забор, и
+ * забор липнет к ближайшему пазу. Промах здесь ничего не стоит: забор сперва
+ * примеряется и ждёт подтверждения.
+ */
+export function touchHit(mx, my, moves, lastOrient = 'h') {
+  const span = N * CELL + (N - 1) * GAP;
+  if (mx < PAD - MOVE_RADIUS || my < PAD - MOVE_RADIUS
+      || mx > PAD + span + MOVE_RADIUS || my > PAD + span + MOVE_RADIUS) return null;
+
+  let near = null;
+  let nearDist = MOVE_RADIUS;
+  for (const m of moves || []) {
+    const dx = mx - (cellX(m.c) + CELL / 2);
+    const dy = my - (cellY(m.r) + CELL / 2);
+    const d = Math.hypot(dx, dy);
+    if (d <= nearDist) { nearDist = d; near = m; }
+  }
+  if (near) return { type: 'cell', r: near.r, c: near.c };
+
+  // Середины пазов: между колонками i и i+1 линия идёт по x = ...
+  const line = (i) => PAD + i * STEP + CELL + GAP / 2;
+  const clamp = (x) => Math.max(0, Math.min(W - 1, x));
+  const band = (v) => clamp(Math.floor((v - PAD) / STEP));
+
+  let bestV = 0;
+  let bestH = 0;
+  for (let i = 1; i < W; i += 1) {
+    if (Math.abs(mx - line(i)) < Math.abs(mx - line(bestV))) bestV = i;
+    if (Math.abs(my - line(i)) < Math.abs(my - line(bestH))) bestH = i;
+  }
+  const dv = Math.abs(mx - line(bestV));
+  const dh = Math.abs(my - line(bestH));
+
+  // Почти на пересечении — берём ту ориентацию, которой играли в прошлый раз:
+  // переключать её лишний раз пальцем неудобно.
+  const kind = Math.abs(dv - dh) < 6 ? lastOrient : (dh < dv ? 'h' : 'v');
+  return kind === 'h'
+    ? { type: 'wall', wr: bestH, wc: band(mx), kind }
+    : { type: 'wall', wr: band(my), wc: bestV, kind };
+}
+
+/** Точка события в координатах доски: канва на экране может быть меньше. */
+export function boardPoint(canvas, clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  // Схлопнутая (ещё не разложенная или скрытая) страница даёт ширину в пару
+  // пикселей, и множитель улетает в сотни — тогда честнее считать один к одному.
+  const k = rect.width > 120 ? SIZE / rect.width : 1;
+  return { x: (clientX - rect.left) * k, y: (clientY - rect.top) * k };
+}
+
+/**
+ * Подогнать канву под место на экране и вернуть масштаб отрисовки.
+ *
+ * Рисуем всегда в своих координатах — 624 px по стороне, — а на экран кладём
+ * столько, сколько влезло: на телефоне шириной 360 px доска в натуральную
+ * величину просто уезжает за край, и половину поля не видно. Масштаб уходит
+ * в drawBoard, а обратный пересчёт координат касания делает boardPoint.
+ */
 export function setupCanvas(canvas) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = SIZE * dpr;
-  canvas.height = SIZE * dpr;
-  canvas.style.width = SIZE + 'px';
-  canvas.style.height = SIZE + 'px';
-  return dpr;
+
+  // Ширину на экране задаёт CSS (width: 100%, max-width: 624px, квадрат), а не
+  // этот код. Так надо: если размер холста выставлять отсюда, сетка страницы
+  // подстраивается под холст, холст — под сетку, и ширина схлопывается в
+  // случайное число. JS остаётся только подогнать разрешение картинки.
+  // Пока страница не разложена (или вкладка свёрнута), ширина приходит нулевой
+  // или крохотной — тогда честнее нарисовать в полный размер и пересчитать
+  // позже по resize, чем показать доску в два пикселя.
+  const measured = canvas.clientWidth;
+  const css = measured > 120 ? measured : SIZE;
+  const scale = (css / SIZE) * dpr;
+
+  canvas.width = Math.round(SIZE * scale);
+  canvas.height = Math.round(SIZE * scale);
+  return scale;
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -123,6 +202,7 @@ function drawPawn(ctx, p, color, ring) {
  * @param {boolean} o.canPlay   показывать ли подсказки ходов и призрак забора
  * @param {string}  o.mySide    чью фишку обвести пунктиром (сетевая партия)
  * @param {object}  o.lastMove  последний ход соперника — подсветить забор
+ * @param {object}  o.pending   забор, ожидающий подтверждения (палец)
  */
 export function drawBoard(ctx, dpr, o) {
   const s = o.state;
@@ -189,12 +269,23 @@ export function drawBoard(ctx, dpr, o) {
     ctx.stroke();
   }
 
-  if (o.canPlay && !s.winner && o.hover && o.hover.type === 'wall') {
-    const { wr, wc, kind } = o.hover;
+  const ghost = o.pending || (o.canPlay && o.hover && o.hover.type === 'wall' ? o.hover : null);
+  if (ghost && !s.winner) {
+    const { wr, wc, kind } = ghost;
     const bad = wallProblem(s, s.turn, wr, wc, kind);
     const { x, y, w, h } = wallRect(wr, wc, kind);
     ctx.fillStyle = bad ? COLOR.ghostBad : COLOR.ghostOk;
-    roundRect(ctx, x, y, w, h, 4); ctx.fill();
+    roundRect(ctx, x, y, w, h, 4);
+    ctx.fill();
+    // Забор, который ждёт подтверждения пальцем, обводим: призрак под пальцем
+    // не виден, и без контура непонятно, что именно сейчас поставится.
+    if (o.pending) {
+      ctx.strokeStyle = bad ? COLOR.red : COLOR.wallEdge;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
 
   drawPawn(ctx, s.pawns[RED], COLOR.red, o.mySide === RED);
