@@ -5,6 +5,8 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.validators import URLValidator
 from django.utils import timezone
 
+from .uploads import validate_homework_file
+
 # --------------------------------------------------
 # Существующие модели пользователей (оставляем как есть)
 # --------------------------------------------------
@@ -988,6 +990,8 @@ class StudentSubmission(models.Model):
     file = models.FileField(
         'Прикреплённый файл (фото/PDF)',
         upload_to='hw/submissions/', blank=True, null=True,
+        # Та же проверка, что и во вью: сюда файл может попасть и из админки.
+        validators=[validate_homework_file],
     )
     status = models.CharField(
         'Статус', max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING,

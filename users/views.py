@@ -20,6 +20,7 @@ from django.views.decorators.http import require_POST
 from .decorators import student_required, teacher_required
 from .answer_check import check_answer
 from .progress import mark_progress, needed_for
+from .uploads import validate_homework_file
 from .homework import (homework_for, lesson_report, dates_for,
                        accepts_from)
 from django.db import transaction
@@ -1811,6 +1812,15 @@ def submit_hw_solution(request, assignment_id):
     if not text and not file:
         messages.error(request, 'Добавьте текст решения или прикрепите файл.')
         return redirect('student_course_progress', slug=course.slug)
+
+    # Файл проверяем ДО сохранения: иначе мусор уже лежал бы на диске, а
+    # чистить его было бы нечем.
+    if file:
+        try:
+            validate_homework_file(file)
+        except ValidationError as e:
+            messages.error(request, '; '.join(e.messages))
+            return redirect('student_course_progress', slug=course.slug)
 
     # Текущая попытка, если она есть.
     sub = (StudentSubmission.objects
