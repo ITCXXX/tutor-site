@@ -57,7 +57,7 @@ def homework_for(student, limit=None):
 
     на_проверке = defaultdict(int)
     for aid in StudentSubmission.objects.filter(
-            student=student, assignment_id__in=задачи,
+            student=student, assignment_id__in=задачи, is_latest=True,
             status=StudentSubmission.STATUS_PENDING,
     ).values_list('assignment_id', flat=True):
         на_проверке[урок_задачи[aid]] += 1
@@ -120,7 +120,7 @@ def lesson_report(lesson, students):
     ждёт = set()
     for sid, aid in StudentSubmission.objects.filter(
             student_id__in=ids_учеников, assignment_id__in=ids_задач,
-            status=StudentSubmission.STATUS_PENDING,
+            is_latest=True, status=StudentSubmission.STATUS_PENDING,
     ).values_list('student_id', 'assignment_id'):
         ждёт.add((sid, aid))
 

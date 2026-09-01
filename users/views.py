@@ -325,6 +325,7 @@ def teacher_dashboard(request):
         })
 
     pending_count = StudentSubmission.objects.filter(
+        is_latest=True,
         status=StudentSubmission.STATUS_PENDING,
         student__student_profile__teacher=request.user,
     ).count()
@@ -451,8 +452,17 @@ def _build_paragraphs(course, student):
         s.assignment_id: s
         for s in StudentSubmission.objects.filter(
             student=student, assignment_id__in=course_assignment_ids,
+            is_latest=True,
         )
     }
+    # Сколько всего попыток было по каждой задаче — чтобы показать ученику,
+    # что прежние никуда не делись.
+    attempts_map = {}
+    for aid, n in (StudentSubmission.objects
+                   .filter(student=student, assignment_id__in=course_assignment_ids)
+                   .values_list('assignment_id')
+                   .annotate(n=Count('id'))):
+        attempts_map[aid] = n
 
     paragraphs = []
     total_done, total_all = 0, 0
@@ -462,6 +472,7 @@ def _build_paragraphs(course, student):
             t.is_done = t.id in done_set
             t.percent = percent_map.get(t.id, 0)
             t.submission = submissions_map.get(t.id)
+            t.attempts = attempts_map.get(t.id, 0)
             # Если title — короткое число (как в задачнике Поповой), показать его
             # в квадратике вместо forloop.counter → получится сквозная нумерация.
             title_clean = (t.title or '').strip()
@@ -1752,14 +1763,32 @@ def submit_hw_solution(request, assignment_id):
         messages.error(request, 'Добавьте текст решения или прикрепите файл.')
         return redirect('student_course_progress', slug=course.slug)
 
-    sub, _ = StudentSubmission.objects.get_or_create(
-        student=request.user, assignment=assignment,
-        defaults={'status': StudentSubmission.STATUS_PENDING},
-    )
-    # Если уже принято — больше ничего менять нельзя.
-    if sub.status == StudentSubmission.STATUS_ACCEPTED:
+    # Текущая попытка, если она есть.
+    sub = (StudentSubmission.objects
+           .filter(student=request.user, assignment=assignment, is_latest=True)
+           .first())
+
+    if sub and sub.status == StudentSubmission.STATUS_ACCEPTED:
         messages.warning(request, 'Это решение уже принято.')
         return redirect('student_course_progress', slug=course.slug)
+
+    if sub and sub.status == StudentSubmission.STATUS_REJECTED:
+        # Работу вернули на доработку — заводим НОВУЮ попытку, а прежнюю
+        # оставляем как есть. Раньше здесь текст ученика и комментарий
+        # преподавателя затирались безвозвратно.
+        sub.is_latest = False
+        sub.save(update_fields=['is_latest'])
+        sub = StudentSubmission(
+            student=request.user, assignment=assignment,
+            attempt=sub.attempt + 1, is_latest=True,
+        )
+    elif sub is None:
+        sub = StudentSubmission(
+            student=request.user, assignment=assignment,
+            attempt=1, is_latest=True,
+        )
+    # Иначе попытка ещё ждёт проверки — правим её же: преподаватель ничего
+    # не писал, терять нечего.
 
     sub.text = text
     if file:
@@ -1770,6 +1799,8 @@ def submit_hw_solution(request, assignment_id):
     sub.reviewed_by = None
     sub.save()
 
+    if sub.attempt > 1:
+        messages.success(request, 'Отправлено. Это попытка №%d — прежняя сохранена.' % sub.attempt)
     return redirect('student_course_progress', slug=course.slug)
 
 
@@ -1779,8 +1810,10 @@ def teacher_submissions(request):
     По умолчанию показываются ожидающие проверки."""
 
 
+    # Только текущие попытки: список проверки — про то, что делать сейчас,
+    # а не про историю. Историю видно в карточке задачи.
     base_qs = (StudentSubmission.objects
-               .filter(student__student_profile__teacher=request.user)
+               .filter(student__student_profile__teacher=request.user, is_latest=True)
                .select_related('student__student_profile',
                                'assignment__lesson__module__course'))
 

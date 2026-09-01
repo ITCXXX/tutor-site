@@ -173,7 +173,7 @@
             <div class="head">
                 <span class="student">{{ s.student.student_profile.display_name }}</span>
                 <span class="course">{{ s.assignment.lesson.module.course.title }} · {{ s.assignment.lesson.title }} · задача {{ s.assignment.title }}</span>
-                <span class="when">{{ s.submitted_at|date:"d.m H:i" }}</span>
+                <span class="when">{{ s.submitted_at|date:"d.m H:i" }}{% if s.attempt > 1 %} · попытка №{{ s.attempt }}{% endif %}</span>
             </div>
 
             <div class="lesson-title">Условие</div>

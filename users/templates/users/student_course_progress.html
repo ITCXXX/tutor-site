@@ -260,7 +260,8 @@
     background: var(--c-surface);
     object-fit: contain;
 }
-.sub-comment { color: var(--c-text-muted); font-size: .85rem; margin-left: .25rem; }
+.sub-attempts { font-size: .8rem; color: var(--c-text-muted); margin: .25rem 0 .35rem; }
+    .sub-comment { color: var(--c-text-muted); font-size: .85rem; margin-left: .25rem; }
 
 @media (max-width: 640px) {
     .summary-line { flex-wrap: wrap; gap: .55rem; padding: .7rem 1rem; }
@@ -325,6 +326,10 @@
 
                         {% if t.requires_review %}
                             {# Развёрнутое решение #}
+                            {% if t.attempts > 1 %}
+                            <div class="sub-attempts">Попытка №{{ t.submission.attempt }}
+                                · прежние сохранены ({{ t.attempts }} всего)</div>
+                            {% endif %}
                             {% if t.submission and t.submission.status == 'accepted' %}
                             <div class="hw-task-answer-row solved">
                                 <span class="hw-status-text"><span class="hw-status-icon">✓</span> Принято</span>

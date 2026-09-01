@@ -920,6 +920,11 @@ class StudentSubmission(models.Model):
     assignment = models.ForeignKey(
         Assignment, on_delete=models.CASCADE, related_name='submissions',
     )
+    # Номер попытки, начиная с 1. Вместе с is_latest заменяет прежнее
+    # ограничение «одна запись на задачу», из-за которого доработка затирала
+    # и текст ученика, и комментарий преподавателя.
+    attempt = models.PositiveIntegerField('Номер попытки', default=1)
+    is_latest = models.BooleanField('Текущая попытка', default=True)
     text = models.TextField('Текст решения', blank=True)
     file = models.FileField(
         'Прикреплённый файл (фото/PDF)',
@@ -940,11 +945,17 @@ class StudentSubmission(models.Model):
         verbose_name = 'Решение ученика'
         verbose_name_plural = 'Решения учеников'
         ordering = ['-submitted_at']
-        unique_together = ('student', 'assignment')
-        indexes = [models.Index(fields=['student', 'assignment'])]
+        # Прежнее unique_together('student', 'assignment') снято: теперь строк
+        # столько, сколько было попыток. Уникальна пара «задача + номер».
+        unique_together = ('student', 'assignment', 'attempt')
+        indexes = [
+            models.Index(fields=['student', 'assignment']),
+            models.Index(fields=['student', 'assignment', 'is_latest']),
+        ]
 
     def __str__(self):
-        return f"{self.student.username} → {self.assignment.title} [{self.status}]"
+        return (f"{self.student.username} → {self.assignment.title} "
+                f"[попытка {self.attempt}, {self.status}]")
 
 
 class HomeworkAttempt(models.Model):
