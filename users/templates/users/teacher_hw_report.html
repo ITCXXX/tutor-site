@@ -37,6 +37,17 @@
 .cond { color: var(--c-text-muted); font-size: .84rem; display: block; margin-top: .15rem; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--c-text-muted); font-size: .88rem; margin: 0; }
 .scroll { overflow-x: auto; }
+.tag-ext { background: #e7efff; color: #2b5bd7; }
+.ext-common { color: var(--c-text-muted); font-size: .82rem; }
+.ext-why { font-size: .76rem; color: var(--c-text-muted); margin-top: .15rem; max-width: 22ch; }
+.ext-box { margin-top: .3rem; }
+.ext-box summary { font-size: .78rem; color: var(--c-primary-600); cursor: pointer; }
+.ext-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: end; margin-top: .45rem;
+    background: var(--c-bg-soft); border: 1px solid var(--c-border); border-radius: 8px; padding: .5rem .6rem; }
+.ext-form label { font-size: .72rem; color: var(--c-text-muted); display: flex; flex-direction: column; gap: .15rem; }
+.ext-form input { font-size: .8rem; padding: .2rem .35rem; border: 1px solid var(--c-border); border-radius: 5px; }
+.ext-form input[type=text] { min-width: 11ch; }
+.ext-hint { font-size: .7rem; color: var(--c-text-muted); flex-basis: 100%; }
 </style>
 {% endblock %}
 
@@ -62,9 +73,9 @@
             <p class="hint">Сверху те, у кого осталось больше всего. Закончившие — в конце.</p>
             {% if by_student %}
             <div class="scroll">
-                <table class="rep-table">
+                <table class="rep-table" style="min-width:640px">
                     <thead>
-                        <tr><th>Ученик</th><th>Сдано</th><th>Осталось</th><th>Состояние</th></tr>
+                        <tr><th>Ученик</th><th>Сдано</th><th>Осталось</th><th>Состояние</th><th>Срок</th></tr>
                     </thead>
                     <tbody>
                         {% for r in by_student %}
@@ -78,6 +89,35 @@
                                 {% else %}<span class="tag tag-left">в работе</span>{% endif %}
                                 {% if r.pending %}<span class="tag tag-wait">на проверке: {{ r.pending }}</span>{% endif %}
                                 {% if r.late %}<span class="tag tag-late">с опозданием: {{ r.late }}</span>{% endif %}
+                            </td>
+                            <td>
+                                {% if r.ext %}
+                                <span class="tag tag-ext">лично до {{ r.due|date:"j M" }}</span>
+                                {% if r.ext.reason %}<div class="ext-why">{{ r.ext.reason }}</div>{% endif %}
+                                {% else %}
+                                <span class="ext-common">как у всех</span>
+                                {% endif %}
+                                <details class="ext-box">
+                                    <summary>{% if r.ext %}изменить{% else %}продлить{% endif %}</summary>
+                                    <form method="post" class="ext-form">
+                                        {% csrf_token %}
+                                        <label>Срок
+                                            <input type="date" name="ext_due"
+                                                   value="{% if r.ext.due_date %}{{ r.ext.due_date|date:'Y-m-d' }}{% endif %}">
+                                        </label>
+                                        <label>Приём до
+                                            <input type="date" name="ext_cutoff"
+                                                   value="{% if r.ext.cutoff_date %}{{ r.ext.cutoff_date|date:'Y-m-d' }}{% endif %}">
+                                        </label>
+                                        <label>Причина
+                                            <input type="text" name="ext_reason" maxlength="200"
+                                                   placeholder="болел" value="{{ r.ext.reason|default:'' }}">
+                                        </label>
+                                        <button type="submit" name="grant_ext" value="{{ r.student.id }}"
+                                                class="btn btn-sm btn-primary">Сохранить</button>
+                                        <span class="ext-hint">Обе даты пустые — продление снимается.</span>
+                                    </form>
+                                </details>
                             </td>
                         </tr>
                         {% endfor %}

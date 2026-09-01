@@ -11,6 +11,7 @@ from .models import (
     Course, Module, Lesson, Assignment,
     Enrollment, User, StudentProfile, LessonProgress,
     StudentProgress, ManualMark, StudentSubmission, HomeworkAttempt, StudentLink,
+    HomeworkExtension,
     TestQuestion, AnswerOption, ProblemGenerator, GeneratedProblem,
 )
 from django.http import JsonResponse, HttpResponse, Http404
@@ -19,7 +20,8 @@ from django.views.decorators.http import require_POST
 from .decorators import student_required, teacher_required
 from .answer_check import check_answer
 from .progress import mark_progress, needed_for
-from .homework import homework_for, lesson_report
+from .homework import (homework_for, lesson_report, dates_for,
+                       accepts_from)
 from django.db import transaction
 from django.utils.text import slugify
 import datetime
@@ -1573,6 +1575,27 @@ def teacher_hw_lesson_report(request, slug, lesson_id):
     course = get_object_or_404(Course, slug=slug, owner=request.user)
     lesson = get_object_or_404(Lesson, id=lesson_id, module__course=course)
 
+    # Продлить срок лично ученику. Общие даты урока при этом не трогаем —
+    # в этом весь смысл, иначе пришлось бы двигать срок остальным.
+    if request.method == 'POST' and 'grant_ext' in request.POST:
+        student = get_object_or_404(
+            User, id=request.POST.get('grant_ext'), role='student',
+            student_profile__teacher=request.user)
+        due = _parse_due(request.POST.get('ext_due'))
+        cut = _parse_cutoff(request.POST.get('ext_cutoff'), request.POST.get('ext_due'))
+        if not due and not cut:
+            HomeworkExtension.objects.filter(lesson=lesson, student=student).delete()
+            messages.success(request, 'Продление снято.')
+        else:
+            HomeworkExtension.objects.update_or_create(
+                lesson=lesson, student=student,
+                defaults={'due_date': due, 'cutoff_date': cut,
+                          'reason': (request.POST.get('ext_reason') or '').strip()[:200],
+                          'granted_by': request.user},
+            )
+            messages.success(request, 'Срок продлён лично.')
+        return redirect('teacher_hw_lesson_report', slug=slug, lesson_id=lesson.id)
+
     # Только свои ученики и только записанные на этот курс: чужих в сводке
     # быть не должно, даже если они на курсе.
     students = list(User.objects.filter(
@@ -1776,9 +1799,10 @@ def submit_hw_solution(request, assignment_id):
 
     # Отсечка. Проверка серверная и это принципиально: спрятать форму мало,
     # отправку легко повторить в обход страницы.
-    if not assignment.lesson.accepts_submissions():
+    if not accepts_from(assignment.lesson, request.user):
+        _, закрыт = dates_for(assignment.lesson, request.user)
         messages.error(request, 'Приём этой домашки закрыт %s.'
-                       % assignment.lesson.cutoff_date.strftime('%d.%m.%Y'))
+                       % закрыт.strftime('%d.%m.%Y'))
         return redirect('student_course_progress', slug=course.slug)
 
     text = (request.POST.get('text') or '').strip()
@@ -1928,10 +1952,10 @@ def check_hw_answer(request, assignment_id):
 
     # Та же отсечка, что и у развёрнутых решений: тракта приёма два, а
     # правило одно, и держать его надо в обоих.
-    if not assignment.lesson.accepts_submissions():
+    if not accepts_from(assignment.lesson, request.user):
+        _, закрыт = dates_for(assignment.lesson, request.user)
         return JsonResponse(
-            {'error': 'Приём этой домашки закрыт %s.'
-                      % assignment.lesson.cutoff_date.strftime('%d.%m.%Y')},
+            {'error': 'Приём этой домашки закрыт %s.' % закрыт.strftime('%d.%m.%Y')},
             status=400)
 
     user_answer = (request.POST.get('answer') or '').strip()

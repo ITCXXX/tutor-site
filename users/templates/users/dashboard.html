@@ -66,6 +66,9 @@
                                         {% if h.cutoff and not h.closed %}
                                         <div class="small text-muted">приём до {{ h.cutoff|date:"j E" }}</div>
                                         {% endif %}
+                                        {% if h.extended %}
+                                        <div class="small text-primary">срок продлён вам лично</div>
+                                        {% endif %}
                                     </div>
                                 </div>
                                 {% if h.pending %}

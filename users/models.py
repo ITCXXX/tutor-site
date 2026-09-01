@@ -861,6 +861,44 @@ class StudentProgress(models.Model):
         self.save()
 
 
+class HomeworkExtension(models.Model):
+    """Личное продление срока по домашке одному ученику.
+
+    Пустая дата означает «как у всех»: можно продлить только приём, не трогая
+    срок, и наоборот. Общие даты урока при этом не меняются — в этом весь
+    смысл, иначе пришлось бы двигать срок остальным.
+    """
+    lesson = models.ForeignKey(
+        Lesson, on_delete=models.CASCADE, related_name='extensions',
+        verbose_name='Домашка',
+    )
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='hw_extensions',
+        limit_choices_to={'role': 'student'}, verbose_name='Ученик',
+    )
+    due_date = models.DateField('Личный срок', null=True, blank=True)
+    cutoff_date = models.DateField('Личный приём до', null=True, blank=True)
+    reason = models.CharField(
+        'Причина', max_length=200, blank=True,
+        help_text='Через месяц вы сами не вспомните, почему у него срок другой.',
+    )
+    granted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', limit_choices_to={'role': 'teacher'},
+        verbose_name='Кто продлил',
+    )
+    created_at = models.DateTimeField('Когда', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Продление срока'
+        verbose_name_plural = 'Продления сроков'
+        unique_together = ('lesson', 'student')
+        indexes = [models.Index(fields=['lesson', 'student'])]
+
+    def __str__(self):
+        return f'{self.student.username} · {self.lesson.title} → {self.due_date or "как у всех"}'
+
+
 class LessonProgress(models.Model):
     """Отметка ученика «урок прочитан» для теоретических (текстовых) уроков.
 
