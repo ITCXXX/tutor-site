@@ -166,11 +166,17 @@
                            value="{{ form_data.lesson_title|default:'' }}"
                            placeholder="ДЗ от 5 мая · §3 уравнения" required autofocus>
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label" for="due_date">Срок сдачи</label>
+                <div class="col-md-2">
+                    <label class="form-label" for="due_date">Срок</label>
                     <input type="date" name="due_date" id="due_date" class="form-control"
                            value="{{ due_value|default:'' }}">
-                    <div class="form-text">Можно не ставить</div>
+                    <div class="form-text">после — «с опозданием»</div>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="cutoff_date">Приём до</label>
+                    <input type="date" name="cutoff_date" id="cutoff_date" class="form-control"
+                           value="{{ cutoff_value|default:'' }}">
+                    <div class="form-text">после — не принять</div>
                 </div>
             </div>
 

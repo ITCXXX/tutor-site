@@ -51,6 +51,7 @@
             <div class="meta">
                 {{ course.title }}
                 {% if lesson.due_date %} · срок {{ lesson.due_date|date:"j E Y" }}{% else %} · без срока{% endif %}
+                {% if lesson.cutoff_date %} · приём до {{ lesson.cutoff_date|date:"j E Y" }}{% endif %}
                 {% if not_finished %} · не закончили: {{ not_finished }}{% endif %}
                 {% if overdue %} · просрочили: {{ overdue }}{% endif %}
             </div>
@@ -76,6 +77,7 @@
                                 {% elif r.overdue %}<span class="tag tag-late">просрочено</span>
                                 {% else %}<span class="tag tag-left">в работе</span>{% endif %}
                                 {% if r.pending %}<span class="tag tag-wait">на проверке: {{ r.pending }}</span>{% endif %}
+                                {% if r.late %}<span class="tag tag-late">с опозданием: {{ r.late }}</span>{% endif %}
                             </td>
                         </tr>
                         {% endfor %}

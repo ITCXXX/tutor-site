@@ -403,6 +403,8 @@ def teacher_course_progress(request, slug):
                     'tasks_count': lesson.assignments.count(),
                     'due': lesson.due_date,
                     'overdue': bool(lesson.due_date and lesson.due_date < timezone.localdate()),
+                    'cutoff': lesson.cutoff_date,
+                    'closed': not lesson.accepts_submissions(),
                 })
 
     return render(request, 'users/teacher_course_progress.html', {
@@ -1345,6 +1347,16 @@ def _parse_due(raw):
         return None
 
 
+def _parse_cutoff(raw, due_raw):
+    """Дата отсечки. Раньше срока она бессмысленна — тогда работу нельзя было
+    бы сдать вовремя, — поэтому такую молча не принимаем."""
+    cutoff = _parse_due(raw)
+    due = _parse_due(due_raw)
+    if cutoff and due and cutoff < due:
+        return None
+    return cutoff
+
+
 def _parse_hw_tasks(request):
     """Собрать (tasks, errors, raw_rows) из POST.
     tasks — список словарей {condition, answer, image, remove_image, requires_review}.
@@ -1414,6 +1426,7 @@ def teacher_hw_lesson_new(request, slug):
                 'course': course,
                 'form_data': request.POST,
                 'due_value': (request.POST.get('due_date') or ''),
+                'cutoff_value': (request.POST.get('cutoff_date') or ''),
                 'rows': raw_rows or [{'condition': '', 'answer': '', 'image_url': '', 'requires_review': False}],
                 'is_edit': False,
                 'lesson_intro': '',
@@ -1425,6 +1438,8 @@ def teacher_hw_lesson_new(request, slug):
             content=lesson_intro,
             lesson_type='practice',
             due_date=_parse_due(request.POST.get('due_date')),
+            cutoff_date=_parse_cutoff(request.POST.get('cutoff_date'),
+                                      request.POST.get('due_date')),
         )
         for i, t in enumerate(tasks, 1):
             Assignment.objects.create(
@@ -1484,7 +1499,9 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
         lesson.title = lesson_title
         lesson.content = lesson_intro
         lesson.due_date = _parse_due(request.POST.get('due_date'))
-        lesson.save(update_fields=['title', 'content', 'due_date'])
+        lesson.cutoff_date = _parse_cutoff(request.POST.get('cutoff_date'),
+                                           request.POST.get('due_date'))
+        lesson.save(update_fields=['title', 'content', 'due_date', 'cutoff_date'])
 
         # Diff по стабильному id: задачу с тем же Assignment.id обновляем,
         # новые (без id) создаём, отсутствующие в форме — удаляем. Так прогресс
@@ -1543,6 +1560,7 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
         # Формат для <input type="date"> строго ГГГГ-ММ-ДД, поэтому готовим
         # значение здесь, а не в шаблоне: локализованная дата туда не встанет.
         'due_value': lesson.due_date.isoformat() if lesson.due_date else '',
+        'cutoff_value': lesson.cutoff_date.isoformat() if lesson.cutoff_date else '',
         'lesson_intro': lesson.content,
         'rows': rows,
         'is_edit': True,
@@ -1756,6 +1774,13 @@ def submit_hw_solution(request, assignment_id):
         messages.error(request, 'Вы не записаны на этот курс.')
         return redirect('student_courses')
 
+    # Отсечка. Проверка серверная и это принципиально: спрятать форму мало,
+    # отправку легко повторить в обход страницы.
+    if not assignment.lesson.accepts_submissions():
+        messages.error(request, 'Приём этой домашки закрыт %s.'
+                       % assignment.lesson.cutoff_date.strftime('%d.%m.%Y'))
+        return redirect('student_course_progress', slug=course.slug)
+
     text = (request.POST.get('text') or '').strip()
     file = request.FILES.get('file')
 
@@ -1900,6 +1925,14 @@ def check_hw_answer(request, assignment_id):
             or Enrollment.objects.filter(
                 course=course, student=u, is_active=True).exists())):
         return JsonResponse({'error': 'forbidden'}, status=403)
+
+    # Та же отсечка, что и у развёрнутых решений: тракта приёма два, а
+    # правило одно, и держать его надо в обоих.
+    if not assignment.lesson.accepts_submissions():
+        return JsonResponse(
+            {'error': 'Приём этой домашки закрыт %s.'
+                      % assignment.lesson.cutoff_date.strftime('%d.%m.%Y')},
+            status=400)
 
     user_answer = (request.POST.get('answer') or '').strip()
     if not user_answer:

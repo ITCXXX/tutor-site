@@ -80,6 +80,10 @@ def homework_for(student, limit=None):
             'due': l.due_date,
             'overdue': bool(l.due_date and l.due_date < сегодня),
             'days_left': (l.due_date - сегодня).days if l.due_date else None,
+            # Приём закрыт — работу уже не сдать. Из списка такое НЕ убираем:
+            # ученик должен видеть, что упустил, а не гадать, куда делось.
+            'closed': not l.accepts_submissions(сегодня),
+            'cutoff': l.cutoff_date,
         })
 
     # Сначала просроченные, потом ближайшие по сроку, потом бессрочные.
@@ -109,12 +113,17 @@ def lesson_report(lesson, students):
     ids_задач = [a.id for a in задачи]
     ids_учеников = [s.id for s in students]
 
-    # Кто что сдал.
+    # Кто что сдал и когда. Время нужно, чтобы отличить сданное вовремя от
+    # сданного после срока: в этом и смысл мягкого срока — работу приняли,
+    # но факт опоздания виден.
     сдал = set()
-    for sid, aid in StudentProgress.objects.filter(
+    сдал_поздно = set()
+    for sid, aid, когда in StudentProgress.objects.filter(
             student_id__in=ids_учеников, assignment_id__in=ids_задач,
-            is_completed=True).values_list('student_id', 'assignment_id'):
+            is_completed=True).values_list('student_id', 'assignment_id', 'completed_at'):
         сдал.add((sid, aid))
+        if когда and lesson.is_late(timezone.localtime(когда).date()):
+            сдал_поздно.add((sid, aid))
 
     # Что ждёт проверки.
     ждёт = set()
@@ -139,12 +148,14 @@ def lesson_report(lesson, students):
     for s in students:
         готово = sum(1 for a in задачи if (s.id, a.id) in сдал)
         на_проверке = sum(1 for a in задачи if (s.id, a.id) in ждёт)
+        поздно = sum(1 for a in задачи if (s.id, a.id) in сдал_поздно)
         по_ученикам.append({
             'student': s,
             'done': готово,
             'total': len(задачи),
             'left': len(задачи) - готово,
             'pending': на_проверке,
+            'late': поздно,
             'finished': готово == len(задачи),
             # Просрочка — только у тех, кто ещё не закончил: сдавшему вовремя
             # красная метка ни к чему.

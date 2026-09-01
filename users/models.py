@@ -292,6 +292,27 @@ class Lesson(models.Model):
         'Срок сдачи', null=True, blank=True,
         help_text='Только для курсов с ДЗ. Пусто — без срока.',
     )
+    # Мягкий срок выше говорит «поздно», эта дата говорит «поздно, всё».
+    # После неё сервер работу не принимает вовсе.
+    cutoff_date = models.DateField(
+        'Приём закрыт после', null=True, blank=True,
+        help_text='После этой даты работу уже не принять. Пусто — принимаем и с опозданием.',
+    )
+
+    def accepts_submissions(self, today=None):
+        """Можно ли ещё сдавать. Отсечка включительно: указан день — до
+        конца этого дня принимаем."""
+        if not self.cutoff_date:
+            return True
+        from django.utils import timezone as _tz
+        return (today or _tz.localdate()) <= self.cutoff_date
+
+    def is_late(self, when=None):
+        """Считается ли сдача в этот день опозданием."""
+        if not self.due_date:
+            return False
+        from django.utils import timezone as _tz
+        return (when or _tz.localdate()) > self.due_date
 
     class Meta:
         ordering = ['order']

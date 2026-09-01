@@ -54,12 +54,17 @@
                                     </div>
                                     <div class="text-end flex-shrink-0">
                                         <div class="small">осталось {{ h.left }} из {{ h.total }}</div>
-                                        {% if h.due %}
+                                        {% if h.closed %}
+                                        <div class="small text-danger fw-semibold">приём закрыт</div>
+                                        {% elif h.due %}
                                         <div class="small {% if h.overdue %}text-danger fw-semibold{% else %}text-muted{% endif %}">
                                             {% if h.overdue %}просрочено{% else %}до {{ h.due|date:"j E" }}{% endif %}
                                         </div>
                                         {% else %}
                                         <div class="small text-muted">без срока</div>
+                                        {% endif %}
+                                        {% if h.cutoff and not h.closed %}
+                                        <div class="small text-muted">приём до {{ h.cutoff|date:"j E" }}</div>
                                         {% endif %}
                                     </div>
                                 </div>
