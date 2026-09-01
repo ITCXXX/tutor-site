@@ -31,6 +31,7 @@ urlpatterns = [
     path('sitemap.xml', views_seo.sitemap_xml, name='sitemap_xml'),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
+    path('notifications/', views.notifications_view, name='notifications'),
     path('student/', views.student_dashboard, name='student_dashboard'),
     path('teacher/', views.teacher_dashboard, name='teacher_dashboard'),
     path('teacher/course/<slug:slug>/', views.teacher_course_progress, name='teacher_course_progress'),

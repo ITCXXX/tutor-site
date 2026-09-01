@@ -115,6 +115,14 @@
                     <li class="nav-item"><a class="nav-link" href="{% url 'materials_list' %}">Материалы</a></li>
 
                     {% if user.is_authenticated %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'notifications' %}"
+                               aria-label="Уведомления{% if unread_notifications %}, непрочитанных: {{ unread_notifications }}{% endif %}">
+                                Уведомления{% if unread_notifications %}
+                                <span class="badge rounded-pill bg-danger">{{ unread_notifications }}</span>
+                                {% endif %}
+                            </a>
+                        </li>
                         <li class="nav-item"><a class="nav-link" href="{% url 'board:list' %}">Доска</a></li>
 
                         {% if user.role == 'student' %}

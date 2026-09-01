@@ -88,6 +88,7 @@ INSTALLED_APPS = [
     "users",
     "games",
     "board",
+    "chemlab",
     "quoridor",
 ]
 
@@ -122,6 +123,10 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                # Счётчик непрочитанных уведомлений нужен в шапке на каждой
+                # странице; иначе его пришлось бы класть в контекст руками во
+                # всех вьюхах разом.
+                "users.notifications.badge",
             ],
         },
     },

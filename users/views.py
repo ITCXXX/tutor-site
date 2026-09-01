@@ -11,7 +11,7 @@ from .models import (
     Course, Module, Lesson, Assignment,
     Enrollment, User, StudentProfile, LessonProgress,
     StudentProgress, ManualMark, StudentSubmission, HomeworkAttempt, StudentLink,
-    HomeworkExtension,
+    HomeworkExtension, Notification,
     TestQuestion, AnswerOption, ProblemGenerator, GeneratedProblem,
 )
 from django.http import JsonResponse, HttpResponse, Http404
@@ -21,6 +21,7 @@ from .decorators import student_required, teacher_required
 from .answer_check import check_answer
 from .progress import mark_progress, needed_for
 from .uploads import validate_homework_file
+from .notifications import notify_submitted, notify_reviewed
 from .homework import (homework_for, lesson_report, dates_for,
                        accepts_from)
 from django.db import transaction
@@ -1831,6 +1832,10 @@ def submit_hw_solution(request, assignment_id):
         messages.warning(request, 'Это решение уже принято.')
         return redirect('student_course_progress', slug=course.slug)
 
+    # Новая работа — это первая отправка или новая попытка после возврата.
+    # Правка ещё не прочитанного черновика новой работой не считается.
+    была_новая = (sub is None or sub.status == StudentSubmission.STATUS_REJECTED)
+
     if sub and sub.status == StudentSubmission.STATUS_REJECTED:
         # Работу вернули на доработку — заводим НОВУЮ попытку, а прежнюю
         # оставляем как есть. Раньше здесь текст ученика и комментарий
@@ -1857,6 +1862,12 @@ def submit_hw_solution(request, assignment_id):
     sub.reviewed_at = None
     sub.reviewed_by = None
     sub.save()
+
+    # Сообщаем преподавателю только о НОВОЙ работе, а не о каждой правке
+    # черновика: ученик может поправить текст пять раз подряд, и пять
+    # одинаковых уведомлений — это шум, из-за которого перестают читать все.
+    if была_новая:
+        notify_submitted(sub)
 
     if sub.attempt > 1:
         messages.success(request, 'Отправлено. Это попытка №%d — прежняя сохранена.' % sub.attempt)
@@ -1934,6 +1945,8 @@ def teacher_review_submission(request, sub_id):
         sub.reviewed_at = timezone.now()
         sub.reviewed_by = request.user
         sub.save()
+    if action in ('accept', 'reject'):
+        notify_reviewed(sub)
     return redirect('teacher_submissions')
 
 
@@ -1996,6 +2009,29 @@ def check_hw_answer(request, assignment_id):
     return JsonResponse({
         'correct': is_correct, 'message': message,
         'solved': min(решено, нужно), 'needed': нужно,
+    })
+
+
+@login_required
+def notifications_view(request):
+    """Список уведомлений. Открыл — значит прочитал.
+
+    Помечаем прочитанными ИМЕННО показанные записи, а не все подряд: пока
+    человек читает страницу, могло прийти новое, и гасить его не показав
+    было бы потерей.
+    """
+    показанные = list(Notification.objects.filter(user=request.user)[:100])
+    if request.method == 'POST':
+        Notification.objects.filter(
+            user=request.user, id__in=[n.id for n in показанные], is_read=False,
+        ).update(is_read=True)
+        return redirect('notifications')
+
+    непрочитанных = sum(1 for n in показанные if not n.is_read)
+    return render(request, 'users/notifications.html', {
+        'items': показанные,
+        'unread_here': непрочитанных,
+        'title': 'Уведомления',
     })
 
 

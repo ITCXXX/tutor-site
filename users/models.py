@@ -863,6 +863,40 @@ class StudentProgress(models.Model):
         self.save()
 
 
+class Notification(models.Model):
+    """Уведомление в кабинете. Кому, о чём и куда вести."""
+
+    KIND_SUBMITTED = 'submitted'   # ученик прислал работу — преподавателю
+    KIND_REVIEWED = 'reviewed'     # работу проверили — ученику
+    KIND_CHOICES = [
+        (KIND_SUBMITTED, 'Прислали работу'),
+        (KIND_REVIEWED, 'Работу проверили'),
+    ]
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='notifications',
+        verbose_name='Кому',
+    )
+    kind = models.CharField('Событие', max_length=20, choices=KIND_CHOICES)
+    text = models.CharField('Текст', max_length=300)
+    # Куда ведёт. Храним готовый путь, а не тип с номером: адрес считается в
+    # момент события, когда под рукой и курс, и урок, и роль читателя.
+    url = models.CharField('Ссылка', max_length=500, blank=True)
+    is_read = models.BooleanField('Прочитано', default=False)
+    created_at = models.DateTimeField('Когда', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Уведомление'
+        verbose_name_plural = 'Уведомления'
+        ordering = ['-created_at']
+        # Счётчик непрочитанных считается на КАЖДОЙ странице, поэтому индекс
+        # именно под этот запрос.
+        indexes = [models.Index(fields=['user', 'is_read', '-created_at'])]
+
+    def __str__(self):
+        return f'{self.user.username}: {self.text[:40]}'
+
+
 class HomeworkExtension(models.Model):
     """Личное продление срока по домашке одному ученику.
 
