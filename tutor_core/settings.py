@@ -88,7 +88,6 @@ INSTALLED_APPS = [
     "users",
     "games",
     "board",
-    "chemlab",
     "quoridor",
 ]
 
