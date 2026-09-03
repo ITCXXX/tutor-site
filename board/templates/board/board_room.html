@@ -1091,14 +1091,13 @@
        холст. Иначе обвести слово или клетку таблицы невозможно: нажатие
        достаётся тексту. Кнопки виджетов (Старт, Крутить, ×) остаются живыми,
        чтобы ради них не приходилось переключаться на стрелку. */
-    body.board-draw #widget-layer .tbox,
-    body.board-draw #widget-layer .mtext,
-    body.board-draw #widget-layer .wgt,
-    body.board-draw #widget-layer .wgt-body { pointer-events: none; }
-    body.board-draw #widget-layer .wgt-bar,
-    body.board-draw #widget-layer .wgt-bar *,
-    body.board-draw #widget-layer .wgt-actions,
-    body.board-draw #widget-layer .wgt-actions * { pointer-events: auto; }
+    /* Рисующий инструмент пишет ПОВЕРХ ВСЕГО: пока он активен, весь слой
+       виджетов пропускает нажатия на холст — и текст, и матокна, и полоски с
+       кнопками виджетов, и текст внутри фигур. Прежде кнопки виджета оставались
+       живыми и не давали провести штрих через их угол. Нажать кнопку виджета —
+       вернувшись к стрелке. */
+    body.board-draw #widget-layer,
+    body.board-draw #widget-layer * { pointer-events: none !important; }
     /* Обычный текст — живой HTML-элемент на доске (без картинки/рамок). */
     .tbox { position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: auto; }
     .tbox-edit {

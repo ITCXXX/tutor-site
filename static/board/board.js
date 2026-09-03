@@ -6462,6 +6462,7 @@
 
   const touchPts = new Map();   // pointerId → {x, y} — активные касания на холсте
   let penDown = false;          // перо сейчас на экране
+  let lastPenAt = 0;            // когда перо последний раз касалось — для отсечения ладони после пера
   let lastDownType = 'mouse';   // тип последнего нажатия (перо приходит и как касание)
   let gesture = null;           // идёт жест холста (панорама/щипок), рисованию не мешаем
 
@@ -6490,7 +6491,11 @@
     //
     // Ладонь во время письма пером отсекается выше, проверкой penDown, и это
     // послабление её не касается.
-    if (penMode()) return tool === 'pen' || tool === 'marker';
+    // Только что писали пером → палец сейчас это ладонь (перо ещё рядом).
+    if (Date.now() - lastPenAt < 1200) return true;
+    // Иначе палец РАБОТАЕТ как выбранный инструмент, в том числе рисует. Прежде
+    // здесь пальцу запрещали карандаш/маркер в penMode — теперь пальцем можно
+    // писать; панорама ушла на два пальца и кнопку «Перемещение».
     return false;
   }
 
@@ -6510,7 +6515,7 @@
     penSeen = true;
     try { localStorage.setItem(PEN_SEEN_KEY, '1'); } catch (e) {}
     syncFingerDrawUI();
-    if (!fingerDrawPref) boardHint('Перо распознано: пишите пером, пальцем двигайте доску');
+    if (!fingerDrawPref) boardHint('Перо распознано. Писать можно и пером, и пальцем; доску двигайте двумя пальцами или кнопкой «Перемещение»');
   }
 
   function touchCenter() {
@@ -6582,7 +6587,7 @@
 
   stageEl.addEventListener('pointerdown', (ev) => {
     lastDownType = ev.pointerType || 'mouse';
-    if (stylusEvent(ev)) { lastDownType = 'pen'; markPenSeen(); penDown = true; return; }
+    if (stylusEvent(ev)) { lastDownType = 'pen'; markPenSeen(); penDown = true; lastPenAt = Date.now(); return; }
     if (ev.pointerType !== 'touch') return;
     touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     if (penDown) return;                       // ладонь при письме пером — молчим
@@ -6592,7 +6597,10 @@
     // Один палец в режиме пера или в режиме перемещения: НЕ хватаем доску сразу.
     // Сначала ждём движения — иначе пальцем нельзя ни выбрать объект, ни ткнуть
     // в кнопку на холсте, только возить доску.
-    if (penMode() || panMode) pendingPan = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
+    // Один палец возит доску ТОЛЬКО при включённой кнопке «Перемещение».
+    // Иначе палец делает то, что выбрано (рисует, ставит объект, двигает).
+    // Панорама двумя пальцами — выше, отдельной веткой.
+    if (panMode) pendingPan = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
   }, true);
 
   stageEl.addEventListener('pointermove', (ev) => {
@@ -6609,7 +6617,7 @@
   }, true);
 
   function onPointerGone(ev) {
-    if (ev.pointerType === 'pen') { penDown = false; return; }
+    if (ev.pointerType === 'pen') { penDown = false; lastPenAt = Date.now(); return; }
     if (ev.pointerType !== 'touch') return;
     if (pendingPan && ev.pointerId === pendingPan.id) pendingPan = null;
     touchPts.delete(ev.pointerId);
@@ -11558,6 +11566,7 @@
   const heldKeys = new Set();
   let shiftHeld = false;
   let spaceHeld = false, panBeforeSpace = false;  // пробел — временная панорама
+  let lastVAt = 0;                                // двойное «v» подряд — включить/выключить перемещение
   let panVX = 0, panVY = 0, panRAF = null, lastPanT = 0;
 
   function panDirection() {
@@ -11739,6 +11748,13 @@
       w: 'frame',   b: 'table',
     };
     const k = _L;
+    // Двойное «v» подряд — переключить перемещение доски (кроме английской
+    // раскладки и клавиши M это ещё один способ, привычный по «v = стрелка»).
+    if (k === 'v') {
+      const now = Date.now();
+      if (now - lastVAt < 400) { lastVAt = 0; e.preventDefault(); setPanMode(!panMode); return; }
+      lastVAt = now;
+    }
     if (map[k]) { e.preventDefault(); setTool(map[k]); }
   });
   window.addEventListener('keyup', (e) => {
