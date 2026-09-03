@@ -746,9 +746,9 @@
     .fe-eye.off:hover { color: #6b6b76; }
     #board-topbar .tb-sep { width: 1px; height: 16px; background: #e3e3e8; }
     #pdf-controls {
-        position: fixed; z-index: 44; display: flex; align-items: center; gap: 6px;
+        position: fixed; z-index: 44; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 5px 8px;
-        box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 13px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 13px; max-width: min(480px, calc(100vw - 16px));
     }
     #pdf-controls[hidden] { display: none; }
     #pdf-controls button { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; cursor: pointer; padding: 3px 9px; font-size: 13px; }
@@ -756,6 +756,17 @@
     #pdf-controls #pdf-extract { color: #1f6feb; font-weight: 600; }
     #pdf-page-info { min-width: 46px; text-align: center; color: #6b6b76; font-variant-numeric: tabular-nums; }
     #pdf-controls .tb-sep { width: 1px; height: 16px; background: #e3e3e8; }
+    /* display:contents ЧЕРЕЗ СТИЛЬ, а не через инлайн-атрибут: инлайновый
+       style="display:contents" перебил бы UA-правило [hidden] по специфичности,
+       и .hidden=true на этом элементе визуально не делал бы ничего — тот же
+       баг, что уже был у #dp-pop (атрибут против класса), только на новом месте. */
+    #pdf-extract-row { display: contents; }
+    #pdf-extract-row[hidden] { display: none; }
+    #pdf-page-range {
+        width: 96px; border: 1px solid #d9d9e0; border-radius: 6px; background: #fff;
+        font-size: 13px; padding: 3px 7px; color: #2b2b33;
+    }
+    #pdf-page-range:focus { outline: none; border-color: #7ea1f7; background: #eef3ff; }
     #eraser-panel {
         position: fixed; top: 62px; left: 66px; z-index: 44; display: flex; align-items: center; gap: 8px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 6px 10px;
@@ -1929,8 +1940,12 @@
     <span id="pdf-page-info">1 / 1</span>
     <button id="pdf-next" title="Следующая страница">›</button>
     <span class="tb-sep"></span>
-    <button id="pdf-extract" title="Извлечь текущую страницу как картинку">Извлечь страницу</button>
-    <button id="pdf-extract-all" title="Извлечь все страницы">Все</button>
+    <span id="pdf-extract-row">
+        <button id="pdf-extract" title="Извлечь текущую страницу как картинку">Извлечь страницу</button>
+        <input id="pdf-page-range" type="text" inputmode="numeric" autocomplete="off" placeholder="напр. 1-5, 8" title="Страницы через запятую, диапазон через дефис">
+        <button id="pdf-extract-range" title="Извлечь перечисленные страницы">Список</button>
+        <button id="pdf-extract-all" title="Извлечь все страницы">Все</button>
+    </span>
 </div>
 
 <div id="eraser-panel" hidden>

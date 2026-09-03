@@ -6038,22 +6038,135 @@
       });
     }).catch(() => {});
   }
-  function extractPdfPage(el, page, onDone) {
-    getPdfDoc(el.data.url).then((doc) => doc.getPage(page).then((pg) => {
+  // Извлекает ОДНУ страницу в картинку и кладёт её в (x, y). Промис НИКОГДА
+  // не отклоняется: любой сбой — на разборе документа, на рендере, на PNG,
+  // на загрузке — даёт { error }, а не непойманное отклонение. В старом коде
+  // .catch стоял только на getPdfDoc/getPage: отказ САМОГО РЕНДЕРА и отказ
+  // uploadFile (он вызывался внутри колбэка toBlob, отдельным от него
+  // промисом) не ловились вообще — человек не видел ни картинки, ни ошибки.
+  // Ни подсказки, ни записи в историю здесь нет: и то, и другое решает
+  // вызывающий (одна страница — свои, пакет — один итог на все).
+  function extractPdfPageAt(el, page, x, y) {
+    return getPdfDoc(el.data.url).then((doc) => doc.getPage(page)).then((pg) => {
       const vp = pg.getViewport({ scale: 2 }), cv = document.createElement('canvas');
       cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
-      pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(() => cv.toBlob((blob) => {
-        const file = new File([blob], (el.data.name || 'pdf').replace(/\.pdf$/i, '') + '-стр' + page + '.png', { type: 'image/png' });
-        uploadFile(file).then((res) => {
-          if (!res || !res.url) { boardHint('Ошибка извлечения'); return; }
-          const w = el.data.width, h = el.data.height;
-          const iel = { id: uuid(), type: 'image', z: 0, data: { x: el.data.x + el.data.width + 20, y: el.data.y, width: w, height: h, url: res.url, name: file.name } };
-          upsertNode(iel); send({ action: 'element_add', element: iel }); histAdd(iel); layer.batchDraw();
-          boardHint('Страница ' + page + ' извлечена как картинка');
-          if (onDone) onDone(iel.id);
-        });
-      }, 'image/png'));
-    })).catch(() => boardHint('Ошибка извлечения страницы'));
+      // intent: 'print' — НЕ косметика. Обычный (display) рендер pdf.js гонит
+      // через requestAnimationFrame, а его браузер останавливает во вкладке,
+      // которая не на экране. Пакет на 30 страниц как раз и оставляют идти,
+      // переключившись на другое, — и он замирал бы до возвращения. Холст здесь
+      // невидимый, на экран не идёт, поэтому print-режим (обычные промисы,
+      // без кадров) даёт ту же картинку, но не зависит от видимости вкладки.
+      // Проверено: при замороженных кадрах display висит бесконечно, print
+      // заканчивается за миллисекунды.
+      return pg.render({ canvasContext: cv.getContext('2d'), viewport: vp, intent: 'print' }).promise.then(() => new Promise((resolve) => {
+        cv.toBlob((blob) => {
+          // Освобождаем backing store СРАЗУ после снятия картинки. Раньше холст
+          // жил в замыкании до конца загрузки на сервер — при пачке страниц
+          // именно так планшет исчерпывает память: N холстов по ~8 МБ разом,
+          // а не один.
+          cv.width = 0; cv.height = 0;
+          if (!blob) { resolve({ error: 'не удалось подготовить картинку' }); return; }
+          const file = new File([blob], (el.data.name || 'pdf').replace(/\.pdf$/i, '') + '-стр' + page + '.png', { type: 'image/png' });
+          uploadFile(file).then((res) => {
+            if (!res || !res.url) { resolve({ error: (res && res.error) || 'сервер не принял файл' }); return; }
+            const iel = { id: uuid(), type: 'image', z: 0, data: { x: x, y: y, width: el.data.width, height: el.data.height, url: res.url, name: file.name } };
+            resolve({ iel: iel });
+          }).catch(() => resolve({ error: 'обрыв связи при загрузке' }));
+        }, 'image/png');
+      }));
+    }).catch(() => ({ error: 'не удалось открыть страницу ' + page }));
+  }
+  // Кнопка «Извлечь страницу»: одна страница сама по себе — свои подсказки,
+  // свой шаг отмены (это самостоятельное действие, не часть пакета).
+  function extractPdfPage(el, page) {
+    extractPdfPageAt(el, page, el.data.x + el.data.width + 20, el.data.y).then((r) => {
+      if (r.error) { boardHint('Ошибка извлечения: ' + r.error); return; }
+      upsertNode(r.iel); send({ action: 'element_add', element: r.iel }); histAdd(r.iel); layer.batchDraw();
+      boardHint('Страница ' + page + ' извлечена как картинка');
+    });
+  }
+  // Разбор списка страниц: «1-5, 8, 12-14». Тире всех видов (в том числе то
+  // длинное, что остаётся при вставке из скопированного оглавления) читается
+  // как обычный дефис. «5-1» не ошибка — диапазон просто переворачивается.
+  // Непонятые куски НЕ прерывают разбор — собираются в bad, чтобы итоговое
+  // сообщение назвало их, а не молча выбросило.
+  function parsePageRange(str, maxPage) {
+    const seen = new Set(); const bad = [];
+    String(str || '')
+      .replace(/[\u2010-\u2015\u2212]/g, '-')
+      .split(/[,;]+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .forEach((tok) => {
+        // Пробелы вокруг дефиса («1 - 3» — обычное дело при ручном наборе) —
+        // не ошибка: их и не должно быть видно человеку, который просто
+        // нажал пробел до и после тире.
+        const m = tok.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
+        if (!m) { bad.push(tok); return; }
+        let a = parseInt(m[1], 10), b = m[2] != null ? parseInt(m[2], 10) : a;
+        // Клемп КАЖДОГО конца по отдельности и ДО перестановки: одиночная
+        // страница за пределом документа («99» при 20 страницах) иначе после
+        // клемпа получала бы a=99, b=20 — то есть a>b — и весь кусок молча
+        // терялся бы, не попадая даже в bad.
+        a = Math.max(1, Math.min(maxPage, a)); b = Math.max(1, Math.min(maxPage, b));
+        if (a > b) { const t = a; a = b; b = t; }
+        for (let p = a; p <= b; p++) seen.add(p);
+      });
+    return { pages: Array.from(seen).sort((x, y) => x - y), bad: bad };
+  }
+  // Тот же потолок, что у самой доски (_BOARD_FILES_MAX, board/views.py) —
+  // за один раз больше всё равно не поместится.
+  const PDF_BATCH_MAX = 60;
+  // Извлекает СПИСОК страниц пакетом.
+  //  • Строго ПО ОЧЕРЕДИ — не все сразу: старый код запускал все страницы
+  //    параллельно, и на iPad это ~8 МБ холста × N разом — подвисание или
+  //    перезагрузка вкладки (жалоба «доска зависает»).
+  //  • Кладёт каждую страницу СРАЗУ на своё место в сетке, размер которой
+  //    посчитан от ширины ВИДИМОЙ области (общая сетка автораскладки в 12
+  //    колонок для одинаковых по размеру страниц одного PDF уезжает за
+  //    экран). Второго прохода раскладки нет — а значит нет и второй волны
+  //    element_update всем соседям, и нет второй порции строк в общем
+  //    журнале доски (у него потолок 200 записей на всю доску).
+  //  • Одна запись в истории на весь пакет (histBatch): раньше 20 страниц —
+  //    20 шагов отмены, и «Отменить» после автораскладки сваливало все
+  //    картинки обратно в одну точку, а не убирало их.
+  //  • Одно итоговое сообщение вместо N мигающих одинаковых (boardHint держит
+  //    только одну строку разом, и хуже того — раньше при ЛЮБОЙ неудавшейся
+  //    странице счётчик done никогда не доходил до n, и сетка не строилась
+  //    ВООБЩЕ — все успешные страницы оставались лежать друг на друге).
+  function extractPdfPages(el, pages, badTokens) {
+    if (!pages || !pages.length) return;
+    const requested = pages.length;
+    if (pages.length > PDF_BATCH_MAX) pages = pages.slice(0, PDF_BATCH_MAX);
+    const w = el.data.width, h = el.data.height, gap = arrangeGap;
+    const s = stage.scaleX(), vw = stage.width() / s;
+    const cols = Math.max(1, Math.min(pages.length, Math.floor((vw - 40 / s) / (w + gap)) || 1));
+    const baseX = el.data.x + el.data.width + 20, baseY = el.data.y;
+    const ops = []; let ok = 0, firstError = '';
+    boardHint('Извлечение: 0 из ' + pages.length + '…');
+    function step(i) {
+      if (i >= pages.length) { finish(); return; }
+      const col = i % cols, row = Math.floor(i / cols);
+      extractPdfPageAt(el, pages[i], baseX + col * (w + gap), baseY + row * (h + gap)).then((r) => {
+        if (r.iel) {
+          ok++;
+          upsertNode(r.iel); send({ action: 'element_add', element: r.iel });
+          ops.push({ kind: 'add', el: clone(r.iel) });
+          layer.batchDraw();
+        } else if (!firstError) { firstError = r.error || ''; }
+        boardHint('Извлечение: ' + (i + 1) + ' из ' + pages.length + '…');
+        step(i + 1);
+      });
+    }
+    function finish() {
+      if (ops.length) histBatch(ops);
+      let msg = (ok === pages.length) ? ('Извлечено страниц: ' + ok)
+        : ('Извлечено ' + ok + ' из ' + pages.length + (firstError ? ' — ' + firstError : ''));
+      if (requested > PDF_BATCH_MAX) msg += ' (запрошено ' + requested + ', за раз — не больше ' + PDF_BATCH_MAX + ')';
+      if (badTokens && badTokens.length) msg += '; не понял: ' + badTokens.join(', ');
+      boardHint(msg);
+    }
+    step(0);
   }
   function setPdfPage(el, page) {
     page = Math.max(1, Math.min(el.data.pages || 1, page));
@@ -6071,9 +6184,20 @@
     if (!el) { bar.hidden = true; return; }
     bar.hidden = false;
     const info = document.getElementById('pdf-page-info'); if (info) info.textContent = (el.data.page || 1) + ' / ' + (el.data.pages || 1);
+    // Наблюдателю извлекать нечего — сервер и так откажет (board_upload
+    // требует ROLE_EDITOR), но честнее не показывать кнопку, которая всегда
+    // отвечает ошибкой.
+    const row = document.getElementById('pdf-extract-row');
+    if (row) row.hidden = viewOnly;
     const s = stage.scaleX(), sx = el.data.x * s + stage.x(), sy = el.data.y * s + stage.y() + 56;
-    bar.style.left = Math.max(8, Math.min(window.innerWidth - 300, sx)) + 'px';
-    bar.style.top = Math.max(62, sy - 42) + 'px';
+    // Меряем панель ПО МЕСТУ (offsetWidth/offsetHeight), а не жёстким числом:
+    // с полем списка страниц она стала заметно шире прежнего бюджета в 300px.
+    // Клемп добавлен по ОБЕИМ осям — снизу его не было вовсе. 70 — тот же
+    // потолок, что у соседних плавающих панелей (positionConnPanel), чтобы не
+    // залезать на плашку названия и меню доски.
+    const w = bar.offsetWidth || 300, h = bar.offsetHeight || 40;
+    bar.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, sx)) + 'px';
+    bar.style.top = Math.max(70, Math.min(window.innerHeight - h - 8, sy - 42)) + 'px';
   }
 
   // ── Рисование новых элементов ─────────────────────────────────────────
@@ -11716,7 +11840,24 @@
     on('pdf-prev', () => { const el = selectedPdf(); if (el) setPdfPage(el, (el.data.page || 1) - 1); });
     on('pdf-next', () => { const el = selectedPdf(); if (el) setPdfPage(el, (el.data.page || 1) + 1); });
     on('pdf-extract', () => { const el = selectedPdf(); if (el) extractPdfPage(el, el.data.page || 1); });
-    on('pdf-extract-all', () => { const el = selectedPdf(); if (el) { const n = el.data.pages || 1; const collected = new Array(n).fill(null); let done = 0; for (let p = 1; p <= n; p++) extractPdfPage(el, p, (id) => { collected[p - 1] = id; if (++done === n && n >= 2) autoGridArrange(collected.filter(Boolean)); }); } });
+    on('pdf-extract-all', () => { const el = selectedPdf(); if (el) { const n = el.data.pages || 1; extractPdfPages(el, Array.from({ length: n }, (_, i) => i + 1), []); } });
+    const pdfRangeInput = document.getElementById('pdf-page-range');
+    function pdfExtractFromRange() {
+      const el = selectedPdf(); if (!el || !pdfRangeInput) return;
+      const parsed = parsePageRange(pdfRangeInput.value, el.data.pages || 1);
+      if (!parsed.pages.length) { boardHint(parsed.bad.length ? 'Не понял список страниц: ' + parsed.bad.join(', ') : 'Укажите страницы, например 1-5, 8'); return; }
+      extractPdfPages(el, parsed.pages, parsed.bad);
+    }
+    on('pdf-extract-range', pdfExtractFromRange);
+    if (pdfRangeInput) {
+      pdfRangeInput.addEventListener('focus', () => pdfRangeInput.select());
+      pdfRangeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pdfExtractFromRange(); } });
+    }
+    // Клик по кнопке этой панели не должен оставлять на ней фокус: иначе
+    // следующий Backspace/Delete прилетает доске и удаляет выделенный PDF, а
+    // Пробел бьёт по той же кнопке ещё раз. Приём не новый — ровно так уже
+    // защищены панели текста (строки ~10175, ~3743 этого же файла).
+    document.querySelectorAll('#pdf-controls button').forEach((b) => b.addEventListener('mousedown', (e) => e.preventDefault()));
     // Мои инструменты (макросы).
     function closeMacroFly() { const f = document.querySelector('[data-flyout="macros"]'); if (f) f.classList.remove('open'); }
     on('macro-create', () => { closeMacroFly(); startMacroRecord(); });
