@@ -192,6 +192,54 @@
     }, 180);
   }
 
+  // ── Отсечение невидимого ───────────────────────────────────────────────
+  // Панорама перерисовывала всё содержимое, включая то, что за краем экрана:
+  // 2023 объекта — 21 мс на кадр при бюджете 16.7.
+  let cullingOn = true;
+  const CULL_MARGIN = 200;   // запас в экранных пикселях, чтобы не «выпрыгивало»
+
+  function setNodeShown(n) {
+    if (!n || typeof n.visible !== 'function') return;
+    const хочетПриложение = (n._appVisible !== false);
+    const заКадром = cullingOn && n._culled === true;
+    n.visible(хочетПриложение && !заКадром);
+  }
+
+  // Рамка узла в МИРОВЫХ координатах. Слои не двигаются (двигается сцена),
+  // поэтому она не зависит от панорамы и зума — можно держать в кэше и не
+  // пересчитывать на каждый кадр: пересчёт стоил бы дороже самой отрисовки.
+  function nodeBBox(n) {
+    if (n._bbox) return n._bbox;
+    try { n._bbox = n.getClientRect({ relativeTo: layer, skipShadow: true }); }
+    catch (e) { return null; }
+    return n._bbox;
+  }
+
+  function applyCull() {
+    if (!cullingOn) return;
+    const s = stage.scaleX() || 1;
+    const m = CULL_MARGIN / s;
+    const x0 = -stage.x() / s - m, y0 = -stage.y() / s - m;
+    const x1 = x0 + stage.width() / s + 2 * m, y1 = y0 + stage.height() / s + 2 * m;
+    let менялось = false;
+    nodes.forEach((n) => {
+      const b = nodeBBox(n); if (!b) return;
+      const вне = (b.x > x1 || b.y > y1 || b.x + b.width < x0 || b.y + b.height < y0);
+      if (!!n._culled !== вне) { n._culled = вне; setNodeShown(n); менялось = true; }
+    });
+    if (менялось) layer.batchDraw();
+  }
+
+  // Показать всё и не отсекать: нужно экспорту, который двигает сцену по
+  // плиткам и рисует каждую СИНХРОННО — отсечение к тому моменту отражало бы
+  // предыдущий вид, и часть объектов не попала бы в файл.
+  function setCulling(on) {
+    cullingOn = !!on;
+    if (!cullingOn) nodes.forEach((n) => { n._culled = false; setNodeShown(n); });
+    else applyCull();
+    layer.batchDraw();
+  }
+
   function scheduleViewRedraw() {
     // Вид меняется — значит идёт панорама или зум. Хит-граф на это время не
     // нужен никому, а строится он на каждой перерисовке и стоит столько же,
@@ -200,6 +248,7 @@
     if (viewRAF != null) return;
     viewRAF = requestAnimationFrame(() => {
       viewRAF = null;
+      applyCull();
       redrawGrid();
       repositionCursors();
       positionHandles();
@@ -806,6 +855,8 @@
     if (el.type === 'rect' || el.type === 'ellipse' || el.type === 'shape') syncShapeText(el); // текст внутри фигуры
     // Объект мог сдвинуть или изменить ДРУГОЙ участник — якоря у выделенного
     // должны переехать и в этом случае (а ещё при отмене и повторе действия).
+    // Объект изменился — прежняя рамка больше не годится для отсечения.
+    if (node) { node._bbox = null; node._culled = false; }
     if (typeof renderAnchors === 'function' && selected.has(el.id)) renderAnchors();
     // Во время рисования трогаем только лёгкий слой. Разница не косметическая:
     // без этого стоимость каждой точки росла вместе с числом чужих объектов.
@@ -2104,7 +2155,11 @@
       wi.wrapper.style.opacity = (hid && revealHidden) ? '0.3' : '';
     }
     const n = nodes.get(el.id); if (!n || typeof n.visible !== 'function') return;
-    n.visible(!hid || revealHidden);
+    // Чего хочет ПРИЛОЖЕНИЕ. Отдельно от того, попал ли объект в кадр:
+    // если писать обе причины в один visible(), они затрут друг друга —
+    // скрытый объект проявится при подъезде, а показанный пропадёт.
+    n._appVisible = (!hid || revealHidden);
+    setNodeShown(n);
     const baseOp = (el.data && el.data.marker) ? (el.data.opacity != null ? el.data.opacity : 0.4) : 1; // маркер — полупрозрачный, не затирать
     if (typeof n.opacity === 'function') n.opacity(hid && revealHidden ? 0.3 : baseOp);
     if (typeof n.listening === 'function') n.listening(!(hid && !revealHidden));
@@ -12257,8 +12312,16 @@
     const selBox = (mode === 'selection') ? pdfNodesBBox(selIds) : null;
     if (mode === 'selection' && !selBox) { boardHint('Не удалось определить область выделения'); return; }
     _exporting = true; boardHint('Готовлю PDF…');
+    // Экспорт рисует плитки синхронно — отсечение на это время выключаем,
+    // иначе в плитку не попало бы то, что было за краем ПРЕДЫДУЩЕГО вида.
+    setCulling(false);
     const save = { x: stage.x(), y: stage.y(), s: stage.scaleX() };
-    const restore = () => { stage.scale({ x: save.s, y: save.s }); stage.position({ x: save.x, y: save.y }); redrawGrid(); repositionWidgets(); layer.batchDraw(); };
+    const restore = () => {
+      stage.scale({ x: save.s, y: save.s }); stage.position({ x: save.x, y: save.y });
+      redrawGrid(); repositionWidgets();
+      setCulling(true);          // обязательно: иначе доска осталась бы без отсечения
+      layer.batchDraw();
+    };
     clearSelection(); if (handlesGroup && handlesGroup.visible()) handlesGroup.hide(); if (connHandles && connHandles.visible()) connHandles.hide(); tr.nodes([]);
     const ref = { pdf: null };
     try {
