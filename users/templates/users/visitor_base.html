@@ -101,7 +101,9 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <!-- Навигационная панель -->
+    <!-- Навигационная панель. В блоке, чтобы отдельные страницы (доска) могли
+         её убрать, не затрагивая остальные. -->
+    {% block navbar %}
     <nav class="navbar navbar-expand-lg navbar-dark fixed-top" style="background: var(--gradient-nav);">
         <div class="container">
             <a class="navbar-brand" href="{% url 'home' %}">Иван Зенченко</a>
@@ -143,6 +145,7 @@
             </div>
         </div>
     </nav>
+    {% endblock %}
 
     <!-- Flash-сообщения (Django messages framework) -->
     {% if messages %}

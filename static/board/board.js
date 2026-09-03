@@ -14,6 +14,10 @@
   const stageEl = document.getElementById('board-stage');
   const cursorLayerEl = document.getElementById('cursor-layer');
   const frameExitBtn = document.getElementById('frame-exit-btn');
+  // Верх контейнера холста в окне. Был 56 (высота навбара над холстом); навбар
+  // на странице доски убран, холст идёт от самого верха — 0. Единая точка правды
+  // для перевода координат окна → экранные (раньше «56» было зашито в 8 местах).
+  const STAGE_TOP = 0;
 
   // ── Konva: сцена и слой ───────────────────────────────────────────────
   const stage = new Konva.Stage({
@@ -1861,7 +1865,7 @@
     }
     const s = stage.scaleX();
     const left = (d.x || 0) * s + stage.x();
-    const top = (d.y || 0) * s + stage.y() + 56;
+    const top = (d.y || 0) * s + stage.y() + STAGE_TOP;
     bar.style.left = Math.max(8, Math.min(left, window.innerWidth - 380)) + 'px';
     bar.style.top = Math.max(64, top - bar.offsetHeight - 10) + 'px';
   }
@@ -6208,7 +6212,7 @@
     // отвечает ошибкой.
     const row = document.getElementById('pdf-extract-row');
     if (row) row.hidden = viewOnly;
-    const s = stage.scaleX(), sx = el.data.x * s + stage.x(), sy = el.data.y * s + stage.y() + 56;
+    const s = stage.scaleX(), sx = el.data.x * s + stage.x(), sy = el.data.y * s + stage.y() + STAGE_TOP;
     // Меряем панель ПО МЕСТУ (offsetWidth/offsetHeight), а не жёстким числом:
     // с полем списка страниц она стала заметно шире прежнего бюджета в 300px.
     // Клемп добавлен по ОБЕИМ осям — снизу его не было вовсе. 70 — тот же
@@ -8169,13 +8173,13 @@
   function positionFuncEditor(fr) {
     const s = stage.scaleX();
     const winLeft = fr.data.x * s + stage.x();
-    const winTop = fr.data.y * s + stage.y() + 56; // 56 — высота навбара над холстом
+    const winTop = fr.data.y * s + stage.y() + STAGE_TOP; // 56 — высота навбара над холстом
     const winH = fr.data.height * s, W = 240;
     // Панель слева от окна, в полную его высоту; если слева не влезает — справа.
     let left = winLeft - W - 10;
     if (left < 8) left = winLeft + fr.data.width * s + 10;
     funcEditor.style.left = left + 'px';
-    funcEditor.style.top = Math.max(62, winTop) + 'px';
+    funcEditor.style.top = Math.max(STAGE_TOP + 6, winTop) + 'px';
     funcEditor.style.height = Math.max(120, winH) + 'px';
   }
   // ── Выход из окна на весь экран ────────────────────────────────────────
@@ -8185,7 +8189,7 @@
   // показывая окно целиком.
   function frameScreenRect(fr) {
     const s = stage.scaleX();
-    return { left: fr.data.x * s + stage.x(), top: fr.data.y * s + stage.y() + 56, w: fr.data.width * s, h: fr.data.height * s };
+    return { left: fr.data.x * s + stage.x(), top: fr.data.y * s + stage.y() + STAGE_TOP, w: fr.data.width * s, h: fr.data.height * s };
   }
   function updateFrameExitBtn() {
     if (!frameExitBtn) return;
@@ -8194,14 +8198,14 @@
     if (fr && fr.type === 'frame') {
       const r = frameScreenRect(fr), vw = window.innerWidth, vh = window.innerHeight;
       const visW = Math.min(r.left + r.w, vw) - Math.max(r.left, 0);
-      const visH = Math.min(r.top + r.h, vh) - Math.max(r.top, 56);
-      const cov = (Math.max(0, visW) * Math.max(0, visH)) / (vw * Math.max(1, vh - 56));
+      const visH = Math.min(r.top + r.h, vh) - Math.max(r.top, STAGE_TOP);
+      const cov = (Math.max(0, visW) * Math.max(0, visH)) / (vw * Math.max(1, vh - STAGE_TOP));
       show = cov > 0.65; // окно закрывает ≳2/3 холста — легко «застрять» внутри
     }
     frameExitBtn.hidden = !show;
   }
   function fitFrameToView(fr, frac) {
-    const vw = window.innerWidth, vh = window.innerHeight - 56;
+    const vw = window.innerWidth, vh = window.innerHeight - STAGE_TOP;
     const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
       Math.min(frac * vw / Math.max(1, fr.data.width), frac * vh / Math.max(1, fr.data.height))));
     stage.scale({ x: target, y: target });
@@ -8973,7 +8977,7 @@
   function positionStoryboard(fr) {
     const s = stage.scaleX();
     const sx = fr.data.x * s + stage.x();
-    const sy = (fr.data.y + fr.data.height) * s + stage.y() + 56 + 8; // сразу под окном
+    const sy = (fr.data.y + fr.data.height) * s + stage.y() + STAGE_TOP + 8; // сразу под окном
     storyboardEl.style.left = Math.max(8, Math.min(window.innerWidth - 360, sx)) + 'px';
     storyboardEl.style.top = sy + 'px';
   }
@@ -10193,7 +10197,7 @@
     latexInsertPos = worldPoint();
     const p = stage.getPointerPosition();
     // Координаты экрана: контейнер сцены начинается на 56px ниже навбара.
-    let left = p.x + 14, top = p.y + 56 + 14;
+    let left = p.x + 14, top = p.y + STAGE_TOP + 14;
     left = Math.min(left, window.innerWidth - 340);
     latexEditor.style.left = left + 'px';
     latexEditor.style.top = top + 'px';

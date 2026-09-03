@@ -2,12 +2,16 @@
 {% load static %}
 {% block title %}{{ board.title|default:"Доска" }} — Иван Зенченко{% endblock %}
 
+{# Доска занимает весь экран: сайтовый навбар (фиолетовая плашка) не нужен —
+   назад ведёт кнопка-домик в плашке названия. #}
+{% block navbar %}{% endblock %}
+
 {% block extra_css %}
 <style>
     /* Холст занимает весь экран ниже навбара. */
     #board-stage {
         position: fixed;
-        top: 56px; left: 0; right: 0; bottom: 0;
+        top: 0; left: 0; right: 0; bottom: 0;
         background: #fbfbfd;
         overflow: hidden;
         cursor: crosshair;
@@ -24,7 +28,7 @@
     #board-toolbar {
         position: fixed;
         /* Ниже плашки названия (она кончается на 112) с зазором. */
-        top: 124px; left: 16px;
+        top: 68px; left: 16px;
         z-index: 30;
         display: flex; flex-direction: column; gap: 6px;
         background: #fff;
@@ -217,7 +221,7 @@
 
     /* Кнопка настроек справа сверху + панель настроек точки. */
     #settings-btn {
-        position: fixed; top: 108px; right: 16px; z-index: 30;
+        position: fixed; top: 52px; right: 16px; z-index: 30;
         width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
         background: #fff; border: 1px solid #e3e3e8; color: #3a3a42;
         box-shadow: 0 4px 14px rgba(0,0,0,.08);
@@ -226,7 +230,7 @@
     #settings-btn:hover { background: #f2f2f6; }
     #settings-btn svg { width: 20px; height: 20px; }
     .settings-panel {
-        position: fixed; top: 108px; right: 66px; z-index: 47;
+        position: fixed; top: 52px; right: 66px; z-index: 47;
         width: 250px; padding: 14px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 12px;
         box-shadow: 0 10px 30px rgba(0,0,0,.16); font-family: sans-serif;
@@ -402,7 +406,7 @@
     #voice-btn { cursor: pointer; border: 1px solid #d9d9e0; background: #f0f0f4; color: #3a3a42; border-radius: 6px; padding: 2px 8px; font-size: 13px; }
     #voice-btn:hover { background: #e4e8f5; }
     #voice-btn.on { background: #e6f7ee; border-color: #2ec07c; color: #1f8f5b; }
-    #voice-panel { position: fixed; top: 104px; right: 16px; z-index: 60; width: 250px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    #voice-panel { position: fixed; top: 48px; right: 16px; z-index: 60; width: 250px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
     #voice-panel[hidden] { display: none; }
     .vp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
     .vp-title { font-weight: 600; color: #2b2b33; flex: 1; }
@@ -453,7 +457,7 @@
 
     /* Якоря для соединительных стрелок. Слой сквозной — ловят нажатия только
        сами точки, всё остальное проходит на холст. */
-    #anchor-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 26; overflow: hidden; }
+    #anchor-layer { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 26; overflow: hidden; }
     #anchor-layer .anch {
         position: absolute; display: none; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
         border-radius: 50%; background: #fff; border: 2px solid #4d7cfe;
@@ -598,7 +602,7 @@
     /* Верхняя плашка: код доски + статус связи + участники. */
     #board-topbar {
         position: fixed;
-        top: 64px; right: 16px;
+        top: 8px; right: 16px;
         z-index: 30;
         display: flex; align-items: center; gap: 12px;
         background: #fff;
@@ -633,7 +637,7 @@
     /* Название доски + меню (три точки), слева сверху над инструментами. */
     /* Высота плашки задана отступами вокруг кнопки меню: та выросла до 30px,
        и при прежних 4px по краям занимала три четверти плашки — тесно и криво. */
-    #board-head { position: fixed; top: 64px; left: 16px; z-index: 31; display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; padding: 8px 9px 8px 16px; box-shadow: 0 4px 16px rgba(0,0,0,.08); max-width: 320px; }
+    #board-head { position: fixed; top: 8px; left: 16px; z-index: 31; display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; padding: 6px 9px 6px 8px; box-shadow: 0 4px 16px rgba(0,0,0,.08); max-width: 320px; }
     #board-title { font-weight: 600; font-size: 16px; color: #2b2b33; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #board-title.editing { outline: 1.5px solid #4d7cfe; border-radius: 5px; padding: 0 5px; background: #fff; overflow: visible; cursor: text; }
     #conn-banner {
@@ -643,6 +647,9 @@
     }
     /* Три точки: раньше были бледно-серые и величиной с ноготь — на планшете
        их попросту не находили. Теперь контрастнее и крупнее. */
+    #board-home { display: flex; align-items: center; justify-content: center; border-radius: 8px; padding: 5px; color: #4a4a55; text-decoration: none; background: #f2f3f7; flex: none; }
+    #board-home:hover { background: #e7efff; color: #2b5bd7; }
+    #board-home svg { width: 20px; height: 20px; }
     #board-menu-btn { border: none; background: #f2f3f7; color: #4a4a55; cursor: pointer; border-radius: 7px; padding: 5px; display: flex; }
     #board-menu-btn svg { width: 20px; height: 20px; }
     #board-menu-btn:hover { background: #eef1f7; color: #2b2b33; }
@@ -650,7 +657,7 @@
     /* max-height + прокрутка: меню длинное, и на невысоком экране планшета
        нижняя половина (экспорт, история, удаление доски) просто уходила за
        край без всякой возможности до неё добраться. */
-    #board-menu { position: fixed; top: 118px; left: 16px; z-index: 60; width: 250px; max-height: calc(100vh - 132px); overflow-y: auto;
+    #board-menu { position: fixed; top: 62px; left: 16px; z-index: 60; width: 250px; max-height: calc(100vh - 76px); overflow-y: auto;
         background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
     #board-menu[hidden] { display: none; }
     .bm-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #9a9aa4; margin: 2px 0 6px; }
@@ -662,7 +669,7 @@
     .bm-item:hover { background: #eef1f7; }
     .bm-item.danger { color: #d63030; }
     .bm-item.danger:hover { background: #fdecec; }
-    #history-panel { position: fixed; top: 118px; left: 280px; z-index: 60; width: 260px; max-height: 60vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    #history-panel { position: fixed; top: 62px; left: 280px; z-index: 60; width: 260px; max-height: 60vh; display: flex; flex-direction: column; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
     #history-panel[hidden] { display: none; }
     .bm-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: #2b2b33; margin-bottom: 6px; }
     .bm-head button { border: none; background: transparent; font-size: 18px; line-height: 1; color: #9a9aa4; cursor: pointer; }
@@ -694,7 +701,7 @@
     #role-badge.viewer { background: #fff2d6; color: #9a6b12; }
     /* 106px — ниже верхней плашки (она занимает 64..98). На 44px панель
        заезжала под шапку сайта, и её собственный заголовок был не виден. */
-    #people-panel { position: fixed; top: 106px; right: 12px; z-index: 60; width: 292px; max-height: calc(100vh - 60px); overflow-y: auto;
+    #people-panel { position: fixed; top: 50px; right: 12px; z-index: 60; width: 292px; max-height: calc(100vh - 60px); overflow-y: auto;
         background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px 12px; font-size: 13px; }
     #people-panel[hidden] { display: none; }
     #people-panel .ap-title { font-weight: 600; color: #2b2b33; margin: 10px 0 6px; }
@@ -768,7 +775,7 @@
     }
     #pdf-page-range:focus { outline: none; border-color: #7ea1f7; background: #eef3ff; }
     #eraser-panel {
-        position: fixed; top: 62px; left: 66px; z-index: 44; display: flex; align-items: center; gap: 8px;
+        position: fixed; top: 6px; left: 66px; z-index: 44; display: flex; align-items: center; gap: 8px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 10px; padding: 6px 10px;
         box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 13px;
     }
@@ -1077,7 +1084,7 @@
     #zoom-percent:focus { outline: none; background: #eef3ff; }
 
     /* Слой виджетов (таблица/канбан/таймер/колесо). */
-    #widget-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 23; overflow: hidden; }
+    #widget-layer { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 23; overflow: hidden; }
     /* На время протяжки рамки выделения DOM-объекты «прозрачны» для мыши. */
     #widget-layer.marquee-thru, #widget-layer.marquee-thru * { pointer-events: none !important; }
     /* Инструмент рисования в руке — текст и тела виджетов пропускают штрих на
@@ -1297,7 +1304,7 @@
 
         /* Верхняя плашка: на узком экране в строку влезают только связь и код.
            Остальные кнопки продублированы в листе, разделом «Занятие». */
-        #board-topbar { top: 60px; right: 8px; gap: 8px; padding: 5px 11px; font-size: 13px; }
+        #board-topbar { top: 4px; right: 8px; gap: 8px; padding: 5px 11px; font-size: 13px; }
         /* «Участники» на планшете НЕ прячем: вести и следовать нужны именно
            там, а раньше все три кнопки занятия исчезали с узкого экрана. */
         #board-topbar .tb-sep, #board-topbar #import-btn,
@@ -1306,9 +1313,9 @@
         /* Плашка названия и верхняя плашка стоят в одной строке и делят её
            ширину. 42vw хватало прежней узкой плашке; выросшая налезала на
            соседку — на телефоне ровно на три пикселя. */
-        #board-head { top: 60px; left: 8px; max-width: 36vw; padding: 7px 7px 7px 12px; }
+        #board-head { top: 4px; left: 8px; max-width: 36vw; padding: 7px 7px 7px 12px; }
         #board-title { font-size: 15px; }
-        #settings-btn { top: 106px; right: 8px; }
+        #settings-btn { top: 50px; right: 8px; }
         #zoom-control { bottom: 14px; right: 12px; }
         /* Всплывающие панели не должны вылезать за край экрана. */
         #board-menu, #history-panel, #people-panel, #voice-panel, .settings-panel, .conn-panel, #color-palette {
@@ -1317,11 +1324,11 @@
         #history-panel { left: 8px; }
         /* Меню доски на планшете начинается ниже (плашка сдвинута) и должно
            умещаться до низа экрана. */
-        #board-menu { top: 114px; max-height: calc(100vh - 126px); }
-        #history-panel { top: 114px; max-height: calc(100vh - 126px); }
+        #board-menu { top: 58px; max-height: calc(100vh - 70px); }
+        #history-panel { top: 58px; max-height: calc(100vh - 70px); }
         #board-menu-btn { padding: 7px; }
         #board-menu-btn svg { width: 22px; height: 22px; }
-        #people-panel { top: 106px; right: 8px; max-height: calc(100vh - 118px); }
+        #people-panel { top: 50px; right: 8px; max-height: calc(100vh - 62px); }
         #board-menu { left: 8px; }
         /* Крупнее цели для пальца в меню. */
         .bm-item { padding: 10px 8px; font-size: 14px; }
@@ -1763,6 +1770,9 @@
     <span id="peers" class="text-muted"></span>
 </div>
 <div id="board-head">
+    <a id="board-home" href="{% url 'board:list' %}" title="К списку досок" aria-label="К списку досок">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/></svg>
+    </a>
     <span id="board-title" data-title="{{ board.title }}" title="{{ board.title|default:'Доска' }}">{{ board.title|default:'Доска' }}</span>
     <button id="board-menu-btn" title="Настройки доски" aria-label="Настройки доски">
         <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
