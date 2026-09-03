@@ -5058,34 +5058,132 @@
     syncFrameSoon(el.id);
   }
 
+  // ── Математические функции: ОДНА таблица на все разборщики ─────────────
+  // Их было ЧЕТЫРЕ копии: у графика y=f(x), у неявного уравнения, у числовых
+  // выражений и отдельный список имён FUNC_NAMES. И они успели разойтись —
+  // floor и min понимались в числовых выражениях и не понимались в графике.
+  // Четвёртая опаснее всех: список имён решает, что считать параметром-
+  // ползунком, и имя, забытое в нём, завело бы в окне фантомный ползунок
+  // «sec» вместо вызова секанса. Поэтому таблица одна, а список из неё выводится.
+  function _факториал(n) {
+    n = Math.round(n);
+    if (!isFinite(n) || n < 0 || n > 170) return NaN; // 171! уже за пределом double
+    let r = 1; for (let i = 2; i <= n; i++) r *= i; return r;
+  }
+  const MATH_FN1 = {
+    sin: Math.sin, cos: Math.cos, tan: Math.tan, tg: Math.tan,
+    asin: Math.asin, acos: Math.acos, atan: Math.atan,
+    arcsin: Math.asin, arccos: Math.acos, arctg: Math.atan,
+    // Обратные тригонометрические: в задачах встречаются, а их не было вовсе.
+    cot: (v) => 1 / Math.tan(v), ctg: (v) => 1 / Math.tan(v),
+    sec: (v) => 1 / Math.cos(v), csc: (v) => 1 / Math.sin(v),
+    acot: (v) => Math.PI / 2 - Math.atan(v), asec: (v) => Math.acos(1 / v), acsc: (v) => Math.asin(1 / v),
+    sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+    coth: (v) => 1 / Math.tanh(v), sech: (v) => 1 / Math.cosh(v), csch: (v) => 1 / Math.sinh(v),
+    asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
+    sqrt: Math.sqrt, cbrt: Math.cbrt, abs: Math.abs, exp: Math.exp,
+    ln: Math.log,
+    // log — ДЕСЯТИЧНЫЙ. Был натуральным: log(100) давало 4.6 вместо 2, хотя
+    // этого ждут и Десмос, и школьная запись. Натуральный логарифм — это ln.
+    log: (v) => Math.log10(v), lg: (v) => Math.log10(v), log2: (v) => Math.log2(v),
+    floor: Math.floor, ceil: Math.ceil, round: (v) => Math.round(v),
+    trunc: Math.trunc, sign: Math.sign, sgn: Math.sign,
+    factorial: _факториал,
+  };
+  const MATH_FN2 = {
+    pow: Math.pow, atan2: Math.atan2,
+    // Остаток по МАТЕМАТИЧЕСКОМУ правилу: mod(-1, 3) = 2, а не −1, как даёт «%».
+    mod: (a, b) => ((a % b) + b) % b,
+    // Логарифм по основанию: log(2, 8) = 3. Имя то же, что у десятичного, —
+    // какой из двух брать, решает число аргументов.
+    log: (b, v) => Math.log(v) / Math.log(b),
+    // Корень n-й степени. Для нечётной степени отрицательное число законно:
+    // Math.pow(-8, 1/3) даёт NaN, а корень равен −2.
+    nthroot: (n, v) => (v < 0 && Math.abs(Math.round(n) % 2) === 1) ? -Math.pow(-v, 1 / n) : Math.pow(v, 1 / n),
+    nCr: (n, k) => _факториал(n) / (_факториал(k) * _факториал(n - k)),
+    nPr: (n, k) => _факториал(n) / _факториал(n - k),
+  };
+  // Любое число аргументов, как в Десмосе: min(1, 2, 3).
+  const MATH_FNN = {
+    min: (a, b) => Math.min(a, b), max: (a, b) => Math.max(a, b),
+    gcd: (a, b) => { a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b)); while (b) { const t = b; b = a % b; a = t; } return a; },
+    lcm: (a, b) => { const g = MATH_FNN.gcd(a, b); return g ? Math.abs(Math.round(a) * Math.round(b)) / g : 0; },
+  };
+  const MATH_CONST = { pi: Math.PI, e: Math.E, tau: 2 * Math.PI };
+
+  function isMathName(n) { return (n in MATH_FN1) || (n in MATH_FN2) || (n in MATH_FNN); }
+  // Как вызвать функцию с таким числом аргументов. null — такого сочетания нет
+  // (скажем, sin с двумя аргументами): разборщик тогда откажется от формулы.
+  function mathApply(name, k) {
+    if (k === 1 && (name in MATH_FN1)) { const f = MATH_FN1[name]; return (a) => f(a[0]); }
+    if (k === 2 && (name in MATH_FN2)) { const f = MATH_FN2[name]; return (a) => f(a[0], a[1]); }
+    if (k >= 1 && (name in MATH_FNN)) { const f = MATH_FNN[name]; return (a) => a.reduce((p, v) => f(p, v)); }
+    return null;
+  }
+  // Дочитать цифры в конце имени: log2, atan2. Только если получается известная
+  // функция И дальше скобка — иначе «x2» стало бы именем, а не «x·2».
+  function eatFnDigits(str, pos, name) {
+    if (!/[0-9]/.test(str[pos] || '')) return { name: name, pos: pos };
+    let j = pos, d = '';
+    while (j < str.length && /[0-9]/.test(str[j])) d += str[j++];
+    if (isMathName(name + d) && str[j] === '(') return { name: name + d, pos: j };
+    return { name: name, pos: pos };
+  }
+
   // ── Функции y=f(x) внутри окна ─────────────────────────────────────────
   // График — дочерний Konva.Shape окна (обрезается его clip). Сэмплируем по x
   // в координатах окна, рисуем ломаную с разрывами на асимптотах.
   const FUNC_COLORS = ['#1f6feb', '#e7505a', '#27ae60', '#8e44ad', '#e67e22', '#16a2b8'];
 
-  // Компилирует выражение от x в функцию (или null). Поддержка: + - * / ^,
-  // скобки, неявное умножение (2x, (x+1)(x-1)), sin/cos/tan/sqrt/abs/exp/ln/
-  // log/lg/asin.../sinh.../cot, константы pi, e.
+  // Компилирует выражение от x в функцию (или null). Синтаксис: + - * / ^,
+  // скобки, неявное умножение (2x, (x+1)(x-1)), постфиксный факториал (5!),
+  // модуль чертами (|x-1|), несколько аргументов через запятую (log(2,8)).
+  // Набор самих функций и констант — в таблицах MATH_FN1/MATH_FN2/MATH_FNN
+  // выше; перечислять их ещё и здесь значило бы завести пятую копию списка.
   function compileFunc(src) {
     let s = String(src).replace(/\s+/g, '').replace(/^y=/i, '').replace(/^f\(x\)=/i, '');
     if (!s) return null;
     let pos = 0; const peek = () => s[pos];
-    const FUNCS = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, lg: (v) => Math.log(v) / Math.LN10, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, cot: (v) => 1 / Math.tan(v) };
-    const CONSTS = { pi: Math.PI, e: Math.E };
+    const CONSTS = MATH_CONST;
+    // Глубина вложенности модульных черт |…|. Без неё закрывающая черта была бы
+    // принята за начало новой группы, и «|x|» не разобралось бы вовсе.
+    let bars = 0;
     // Каждый узел — функция (x, env): env — значения ползунков-параметров {имя:знач}.
     function parseExpr() { let f = parseTerm(); while (peek() === '+' || peek() === '-') { const op = s[pos++]; const g = parseTerm(); const ff = f; f = (op === '+') ? (x, e) => ff(x, e) + g(x, e) : (x, e) => ff(x, e) - g(x, e); } return f; }
-    function parseTerm() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(); const ff = f; f = (c === '*') ? (x, e) => ff(x, e) * g(x, e) : (x, e) => ff(x, e) / g(x, e); } else if (c && /[0-9.a-zA-Z(]/.test(c)) { const g = parseFactor(); const ff = f; f = (x, e) => ff(x, e) * g(x, e); } else break; } return f; }
+    function parseTerm() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(); const ff = f; f = (c === '*') ? (x, e) => ff(x, e) * g(x, e) : (x, e) => ff(x, e) / g(x, e); } else if (c && (/[0-9.a-zA-Z(]/.test(c) || (c === '|' && bars === 0))) { const g = parseFactor(); const ff = f; f = (x, e) => ff(x, e) * g(x, e); } else break; } return f; }
     function parseUnary() { const c = peek(); if (c === '-') { pos++; const g = parseUnary(); return (x, e) => -g(x, e); } if (c === '+') { pos++; return parseUnary(); } return parseFactor(); }
-    function parseFactor() { let f = parseBase(); if (peek() === '^') { pos++; const g = parseUnary(); const ff = f; f = (x, e) => Math.pow(ff(x, e), g(x, e)); } return f; }
+    function parseFactor() {
+      let f = parseBase();
+      // Постфиксный факториал: 5! = 120.
+      while (peek() === '!') { pos++; const ff = f; f = (x, e) => _факториал(ff(x, e)); }
+      if (peek() === '^') { pos++; const g = parseUnary(); const ff = f; f = (x, e) => Math.pow(ff(x, e), g(x, e)); }
+      return f;
+    }
+    // Список аргументов в скобках. Раньше читался ровно ОДИН, и запятая ломала
+    // разбор — поэтому min, mod и логарифм по основанию были недоступны.
+    function parseArgs() {
+      pos++; const args = [parseExpr()];
+      while (peek() === ',') { pos++; args.push(parseExpr()); }
+      if (peek() === ')') pos++; else throw 0;
+      return args;
+    }
     function parseBase() {
       const c = peek();
       if (c === '(') { pos++; const f = parseExpr(); if (peek() === ')') pos++; else throw 0; return f; }
       if (/[0-9.]/.test(c)) { let n = ''; while (pos < s.length && /[0-9.]/.test(s[pos])) n += s[pos++]; const v = parseFloat(n); return () => v; }
+      // Модуль чертами: |x − 1|. Так его и пишут в школе.
+      if (c === '|') { pos++; bars++; const f = parseExpr(); bars--; if (peek() === '|') pos++; else throw 0; return (x, e) => Math.abs(f(x, e)); }
       if (/[a-zA-Z]/.test(c)) {
         let name = ''; while (pos < s.length && /[a-zA-Z]/.test(s[pos])) name += s[pos++];
+        const d = eatFnDigits(s, pos, name); name = d.name; pos = d.pos;
         if (name === 'x') return (x) => x;
         if (name in CONSTS) { const v = CONSTS[name]; return () => v; }
-        if (name in FUNCS) { if (peek() === '(') { pos++; const arg = parseExpr(); if (peek() === ')') pos++; else throw 0; const fn = FUNCS[name]; return (x, e) => fn(arg(x, e)); } throw 0; }
+        if (isMathName(name)) {
+          if (peek() !== '(') throw 0;
+          const args = parseArgs(), call = mathApply(name, args.length);
+          if (!call) throw 0;
+          return (x, e) => call(args.map((a) => a(x, e)));
+        }
         return (x, e) => (e && name in e) ? e[name] : NaN; // неизвестное имя — параметр-ползунок
       }
       throw 0;
@@ -5102,24 +5200,42 @@
     const eq = s.indexOf('=');
     const lhs = eq >= 0 ? s.slice(0, eq) : s;
     const rhs = eq >= 0 ? s.slice(eq + 1) : '0';
-    const FUNCS = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, lg: (v) => Math.log(v) / Math.LN10, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, cot: (v) => 1 / Math.tan(v) };
-    const CONSTS = { pi: Math.PI, e: Math.E };
+    const CONSTS = MATH_CONST;
     function build(str) {
       let pos = 0; const peek = () => str[pos];
+      let bars = 0; // см. пояснение к чертам модуля в compileFunc
       function parseExpr() { let f = parseTerm(); while (peek() === '+' || peek() === '-') { const op = str[pos++]; const g = parseTerm(); const ff = f; f = (op === '+') ? (x, y, e) => ff(x, y, e) + g(x, y, e) : (x, y, e) => ff(x, y, e) - g(x, y, e); } return f; }
-      function parseTerm() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(); const ff = f; f = (c === '*') ? (x, y, e) => ff(x, y, e) * g(x, y, e) : (x, y, e) => ff(x, y, e) / g(x, y, e); } else if (c && /[0-9.a-zA-Z(]/.test(c)) { const g = parseFactor(); const ff = f; f = (x, y, e) => ff(x, y, e) * g(x, y, e); } else break; } return f; }
+      function parseTerm() { let f = parseUnary(); while (true) { const c = peek(); if (c === '*' || c === '/') { pos++; const g = parseUnary(); const ff = f; f = (c === '*') ? (x, y, e) => ff(x, y, e) * g(x, y, e) : (x, y, e) => ff(x, y, e) / g(x, y, e); } else if (c && (/[0-9.a-zA-Z(]/.test(c) || (c === '|' && bars === 0))) { const g = parseFactor(); const ff = f; f = (x, y, e) => ff(x, y, e) * g(x, y, e); } else break; } return f; }
       function parseUnary() { const c = peek(); if (c === '-') { pos++; const g = parseUnary(); return (x, y, e) => -g(x, y, e); } if (c === '+') { pos++; return parseUnary(); } return parseFactor(); }
-      function parseFactor() { let f = parseBase(); if (peek() === '^') { pos++; const g = parseUnary(); const ff = f; f = (x, y, e) => Math.pow(ff(x, y, e), g(x, y, e)); } return f; }
+      function parseFactor() {
+        let f = parseBase();
+        while (peek() === '!') { pos++; const ff = f; f = (x, y, e) => _факториал(ff(x, y, e)); }
+        if (peek() === '^') { pos++; const g = parseUnary(); const ff = f; f = (x, y, e) => Math.pow(ff(x, y, e), g(x, y, e)); }
+        return f;
+      }
+      function parseArgs() {
+        pos++; const args = [parseExpr()];
+        while (peek() === ',') { pos++; args.push(parseExpr()); }
+        if (peek() === ')') pos++; else throw 0;
+        return args;
+      }
       function parseBase() {
         const c = peek();
         if (c === '(') { pos++; const f = parseExpr(); if (peek() === ')') pos++; else throw 0; return f; }
         if (/[0-9.]/.test(c)) { let n = ''; while (pos < str.length && /[0-9.]/.test(str[pos])) n += str[pos++]; const v = parseFloat(n); return () => v; }
+        if (c === '|') { pos++; bars++; const f = parseExpr(); bars--; if (peek() === '|') pos++; else throw 0; return (x, y, e) => Math.abs(f(x, y, e)); }
         if (/[a-zA-Z]/.test(c)) {
           let name = ''; while (pos < str.length && /[a-zA-Z]/.test(str[pos])) name += str[pos++];
+          const d = eatFnDigits(str, pos, name); name = d.name; pos = d.pos;
           if (name === 'x') return (x) => x;
           if (name === 'y') return (x, y) => y;
           if (name in CONSTS) { const v = CONSTS[name]; return () => v; }
-          if (name in FUNCS) { if (peek() === '(') { pos++; const arg = parseExpr(); if (peek() === ')') pos++; else throw 0; const fn = FUNCS[name]; return (x, y, e) => fn(arg(x, y, e)); } throw 0; }
+          if (isMathName(name)) {
+            if (peek() !== '(') throw 0;
+            const args = parseArgs(), call = mathApply(name, args.length);
+            if (!call) throw 0;
+            return (x, y, e) => call(args.map((a) => a(x, y, e)));
+          }
           return (x, y, e) => (e && name in e) ? e[name] : NaN; // параметр-ползунок
         }
         throw 0;
@@ -5147,9 +5263,10 @@
     s = s.replace(/≤/g, '<=').replace(/≥/g, '>=').replace(/≠/g, '!=').replace(/∧/g, '&&').replace(/∨/g, '||');
     if (!s) return null;
     let pos = 0; const peek = () => s[pos], two = () => s.substr(pos, 2);
-    const F1 = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log, lg: (v) => Math.log(v) / Math.LN10, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, cot: (v) => 1 / Math.tan(v), floor: Math.floor, ceil: Math.ceil, round: (v) => Math.round(v), sign: Math.sign };
-    const F2 = { min: Math.min, max: Math.max, mod: (a, b) => a % b, pow: Math.pow };
-    const CONST = { pi: Math.PI, e: Math.E };
+    const CONST = MATH_CONST;
+    // Постфиксного «!» здесь НЕТ намеренно: в этих выражениях «!» уже занят —
+    // это отрицание (!a) и «не равно» (a != b). Факториал пишется factorial(n).
+    // Модульных черт тоже нет: «||» здесь — логическое ИЛИ.
     function readName() { let n = ''; while (pos < s.length && /[a-zA-Z0-9_]/.test(s[pos])) n += s[pos++]; return n; }
     function ptLook(e, nm) { return e && e._pts && e._pts[nm.toUpperCase()]; }
     function parseOr() { let f = parseAnd(); while (two() === '||') { pos += 2; const g = parseAnd(), ff = f; f = (e) => (ff(e) || g(e)) ? 1 : 0; } return f; }
@@ -5178,8 +5295,8 @@
           if (name === 'dist') { pos++; const a = readName(); if (peek() === ',') pos++; else throw 0; const b = readName(); if (peek() === ')') pos++; else throw 0; return (e) => { const A = ptLook(e, a), B = ptLook(e, b); return (A && B) ? Math.hypot(B.x - A.x, B.y - A.y) : NaN; }; }
           if (name === 'angle') { pos++; const a = readName(); if (peek() === ',') pos++; else throw 0; const b = readName(); if (peek() === ',') pos++; else throw 0; const cc = readName(); if (peek() === ')') pos++; else throw 0; return (e) => { const A = ptLook(e, a), V = ptLook(e, b), B = ptLook(e, cc); return (A && V && B) ? angleDeg(A, V, B) : NaN; }; }
           pos++; const args = [parseOr()]; while (peek() === ',') { pos++; args.push(parseOr()); } if (peek() === ')') pos++; else throw 0;
-          if ((name in F1) && args.length === 1) { const fn = F1[name], a = args[0]; return (e) => fn(a(e)); }
-          if ((name in F2) && args.length === 2) { const fn = F2[name], a = args[0], b = args[1]; return (e) => fn(a(e), b(e)); }
+          const call = mathApply(name, args.length);
+          if (call) return (e) => call(args.map((a) => a(e)));
           throw 0;
         }
         return (e) => (e && name in e) ? Number(e[name]) : NaN;
@@ -5190,14 +5307,17 @@
   }
 
   // Значения всех ползунков-параметров: {имя: число}. Функции читают их при отрисовке.
-  const FUNC_NAMES = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sqrt', 'abs', 'exp', 'ln', 'log', 'lg', 'sinh', 'cosh', 'tanh', 'cot'];
+  // ВЫВОДИМ из таблицы, а не переписываем руками. Этот список решает, что
+  // считать параметром-ползунком: имя функции, забытое здесь, завело бы в окне
+  // фантомный ползунок «sec» вместо вызова секанса.
+  const FUNC_NAMES = Object.keys(MATH_FN1).concat(Object.keys(MATH_FN2), Object.keys(MATH_FNN));
   // Незнакомые имена в формуле = параметры (не x, не pi/e, не имена функций).
   function funcVarsOf(expr, exclude) {
     const s = String(expr || '').replace(/^y=/i, '').replace(/^f\(x\)=/i, '');
     const skip = exclude || [];
     const out = [];
     (s.match(/[a-zA-Z]+/g) || []).forEach((n) => {
-      if (n === 'x' || n === 'pi' || n === 'e' || FUNC_NAMES.indexOf(n) >= 0 || skip.indexOf(n) >= 0) return;
+      if (n === 'x' || (n in MATH_CONST) || FUNC_NAMES.indexOf(n) >= 0 || skip.indexOf(n) >= 0) return;
       if (out.indexOf(n) < 0) out.push(n);
     });
     return out;
