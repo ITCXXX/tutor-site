@@ -2133,6 +2133,11 @@
   }
   function applyFigureVisual(el) {
     const n = nodes.get(el.id); if (!n) return;
+    // Картинка, PDF, формула и текст рисуются как изображение, а у изображения
+    // в Konva ЕСТЬ и strokeWidth, и dash — и без этой проверки свойства фигуры
+    // ложились на них: получалась толстая пунктирная рамка вокруг картинки.
+    // Ровно из этой дыры росла и прежняя чёрная обводка.
+    if (el.type === 'image' || el.type === 'pdf' || el.type === 'latex' || el.type === 'text') return;
     const w = el.data.strokeWidth || 2;
     if (typeof n.strokeWidth === 'function') n.strokeWidth(w);
     if (typeof n.dash === 'function') n.dash(figureDash(el.data.style, w));
@@ -7703,18 +7708,31 @@
     const isText = el.type === 'text';
     const pts = boxCorners(b);
     const edgePts = { ml: { x: b.x, y: b.y + b.height / 2 }, mr: { x: b.x + b.width, y: b.y + b.height / 2 } };
+    // Ручки выносим ЗА рамку объекта. Раньше они стояли центром на углу, и
+    // половина ручки лежала поверх содержимого: у картинки и формулы это
+    // закрывает угол рисунка, а при точной подгонке размера мешает видеть тот
+    // самый край, который подгоняешь.
+    //
+    // На попадание в размер это не влияет: doResize считает от координат
+    // указателя, а не от положения ручки.
+    const зазор = 4 / stage.scaleX();
     handlesGroup.getChildren().forEach((h) => {
       const name = h.name(), isEdge = (name === 'ml' || name === 'mr');
       h.visible(isText ? isEdge : !isEdge); // текст — боковые ручки, остальное — угловые
       if (isText !== isEdge) return;
       if (isEdge) {
         const p = edgePts[name], ew = 8 / stage.scaleX(), eh = 20 / stage.scaleX();
+        const наружу = (name === 'ml' ? -1 : 1) * (ew / 2 + зазор);
         h.size({ width: ew, height: eh }); h.strokeWidth(1.5 / stage.scaleX());
-        h.position({ x: p.x - ew / 2, y: p.y - eh / 2 });
+        h.position({ x: p.x - ew / 2 + наружу, y: p.y - eh / 2 });
       } else {
         const p = pts[name];
+        // Угловая ручка уходит по диагонали от центра объекта — то есть
+        // строго наружу, в какой бы угол она ни ставилась.
+        const зх = (p.x <= b.x + b.width / 2 ? -1 : 1) * (sz / 2 + зазор);
+        const зy = (p.y <= b.y + b.height / 2 ? -1 : 1) * (sz / 2 + зазор);
         h.size({ width: sz, height: sz }); h.strokeWidth(1.5 / stage.scaleX());
-        h.position({ x: p.x - sz / 2, y: p.y - sz / 2 });
+        h.position({ x: p.x - sz / 2 + зх, y: p.y - sz / 2 + зy });
       }
     });
     handlesGroup.show();
