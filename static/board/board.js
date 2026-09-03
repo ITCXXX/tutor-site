@@ -956,7 +956,11 @@
   // строки: выравниваться не по чему, а запись, которую ведут под текстом,
   // прыгала вверх по его краю и налезала сверху. Сам текст к другим объектам
   // по-прежнему притягивается — он тут в роли перетаскиваемого, а не соседа.
-  const SNAP_BOX_TYPES = { frame: 1, image: 1, pdf: 1, shape: 1, rect: 1, ellipse: 1 };
+  // Текст и формулу вернули в опоры выравнивания: владелец просил, чтобы текст
+  // тоже равнялся и чтобы направляющие между текстом и картинкой были видны.
+  // Убирали их из-за того, что нижестоящие записи липли верхом к низу текста —
+  // а такого сравнения после перехода на одноимённые края больше нет.
+  const SNAP_BOX_TYPES = { frame: 1, image: 1, pdf: 1, shape: 1, rect: 1, ellipse: 1, text: 1, latex: 1 };
   function boxOfElem(el, id) {
     if (!el) return null;
     if (el.type === 'frame') return { x: el.data.x || 0, y: el.data.y || 0, w: el.data.width || 0, h: el.data.height || 0 };
@@ -986,8 +990,17 @@
     let bV = null, bH = null;
     guideRefs.forEach((r) => {
       const rX = [r.x, r.x + r.w / 2, r.x + r.w], rY = [r.y, r.y + r.h / 2, r.y + r.h];
-      dX.forEach((d) => rX.forEach((v) => { const ad = Math.abs(v - d); if (ad <= th && (!bV || ad < bV.ad)) bV = { ad: ad, diff: v - d, at: v }; }));
-      dY.forEach((d) => rY.forEach((v) => { const ad = Math.abs(v - d); if (ad <= th && (!bH || ad < bH.ad)) bH = { ad: ad, diff: v - d, at: v }; }));
+      // ОДНОИМЁННЫЕ края: лево↔лево, центр↔центр, право↔право; верх↔верх,
+      // середина↔середина, низ↔низ. Раньше сравнивался каждый с каждым, и
+      // объект, который кладут ПОД картинку, притягивался верхом к её низу —
+      // «вещи снизу картинки прилипают». Выравнивание — это про одноимённые
+      // края, а притяжение к противоположному только мешает.
+      for (let i = 0; i < 3; i++) {
+        const adx = Math.abs(rX[i] - dX[i]);
+        if (adx <= th && (!bV || adx < bV.ad)) bV = { ad: adx, diff: rX[i] - dX[i], at: rX[i] };
+        const ady = Math.abs(rY[i] - dY[i]);
+        if (ady <= th && (!bH || ady < bH.ad)) bH = { ad: ady, diff: rY[i] - dY[i], at: rY[i] };
+      }
     });
     const dx = bV ? bV.diff : 0, dy = bH ? bH.diff : 0, sb = { x: box.x + dx, y: box.y + dy, w: box.w, h: box.h };
     const lines = [];
@@ -7608,9 +7621,34 @@
     }
     if (el.type === 'text') {
       // Текст: тянем ширину строки (перенос), высота — под содержимое. Правим wrapWidth.
-      const F = resizeState.F, newW = Math.max(40, Math.abs(P.x - F.x));
+      const F = resizeState.F;
+      // Направляющие при растягивании текста. У картинок и фигур они есть
+      // давно, а здесь ветка своя (тянут ширину, а не масштаб) — и текст
+      // нельзя было подогнать по ширине ни к картинке, ни к соседнему тексту.
+      if (!guideRefs) guideRefs = collectGuideRefs([resizeState.id]);
+      let px = P.x;
+      const th = 7 / stage.scaleX();
+      const верх = el.data.y || node.y(), низ = верх + (node.height() || 0);
+      let лучший = null;
+      guideRefs.forEach((r) => {
+        // Одноимённые края, как и при перетаскивании: движущийся край текста
+        // равняем на левый, центральный или правый край соседа.
+        [r.x, r.x + r.w / 2, r.x + r.w].forEach((v) => {
+          const a = Math.abs(v - px);
+          if (a <= th && (!лучший || a < лучший.a)) лучший = { a: a, v: v, r: r };
+        });
+      });
+      const линии = [];
+      if (лучший) {
+        px = лучший.v;
+        линии.push({ v: true, at: лучший.v,
+                     a: Math.min(верх, лучший.r.y),
+                     b: Math.max(низ, лучший.r.y + лучший.r.h) });
+      }
+      drawGuides(линии);
+      const newW = Math.max(40, Math.abs(px - F.x));
       el.data.wrapWidth = newW;
-      el.data.x = Math.min(P.x, F.x); node.x(el.data.x);
+      el.data.x = Math.min(px, F.x); node.x(el.data.x);
       node.width(newW); // мгновенный предпросмотр до асинхронной перерисовки
       scheduleTextRender(el, node); // перерисовать с переносом (троттлинг)
       positionHandles(); tr.forceUpdate(); layer.batchDraw();
