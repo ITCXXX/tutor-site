@@ -6791,7 +6791,27 @@
   //
   // Прежде здесь стояло «wheelZoom !== ev.ctrlKey», и при включённой настройке
   // выходило наоборот задуманного: прокрутка приближала, а щипок двигал доску.
-  function wheelMeansZoom(ev) { return ev.ctrlKey || wheelZoom; }
+  // Тачпад или мышь. Судим по самому событию и НЕ запоминаем: ошибка
+  // распознавания тогда стоит один жест, а не запирает ввод намертво — как
+  // это вышло когда-то с распознаванием пера.
+  //
+  // Колесо мыши даёт крупные ступени (обычно 100 или 120) строго по вертикали.
+  // Тачпад — мелкие приращения, часто дробные, и почти всегда с горизонтальной
+  // составляющей, потому что пальцы едут не идеально прямо.
+  function looksLikeTrackpad(ev) {
+    if (ev.deltaMode !== 0) return false;          // строки/страницы — это колесо
+    if (ev.deltaX) return true;                    // мышь по горизонтали не умеет
+    const dy = Math.abs(ev.deltaY);
+    if (dy === 0) return false;
+    return dy < 50 || dy % 1 !== 0;                // мелко или дробно — палец
+  }
+  function wheelMeansZoom(ev) {
+    if (ev.ctrlKey) return true;                   // щипок — всегда приближение
+    // Два пальца по тачпаду — это ПРОКРУТКА, и она двигает доску независимо от
+    // настройки: настройка про колесо мыши, а у тачпада колеса нет.
+    if (looksLikeTrackpad(ev)) return false;
+    return wheelZoom;
+  }
   function boardWheel(ev, center) {
     if (wheelMeansZoom(ev)) {
       const factor = Math.min(1.15, Math.max(0.85, Math.exp(-ev.deltaY * 0.01)));
@@ -6828,6 +6848,19 @@
   // браузер, и доска «застывала». Перенаправляем колесо на панораму/зум доски
   // (клики по виджету при этом работают). Координату курсора берём из события.
   function forwardWheel(ev) { ev.preventDefault(); boardWheel(ev, pointerInStage(ev)); }
+  // Щипок над ПАНЕЛЯМИ. Над холстом его ловит сцена, а над тулбаром и верхней
+  // плашкой — никто, и браузер масштабировал сам интерфейс. Ловим на документе
+  // в фазе перехвата и только жест с ctrlKey: простое колесо панелям нужно,
+  // они прокручиваются им.
+  document.addEventListener('wheel', (ev) => {
+    if (!ev.ctrlKey) return;                       // обычная прокрутка — не наше дело
+    if (stageEl && stageEl.contains(ev.target)) return;  // холст обслуживает сцена
+    ev.preventDefault();
+    // Указатель над панелью, а не над доской: приближаем к середине видимой
+    // области — тянуть доску к тулбару было бы странно.
+    boardWheel(ev, { x: stage.width() / 2, y: stage.height() / 2 });
+  }, { passive: false, capture: true });
+
   if (widgetLayerEl) widgetLayerEl.addEventListener('wheel', forwardWheel, { passive: false });
   // ggb-layer берём напрямую: его const объявлен ниже по файлу (избегаем TDZ).
   const _ggbLayer = document.getElementById('ggb-layer');
@@ -6858,7 +6891,17 @@
 
   // ── Панель инструментов ───────────────────────────────────────────────
   const toolButtons = document.querySelectorAll('#board-toolbar .tool[data-tool]');
+  // Фокус после щелчка по инструменту остаётся на кнопке внутри тулбара, а он
+  // прокручиваемый — и стрелки начинали листать его вместо панорамы доски.
+  // Снимаем фокус ТОЛЬКО когда он внутри панели: в текстовом редакторе и полях
+  // ввода он нужен, и трогать его там нельзя.
+  function releaseToolbarFocus() {
+    const a = document.activeElement;
+    if (a && a.closest && a.closest('#board-toolbar') && a.blur) a.blur();
+  }
+
   function setTool(name) {
+    releaseToolbarFocus();
     if (viewOnly) name = 'select'; // «только просмотр» — без инструментов
     // Любой инструмент выводит из перемещения доски. Раньше это делал только
     // обработчик кнопок панели, а кнопка ГРУППЫ (под ней карандаш и прочие)
