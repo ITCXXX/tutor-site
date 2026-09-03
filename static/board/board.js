@@ -79,6 +79,13 @@
   const gridShape = new Konva.Shape({ sceneFunc: drawGrid });
   gridLayer.add(gridShape);
 
+  // Слой активного штриха. Пока человек ведёт линию, меняется ровно один
+  // объект — и перерисовывать из-за него тысячи чужих незачем. Замер: одна
+  // перерисовка слоя с 2000 штрихов стоит 25.6 мс при бюджете кадра 16.7,
+  // а звалась она на каждую принятую точку.
+  const drawLayer = new Konva.Layer({ listening: false });
+  stage.add(drawLayer);
+
   // Слой умных направляющих (поверх всего): при перетаскивании показывает линии
   // выравнивания к соседним объектам. Разделяет трансформацию сцены (мир. коорд.).
   const guideLayer = new Konva.Layer({ listening: false });
@@ -169,7 +176,27 @@
   // очень часто, и синхронная перерисовка на каждом забивала поток, из-за чего
   // новый жест (смена направления) применялся с задержкой.
   let viewRAF = null;
+  // Konva на каждую перерисовку рисует ВТОРОЙ, невидимый холст — для
+  // определения попаданий. Во время панорамы и зума попадания не нужны никому,
+  // а стоят они столько же, сколько видимая отрисовка. Выключаем на время
+  // жеста и обязательно возвращаем: без хит-графа не работают ни выделение,
+  // ни ластик, ни перетаскивание.
+  let _hitPaused = false, _hitTimer = null;
+  function pauseHitDuringGesture() {
+    if (!_hitPaused) { _hitPaused = true; layer.hitGraphEnabled(false); }
+    clearTimeout(_hitTimer);
+    _hitTimer = setTimeout(() => {
+      _hitPaused = false;
+      layer.hitGraphEnabled(true);
+      layer.batchDraw();          // хит-граф строится при следующей отрисовке
+    }, 180);
+  }
+
   function scheduleViewRedraw() {
+    // Вид меняется — значит идёт панорама или зум. Хит-граф на это время не
+    // нужен никому, а строится он на каждой перерисовке и стоит столько же,
+    // сколько видимая картинка.
+    pauseHitDuringGesture();
     if (viewRAF != null) return;
     viewRAF = requestAnimationFrame(() => {
       viewRAF = null;
@@ -273,6 +300,10 @@
     if (el.type === 'freehand') {
       node = new Konva.Line({
         ...common,
+        // Буфер под каждую фигуру Konva заводит ради аккуратных стыков
+        // полупрозрачной заливки с обводкой. У штриха заливки нет — платить
+        // за отдельный холст на каждый штрих не за что.
+        perfectDrawEnabled: false,
         points: d.points || [0, 0],
         lineCap: 'round',
         lineJoin: 'round',
@@ -708,7 +739,9 @@
       nodes.set(el.id, node);
       // Привязанная к окну геометрия — в группу окна (обрезается её clip);
       // иначе на общий слой. Если окно ещё не загружено — позже reattach.
-      if (!(el.data && el.data.frame && el.type !== 'measure' && attachToFrame(el, node))) layer.add(node);
+      // Активный штрих — в лёгкий слой: пока его ведут, тяжёлый не трогаем.
+      if (drawing && el.id === drawing.id && !(el.data && el.data.frame)) drawLayer.add(node);
+      else if (!(el.data && el.data.frame && el.type !== 'measure' && attachToFrame(el, node))) layer.add(node);
     } else {
       const d = el.data || {};
       node.position({ x: d.x || 0, y: d.y || 0 });
@@ -774,7 +807,10 @@
     // Объект мог сдвинуть или изменить ДРУГОЙ участник — якоря у выделенного
     // должны переехать и в этом случае (а ещё при отмене и повторе действия).
     if (typeof renderAnchors === 'function' && selected.has(el.id)) renderAnchors();
-    layer.batchDraw();
+    // Во время рисования трогаем только лёгкий слой. Разница не косметическая:
+    // без этого стоимость каждой точки росла вместе с числом чужих объектов.
+    if (drawing && el.id === drawing.id && node.getLayer() === drawLayer) drawLayer.batchDraw();
+    else layer.batchDraw();
   }
 
   // Погасить отложенную отправку для объекта. Зовём при удалении: иначе
@@ -6003,8 +6039,23 @@
     }
   }
 
+  // Вернуть узел активного штриха в общий слой. Зовётся из ВСЕХ выходов
+  // endDraw, включая отказные: узел, забытый в лёгком слое, оказался бы вне
+  // выделения, ластика и экспорта — то есть выглядел бы нарисованным, но не
+  // существовал бы ни для чего.
+  function settleDrawNode(id) {
+    const n = nodes.get(id);
+    if (n && n.getLayer() === drawLayer) {
+      n.moveTo(layer);
+      const el = elements.get(id);
+      if (el && el.data && el.data.frame) attachToFrame(el, n);
+      drawLayer.batchDraw(); layer.batchDraw();
+    }
+  }
+
   function endDraw() {
     if (!drawing) return;
+    settleDrawNode(drawing.id);
     clearGuides(); // убрать направляющие создания окна (если были)
     // Случайный «клик» рамкой без протяжки — не создаём вырожденное окно.
     if (drawing.type === 'frame' && (drawing.data.width < 40 || drawing.data.height < 40)) {
