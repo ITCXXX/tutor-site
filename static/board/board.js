@@ -419,8 +419,12 @@
       node = new Konva.Group({ id: el.id, x: px, y: py, draggable: false });
       const glyph = new Konva.Shape({ name: 'pglyph', sceneFunc: drawPointGlyph, hitFunc: pointHitFunc });
       const _fs = labelFontOf(d);
-      const label = new Konva.Text({ name: 'plabel', text: pointLabelText(el), x: 8, y: -(_fs + 3), fontSize: _fs, fontStyle: 'italic', fill: d.color || '#1f2937', visible: !d.labelHidden });
+      const _lo = d.labelOff || { x: 0, y: 0 };
+      const label = new Konva.Text({ name: 'plabel', text: pointLabelText(el),
+        x: 8 + (_lo.x || 0), y: -(_fs + 3) + (_lo.y || 0), fontSize: _fs, fontStyle: 'italic',
+        fill: d.color || '#1f2937', visible: !d.labelHidden && !!d.frame });
       node.add(glyph); node.add(label);
+      label.moveToTop(); // буква поверх кружка, чтобы её не прятал маркер точки
       node._plabel = d.label || '';
     } else if (el.type === 'circle') {
       node = new Konva.Circle({
@@ -1406,7 +1410,16 @@
       case 'penta': shapePolyPath(ctx, shapeRegPts(W, H, 5, -90)); break;
       case 'hexa': shapePolyPath(ctx, shapeRegPts(W, H, 6, -90)); break;
       case 'star': shapePolyPath(ctx, shapeStarPts(W, H, 5, -90, 0.42)); break;
-      case 'cross': { const aw = Math.min(W, H) * 0.34, x0 = (W - aw) / 2, x1 = (W + aw) / 2, y0 = (H - aw) / 2, y1 = (H + aw) / 2; shapePolyPath(ctx, [[x0, 0], [x1, 0], [x1, y0], [W, y0], [W, y1], [x1, y1], [x1, H], [x0, H], [x0, y1], [0, y1], [0, y0], [x0, y0]]); break; }
+      case 'cross': {
+        // Симметричный крест: вписан в КВАДРАТ по меньшей стороне и центрирован
+        // в рамке. Иначе рукава тянулись до краёв W и H по отдельности и при
+        // неквадратной рамке крест перекашивало.
+        const Sq = Math.min(W, H), ox = (W - Sq) / 2, oy = (H - Sq) / 2, aw = Sq * 0.34;
+        const L = ox, R = ox + Sq, T = oy, Bt = oy + Sq;
+        const x0 = ox + (Sq - aw) / 2, x1 = ox + (Sq + aw) / 2, y0 = oy + (Sq - aw) / 2, y1 = oy + (Sq + aw) / 2;
+        shapePolyPath(ctx, [[x0, T], [x1, T], [x1, y0], [R, y0], [R, y1], [x1, y1], [x1, Bt], [x0, Bt], [x0, y1], [L, y1], [L, y0], [x0, y0]]);
+        break;
+      }
       case 'barrow': { const hw = Math.min(W * 0.42, W - 2), y0 = H * 0.25, y1 = H * 0.75; shapePolyPath(ctx, [[0, y0], [W - hw, y0], [W - hw, 0], [W, H / 2], [W - hw, H], [W - hw, y1], [0, y1]]); break; }
       case 'cyl': shapeCylinder(ctx, W, H); break;
       case 'cloud': shapeCloud(ctx, W, H); break;
@@ -2133,9 +2146,14 @@
   }
   function updatePointLabel(el) {
     const n = nodes.get(el.id); if (!n) return; const lbl = n.findOne('.plabel'); if (!lbl) return;
-    const fs = labelFontOf(el.data);
-    lbl.text(pointLabelText(el)); lbl.visible(!el.data.labelHidden); lbl.fill(el.data.color || '#1f2937');
-    lbl.fontSize(fs); lbl.y(-(fs + 3));
+    const fs = labelFontOf(el.data), lo = el.data.labelOff || { x: 0, y: 0 };
+    lbl.text(pointLabelText(el));
+    // Подпись видна, только если точка ЖИВЁТ В МАТОКНЕ: у точки на голой доске
+    // буква не нужна.
+    lbl.visible(!el.data.labelHidden && !!el.data.frame);
+    lbl.fill(el.data.color || '#1f2937');
+    lbl.fontSize(fs);
+    lbl.x(8 + (lo.x || 0)); lbl.y(-(fs + 3) + (lo.y || 0));
   }
 
   // ── Стиль фигур (толщина + сплошная/пунктир/точки) ─────────────────────
@@ -4903,6 +4921,7 @@
   let frameMove = null;   // перетаскивание окна по доске (за шапку)
   let framePan = null;    // панорама матем. плоскости внутри окна
   let lineDrag = null;    // параллельный перенос линии-построения (двигаем опорные точки)
+  let labelDrag = null;   // перетаскивание подписи точки (смещение в пределах радиуса)
   const frameSyncTimers = {};
 
   function fmtNum(v) { return String(+v.toFixed(6)); }
@@ -6654,6 +6673,28 @@
     if (tool !== 'select') return;
     // Клик по ручке/рамке трансформера — отдать Konva (ресайз), не обрабатывать.
     if (e.target && (e.target === tr || (e.target.getParent && e.target.getParent() === tr))) return;
+    // Клик по ПОДПИСИ точки — тащим только подпись, а не саму точку. Ищем по
+    // рамке подписи в координатах слоя (хит-граф Konva для геометрии не годится,
+    // см. pickObjectAtWorld). Кружок точки в приоритете: рядом с ним — захват
+    // самой точки, а не буквы. Ловим ДО геометрического разбора объекта.
+    if (!viewOnly) {
+      const wp0 = stage.getRelativePointerPosition();
+      const inBox = (p, r, m) => p && r && p.x >= r.x - m && p.x <= r.x + r.width + m && p.y >= r.y - m && p.y <= r.y + r.height + m;
+      let labelPid = null;
+      if (wp0) elements.forEach((pe) => {
+        if (labelPid || pe.type !== 'point' || !pe.data.frame || pe.data.labelHidden) return;
+        const n = nodes.get(pe.id); if (!n) return;
+        const lbl = n.findOne('.plabel'); if (!lbl || !lbl.visible()) return;
+        const gl = n.findOne('.pglyph');
+        if (gl && inBox(wp0, gl.getClientRect({ relativeTo: layer }), 2)) return; // это сам кружок
+        if (inBox(wp0, lbl.getClientRect({ relativeTo: layer }), 2)) labelPid = pe.id;
+      });
+      if (labelPid) {
+        const n = nodes.get(labelPid), lbl = n.findOne('.plabel');
+        labelDrag = { pid: labelPid, sx: wp0.x, sy: wp0.y, lx0: lbl.x(), ly0: lbl.y(), before: clone(elements.get(labelPid)), moved: false };
+        return;
+      }
+    }
     // Сначала ищем объект под курсором (включая привязанную к окну геометрию).
     let resolved = e.target;
     while (resolved && resolved !== stage && !(resolved.id && nodes.has(resolved.id()))) {
@@ -6914,6 +6955,7 @@
     if (frameMove) doFrameMove();
     if (framePan) doFramePan();
     if (lineDrag) doLineDrag();
+    if (labelDrag) doLabelDrag();
     if (resizeState) doResize();
     if (tool === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
   });
@@ -6990,6 +7032,7 @@
     }
     if (framePan) { const el = elements.get(framePan.id); if (el) send({ action: 'element_update', element: el }); framePan = null; }
     if (lineDrag) { endLineDrag(); }
+    if (labelDrag) { endLabelDrag(); }
   }
 
   // ── Параллельный перенос линии-построения ──────────────────────────────
@@ -7018,7 +7061,13 @@
       const pe = elements.get(p.id); if (!pe) return;
       const nx = p.x0 + dx, ny = p.y0 + dy;
       if (fr) { const m = frameLocalToMath(fr, nx, ny); pe.data.mx = m.mx; pe.data.my = m.my; }
-      else { pe.data.x = nx; pe.data.y = ny; }
+      else {
+        // ВНЕ матокна пересчёт узлы точек не трогает — двигаем их сами, иначе
+        // фигура уедет за опорными точками, а маркеры точек останутся стоять
+        // («многоугольник летает без точек»).
+        pe.data.x = nx; pe.data.y = ny;
+        const pn = nodes.get(p.id); if (pn) pn.position({ x: nx, y: ny });
+      }
     });
     recomputeGeometry();
     positionHandles();
@@ -7036,6 +7085,32 @@
       selectOnly(lineDrag.id); // клик без сдвига — просто выделить
     }
     lineDrag = null;
+  }
+  // Подпись точки: тянем букву, смещение от места по умолчанию (8, -(fs+3))
+  // ограничиваем радиусом и храним в data.labelOff. Работаем в координатах слоя
+  // (worldPoint): группа точки и подпись — чистые сдвиги без своего масштаба,
+  // поэтому сдвиг указателя в мире = сдвиг подписи в её локальных координатах.
+  function labelBaseFor(el) { const fs = labelFontOf(el.data); return { x: 8, y: -(fs + 3), R: Math.max(28, fs * 2.4) }; }
+  function doLabelDrag() {
+    const el = elements.get(labelDrag.pid); if (!el) { labelDrag = null; return; }
+    const n = nodes.get(el.id), lbl = n && n.findOne('.plabel'); if (!lbl) return;
+    const w = worldPoint(), b = labelBaseFor(el);
+    let ox = (labelDrag.lx0 + (w.x - labelDrag.sx)) - b.x;
+    let oy = (labelDrag.ly0 + (w.y - labelDrag.sy)) - b.y;
+    const dd = Math.hypot(ox, oy);
+    if (dd > b.R) { ox = ox / dd * b.R; oy = oy / dd * b.R; }
+    lbl.position({ x: b.x + ox, y: b.y + oy });
+    if (!labelDrag.moved && Math.hypot(w.x - labelDrag.sx, w.y - labelDrag.sy) > 2 / stage.scaleX()) labelDrag.moved = true;
+    layer.batchDraw();
+  }
+  function endLabelDrag() {
+    const el = elements.get(labelDrag.pid);
+    if (el && labelDrag.moved) {
+      const n = nodes.get(el.id), lbl = n && n.findOne('.plabel'), b = labelBaseFor(el);
+      if (lbl) el.data.labelOff = { x: Math.round((lbl.x() - b.x) * 10) / 10, y: Math.round((lbl.y() - b.y) * 10) / 10 };
+      histUpd(labelDrag.before, el); send({ action: 'element_update', element: el });
+    } else if (el) { selectOnly(labelDrag.pid); }
+    labelDrag = null;
   }
 
   // ── Зум: колесо к указателю + контрол справа снизу ────────────────────
