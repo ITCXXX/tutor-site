@@ -496,13 +496,12 @@
         clipX: 0, clipY: 0, clipWidth: W, clipHeight: H });
       node.add(new Konva.Rect({ name: 'fbg', x: 0, y: 0, width: W, height: H, fill: d.bgColor || '#ffffff', stroke: '#d9d9e0', strokeWidth: 1 }));
       node.add(new Konva.Shape({ name: 'fgrid', sceneFunc: (ctx) => drawFrameGrid(ctx, elements.get(el.id)) }));
-      // Полоса сверху осталась, но стала невидимой: серая плашка спорила с
-      // чертежом. Она по-прежнему ручка, за которую окно двигают, и Z-якорь,
-      // под который кладётся вся геометрия окна, поэтому убрать её нельзя —
-      // убран только вид. Проступает при наведении, иначе ручку не найти.
-      // Заливка нужна прозрачная, но НЕ пустая: без fill Konva не считает
-      // прямоугольник закрашенным и не ловит по нему нажатие.
-      node.add(new Konva.Rect({ name: 'fheader', x: 0, y: 0, width: W, height: FRAME_HEADER, fill: 'rgba(0,0,0,0)' }));
+      // Невидимая полоса-ручка сверху: за неё окно двигают, и она — Z-якорь,
+      // под который кладётся вся геометрия окна. Серой заливки больше нет
+      // (график заполняет всё окно), полоса ничего не закрывает. Заливка
+      // прозрачная, но НЕ пустая: без fill Konva не считает прямоугольник
+      // закрашенным и не ловит по нему нажатие.
+      node.add(new Konva.Rect({ name: 'fheader', x: 0, y: 0, width: W, height: FRAME_GRAB, fill: 'rgba(0,0,0,0)' }));
       node.add(new Konva.Text({ name: 'fdel', text: '×', x: W - 16, y: 3, fontSize: 16, fill: '#9a9aa4', opacity: 0 }));
       attachFrameHandlers(node, el.id);
     } else {
@@ -4921,7 +4920,8 @@
   // Окно: прямоугольник (x,y,width,height в координатах доски) + своя матем.
   // система (cx,cy — матем. координата центра окна, unit — px на 1 ед.). Внутри
   // рисуются оси/сетка и (позже) обрезанные по границе графики/прямые.
-  const FRAME_HEADER = 22;
+  const FRAME_HEADER = 0;   // плот заполняет всё окно: серой полосы сверху больше нет
+  const FRAME_GRAB = 22;    // невидимая полоса-ручка сверху: за неё окно двигают, в ней крестик
   let frameMove = null;   // перетаскивание окна по доске (за шапку)
   let framePan = null;    // панорама матем. плоскости внутри окна
   let lineDrag = null;    // параллельный перенос линии-построения (двигаем опорные точки)
@@ -5053,14 +5053,10 @@
       frameMove = { id, sx: w.x, sy: w.y, ox: el.data.x, oy: el.data.y, moved: false, shift: isAddKey(e.evt) };
     };
     header.on('mousedown', startMove);
-    // Курсор над окном — полоса и крестик проступают; ушёл — гаснут.
-    const подсветка = (вкл) => {
-      header.fill(вкл ? 'rgba(233,235,242,0.85)' : 'rgba(0,0,0,0)');
-      del.opacity(вкл ? 1 : 0);
-      layer.batchDraw();
-    };
-    node.on('mouseenter', () => подсветка(true));
-    node.on('mouseleave', () => подсветка(false));
+    // Полоса-ручка невидима и ничего не красит. Наведёшь на неё — курсор
+    // «перемещение» и проступает крестик; ушёл — гаснут. Серой плашки нет.
+    header.on('mouseenter', () => { stageEl.style.cursor = 'move'; del.opacity(0.9); layer.batchDraw(); });
+    header.on('mouseleave', () => { stageEl.style.cursor = ''; del.opacity(0); layer.batchDraw(); });
     del.on('mousedown', (e) => { e.cancelBubble = true; });
     del.on('click tap', (e) => { e.cancelBubble = true; deleteWithDependents([id]); }); // окно + вся геометрия внутри
   }
