@@ -413,6 +413,9 @@
     .vp-head button { border: 1px solid #d9d9e0; background: #f7f7fa; color: #3a3a42; border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer; }
     .vp-head button:hover { background: #ececf0; }
     .vp-head button.off { background: #fdeef0; border-color: #ecc7cc; color: #d63333; }
+    .vp-fix { width: 100%; margin-top: 8px; border: 1px solid #d9d9e0; background: #f7f7fa; color: #3a3a42;
+        border-radius: 7px; padding: 6px 8px; font-size: 12px; cursor: pointer; }
+    .vp-fix:hover { background: #ececf0; }
     .vp-person { display: flex; align-items: center; gap: 7px; padding: 5px 0; border-top: 1px solid #f0f0f3; }
     .vp-person:first-child { border-top: none; }
     .vp-dot { width: 9px; height: 9px; border-radius: 50%; background: #c8c8d0; flex: none; transition: background .12s, box-shadow .12s; }
@@ -1866,7 +1869,8 @@
         <button type="button" id="vp-leave" title="Выйти из разговора">Выйти</button>
     </div>
     <div id="vp-list"></div>
-    <div class="vp-hint">Звук идёт напрямую между браузерами, минуя сервер. Если кого-то не слышно — проверьте, что браузер разрешил микрофон.</div>
+    <button type="button" id="vp-reacquire" class="vp-fix" title="Взять микрофон заново, не выходя из разговора. Помогает, если микрофон был занят другим приложением (Zoom) в момент включения голоса.">Переподключить микрофон</button>
+    <div class="vp-hint">Звук идёт напрямую между браузерами, минуя сервер. Вас не слышно — нажмите «Переподключить микрофон»: частая причина в том, что микрофон держало другое приложение (Zoom), и взятая тогда дорожка звука не даёт.</div>
 </div>
 <div id="voice-audio" hidden></div>
 <div id="people-panel" hidden>

@@ -13291,29 +13291,73 @@
   })();
 
   // ── Вход и выход из разговора ──────────────────────────────────────────
+  // Почему не вышло взять микрофон. Отдельно назван самый частый у нас случай:
+  // микрофон держит другое приложение (Zoom) — из общего «не удалось» человек
+  // причину не понимал и не знал, что делать.
+  function micErrText(err) {
+    const name = (err && err.name) || '';
+    if (name === 'NotAllowedError') return 'Доступ к микрофону запрещён — разрешите его в браузере';
+    if (name === 'NotFoundError') return 'Микрофон не найден';
+    if (name === 'NotReadableError' || name === 'AbortError') return 'Микрофон занят другим приложением (например, Zoom). Закройте его и нажмите «Переподключить микрофон»';
+    return 'Не удалось включить микрофон';
+  }
+  const MIC_REQ = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
+  // Общая настройка свежей дорожки: учитываем «выключен кнопкой» и замечаем,
+  // когда устройство отняли (наушники вынули, приложение забрало) — дорожка
+  // тогда кончается, и молчать об этом нельзя.
+  function setupMicTrack(track) {
+    if (!track) return;
+    track.enabled = !voiceMuted;
+    track.addEventListener('ended', () => {
+      if (voiceOn) boardHint('Микрофон отключился — нажмите «Переподключить микрофон»');
+    });
+  }
   function voiceStart() {
     if (voiceOn) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       boardHint('Браузер не даёт доступ к микрофону (нужен https)');
       return;
     }
-    navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
-    }).then((stream) => {
+    navigator.mediaDevices.getUserMedia(MIC_REQ).then((stream) => {
       localStream = stream;
       voiceOn = true; voiceMuted = false;
+      stream.getAudioTracks().forEach(setupMicTrack);
       watchLevel(localHolder, stream);
       startVoiceMeter();
       updateVoiceUI();
       localStream.getTracks().forEach((t) => addTrackEverywhere(t, localStream, 'mic'));
       rtcAnnounce();   // объявляемся всем, кто уже на связи
       boardHint('Вы в разговоре');
-    }).catch((err) => {
-      const name = (err && err.name) || '';
-      boardHint(name === 'NotAllowedError' ? 'Доступ к микрофону запрещён — разрешите его в браузере'
-        : name === 'NotFoundError' ? 'Микрофон не найден'
-        : 'Не удалось включить микрофон');
-    });
+    }).catch((err) => boardHint(micErrText(err)));
+  }
+  // Взять микрофон ЗАНОВО, НЕ выходя из разговора. Ради этого всё и затевалось:
+  // дорожка, взятая пока микрофон держал Zoom, звука не даёт и сама не оживает,
+  // даже когда Zoom закрыли. Подменяем её у всех собеседников через
+  // replaceTrack — связь при этом не пересогласуется и разговор не рвётся.
+  function voiceReacquire() {
+    if (!voiceOn) { boardHint('Сначала включите голос'); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      boardHint('Браузер не даёт доступ к микрофону (нужен https)');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia(MIC_REQ).then((stream) => {
+      const track = stream.getAudioTracks()[0];
+      if (!track) { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) {} boardHint('Микрофон не дал дорожку'); return; }
+      setupMicTrack(track);
+      voicePeers.forEach((p) => {
+        const list = p.senders.mic || [];
+        // Собеседнику, который подключился, когда дорожки ещё не было, её
+        // просто добавляем — подменять там нечего.
+        if (list.length) list.forEach((snd) => { try { snd.replaceTrack(track); } catch (e) {} });
+        else addTrackTo(p, track, stream, 'mic');
+      });
+      if (localStream) localStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });
+      localStream = stream;
+      watchLevel(localHolder, stream);
+      sendMicState(null);
+      updateVoiceUI();
+      boardHint('Микрофон переподключён');
+    }).catch((err) => boardHint(micErrText(err)));
   }
   function voiceStop() {
     if (!voiceOn) return;
@@ -13384,6 +13428,8 @@
     if (mute) mute.addEventListener('click', voiceToggleMute);
     const leave = document.getElementById('vp-leave');
     if (leave) leave.addEventListener('click', voiceStop);
+    const again = document.getElementById('vp-reacquire');
+    if (again) again.addEventListener('click', voiceReacquire);
     // Уходим со страницы — вежливо прощаемся, чтобы у соседей не висел «мертвец».
     window.addEventListener('pagehide', () => { if (voiceOn) { try { rtcSend('bye', null, null); } catch (e) {} closeAllPeers(); } });
   })();
