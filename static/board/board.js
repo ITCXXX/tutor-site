@@ -4001,9 +4001,12 @@
     const wrapper = document.createElement('div'); wrapper.className = 'mtext';
     const body = document.createElement('div'); body.className = 'mtext-body';
     const del = document.createElement('button'); del.className = 'mtext-del'; del.title = 'Удалить'; del.textContent = '×';
+    const grip = document.createElement('div'); grip.className = 'mtext-grip'; grip.title = 'Потянуть — размер букв';
+    const wrapGrip = document.createElement('div'); wrapGrip.className = 'mtext-wrap'; wrapGrip.title = 'Потянуть — ширина строки';
     wrapper.appendChild(body); wrapper.appendChild(del);
+    wrapper.appendChild(grip); wrapper.appendChild(wrapGrip);
     widgetLayerEl.appendChild(wrapper);
-    it = { el, wrapper, body, del, isMtext: true };
+    it = { el, wrapper, body, del, grip: grip, wrapGrip: wrapGrip, isMtext: true };
     widgetItems.set(el.id, it);
     renderMtext(it);
     enableMtextInteract(it);
@@ -4032,6 +4035,64 @@
     });
     wrapper.addEventListener('dblclick', (e) => { if (viewOnly) return; e.preventDefault(); e.stopPropagation(); openTextEditorFor(it.el); });
     it.del.addEventListener('click', (e) => { e.stopPropagation(); if (viewOnly) return; histDel(it.el); send({ action: 'element_delete', id: it.el.id }); removeWidget(it.el.id); });
+
+    // ── Протягивание текста ────────────────────────────────────────────
+    // Размер текста не живёт в width/height: их при каждой перерисовке
+    // перетирает замер содержимого. Единственные носители размера — кегль
+    // (fontSize) и ширина переноса (wrapWidth), поэтому тянем именно их.
+    //
+    // Слушаем УКАЗАТЕЛЬ, а не мышь: у остальных виджетов доски ручки на
+    // мыши, и на планшете они попросту не работают. Захват указателя нужен,
+    // чтобы протяжка не срывалась, когда палец уходит за край ручки.
+    const MTEXT_MIN = 8, MTEXT_MAX = 200;
+
+    function тянемТекст(ручка, шаг) {
+      if (!ручка) return;   // виджет собран раньше, чем появились ручки
+      ручка.addEventListener('pointerdown', (e) => {
+        if (viewOnly) return;
+        e.preventDefault(); e.stopPropagation();
+        const s = stage.scaleX();
+        const sx = e.clientX, sy = e.clientY;
+        const d = it.el.data;
+        const кегль0 = d.fontSize || 20;
+        const ширина0 = d.wrapWidth || (it.body.offsetWidth || 200);
+        const before = clone(it.el);
+        let двигали = false;
+        try { ручка.setPointerCapture(e.pointerId); } catch (err) {}
+        const mv = (ev) => {
+          const dx = (ev.clientX - sx) / s, dy = (ev.clientY - sy) / s;
+          if (!двигали && Math.hypot(dx, dy) * s < 3) return;
+          двигали = true;
+          шаг(d, dx, dy, кегль0, ширина0);
+          renderMtext(it);
+          repositionWidgets();
+        };
+        const up = () => {
+          ручка.removeEventListener('pointermove', mv);
+          ручка.removeEventListener('pointerup', up);
+          ручка.removeEventListener('pointercancel', up);
+          if (двигали) { send({ action: 'element_update', element: it.el }); histUpd(before, it.el); }
+        };
+        ручка.addEventListener('pointermove', mv);
+        ручка.addEventListener('pointerup', up);
+        ручка.addEventListener('pointercancel', up);
+      });
+    }
+
+    // Угол — КЕГЛЬ. Растём по диагонали: считаем от ширины строки, чтобы
+    // движение руки и рост букв ощущались соразмерно, а не рывками.
+    тянемТекст(it.grip, (d, dx, dy, кегль0, ширина0) => {
+      const k = 1 + (dx + dy) / (2 * Math.max(40, ширина0));
+      d.fontSize = Math.round(Math.max(MTEXT_MIN, Math.min(MTEXT_MAX, кегль0 * k)));
+      // Перенос тянем вместе с кеглем, иначе крупные буквы полезут вниз узкой
+      // колонкой вместо того, чтобы занять больше места вширь.
+      if (d.wrapWidth) d.wrapWidth = Math.max(40, ширина0 * (d.fontSize / кегль0));
+    });
+
+    // Бок — ШИРИНА ПЕРЕНОСА. Кегль не трогаем.
+    тянемТекст(it.wrapGrip, (d, dx, dy, кегль0, ширина0) => {
+      d.wrapWidth = Math.max(40, Math.round(ширина0 + dx));
+    });
   }
 
   // — Ползунок-параметр — имя (a,b,k…), диапазон и текущее значение; функции его читают —
