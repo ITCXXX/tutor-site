@@ -588,6 +588,9 @@
         ctx.fillStrokeShape(shape);
       });
     }
+    // Откуда узел поехал — чтобы можно было вернуть его на место, если
+    // окажется, что человек хотел не двигать объект, а вести доску.
+    node.on('dragstart', () => { node._dragX0 = node.x(); node._dragY0 = node.y(); });
     if (el.type === 'point' || el.type === 'circle') {
       node.on('dragmove', () => onGeoDragMove(el.id, node));
       node.on('dragend', () => onGeoDragEnd(el.id, node));
@@ -918,7 +921,10 @@
         }
       }
     }
-    node.draggable(tool === 'select' && !viewOnly && el.type !== 'frame' && !isPointBound(el) && !el.data.locked); // рамку, геометрию по точкам и закреплённые не таскаем; в режиме просмотра — ничего
+    // !panMode обязателен: setPanMode гасит перетаскивание у всех узлов разом,
+    // но upsertNode срабатывает позже — на любой правке объекта — и возвращал
+    // его обратно. В режиме перемещения объект снова становился таскаемым.
+    node.draggable(tool === 'select' && !viewOnly && !panMode && el.type !== 'frame' && !isPointBound(el) && !el.data.locked); // рамку, геометрию по точкам и закреплённые не таскаем; в режиме просмотра — ничего
     if (el.type === 'point' || el.type === 'circle' || el.type === 'circ' || isFilledPoly(el.type) || isConstruction(el.type)) recomputeGeometry();
     if (el.type === 'frame') reattachFuncs(); // привязать функции, ждавшие своё окно
     applyElVisibility(el); // учесть флаг data.hidden
@@ -1074,20 +1080,50 @@
     const th = 7 / stage.scaleX();
     const dX = [box.x, box.x + box.w / 2, box.x + box.w], dY = [box.y, box.y + box.h / 2, box.y + box.h];
     let bV = null, bH = null;
+    // Стыки копим ОТДЕЛЬНО и берём в дело только в самом конце, если
+    // выравнивания не нашлось вовсе. Складывать их в один ящик нельзя: стык,
+    // найденный у первого соседа, обошёл бы выравнивание у второго — просто
+    // потому, что первый попался раньше.
+    let сV = null, сH = null;
     guideRefs.forEach((r) => {
       const rX = [r.x, r.x + r.w / 2, r.x + r.w], rY = [r.y, r.y + r.h / 2, r.y + r.h];
       // ОДНОИМЁННЫЕ края: лево↔лево, центр↔центр, право↔право; верх↔верх,
-      // середина↔середина, низ↔низ. Раньше сравнивался каждый с каждым, и
-      // объект, который кладут ПОД картинку, притягивался верхом к её низу —
-      // «вещи снизу картинки прилипают». Выравнивание — это про одноимённые
-      // края, а притяжение к противоположному только мешает.
+      // середина↔середина, низ↔низ. Это выравнивание «в один ряд», и у него
+      // приоритет: так двигают чаще всего.
       for (let i = 0; i < 3; i++) {
         const adx = Math.abs(rX[i] - dX[i]);
         if (adx <= th && (!bV || adx < bV.ad)) bV = { ad: adx, diff: rX[i] - dX[i], at: rX[i] };
         const ady = Math.abs(rY[i] - dY[i]);
         if (ady <= th && (!bH || ady < bH.ad)) bH = { ad: ady, diff: rY[i] - dY[i], at: rY[i] };
       }
+
+      // СТЫК край-в-край: мой левый к их правому, мой правый к их левому, мой
+      // верх к их низу, мой низ к их верху. Это то, чем ставят объект ВПЛОТНУЮ
+      // к соседу, и без него нельзя ровно подвести подпись под картинку.
+      //
+      // Однажды этот случай отсюда убрали — сочли причиной жалобы «вещи снизу
+      // картинки прилипают». Причина была другая: записи УЕЗЖАЛИ вместе с
+      // картинкой, потому что она уносила всё, что попало в её рамку (см.
+      // objectsOnCarrier). К стыку та жалоба отношения не имела, убрали зря.
+      //
+      // Чтобы стык не срабатывал где попало — объекты обязаны ПЕРЕКРЫВАТЬСЯ по
+      // другой оси. Иначе объект, стоящий наискосок через всю доску, притягивал
+      // бы к себе на пустом месте: краем к краю он совпал бы, а стыка нет.
+      if (r.y < box.y + box.h && r.y + r.h > box.y) {
+        [[dX[0], r.x + r.w], [dX[2], r.x]].forEach((п) => {
+          const ad = Math.abs(п[1] - п[0]);
+          if (ad <= th && (!сV || ad < сV.ad)) сV = { ad: ad, diff: п[1] - п[0], at: п[1] };
+        });
+      }
+      if (r.x < box.x + box.w && r.x + r.w > box.x) {
+        [[dY[0], r.y + r.h], [dY[2], r.y]].forEach((п) => {
+          const ad = Math.abs(п[1] - п[0]);
+          if (ad <= th && (!сH || ad < сH.ad)) сH = { ad: ad, diff: п[1] - п[0], at: п[1] };
+        });
+      }
     });
+    if (!bV && сV) bV = сV;
+    if (!bH && сH) bH = сH;
     const dx = bV ? bV.diff : 0, dy = bH ? bH.diff : 0, sb = { x: box.x + dx, y: box.y + dy, w: box.w, h: box.h };
     const lines = [];
     if (bV) { let a = sb.y, b = sb.y + sb.h; guideRefs.forEach((r) => { if ([r.x, r.x + r.w / 2, r.x + r.w].some((v) => Math.abs(v - bV.at) < 0.5)) { a = Math.min(a, r.y); b = Math.max(b, r.y + r.h); } }); lines.push({ v: true, at: bV.at, a: a, b: b }); }
@@ -6752,17 +6788,65 @@
   }
   // Палец сдвинулся на столько — значит ведёт доску, а не тыкает.
   const TOUCH_PAN_PX = 8;
+
+  // Отменить перетаскивание объекта, которое Konva уже успела начать, и вернуть
+  // объект туда, откуда он поехал.
+  //
+  // Зачем. Перетаскивание заводит не доска, а сама Konva: draggable взводит её
+  // собственный обработчик на узле, и он срабатывает раньше всех сторожей
+  // доски. На планшете люди ведут доску ДВУМЯ пальцами, но кладут их не
+  // одновременно: первый палец успевает опуститься на картинку и потянуть её,
+  // второй приходит через долю секунды — и доска едет вместе с картинкой,
+  // которая к этому моменту уже сдвинулась. Отсюда «при перемещении на планшете
+  // двигаются картинки».
+  //
+  // Возврат на место обязателен: просто прекратить перетаскивание мало —
+  // объект остался бы там, куда его успело утащить за эти доли секунды.
+  function отменитьПеретаскиваниеОбъекта() {
+    let былоЛи = false;
+    nodes.forEach((n) => {
+      if (!n || typeof n.isDragging !== 'function' || !n.isDragging()) return;
+      n.stopDrag();
+      if (n._dragX0 != null) n.position({ x: n._dragX0, y: n._dragY0 });
+      былоЛи = true;
+    });
+    if (былоЛи) {
+      // Ведомые группы уехали вместе с ведущим — вернуть и их.
+      if (dragStart && dragStart.items) {
+        dragStart.items.forEach((it) => {
+          if (it.node) it.node.position({ x: it.x0, y: it.y0 });
+          else if (it.widget) { it.widget.el.data.x = it.wx0; it.widget.el.data.y = it.wy0; }
+        });
+        repositionWidgets();
+      }
+      dragStart = null;
+      clearGuides();
+      positionHandles();
+      layer.batchDraw();
+    }
+    return былоЛи;
+  }
   let pendingPan = null;   // палец лежит, но пока непонятно: щелчок это или панорама
 
   stageEl.addEventListener('pointerdown', (ev) => {
     lastDownType = ev.pointerType || 'mouse';
+    // Порог, после которого Konva считает нажатие перетаскиванием. Пальцу даём
+    // больше: палец толще курсора и всегда чуть съезжает, а лишние миллиметры
+    // дают второму пальцу успеть опуститься. Мыши и перу оставляем как было —
+    // там точность выше, и дополнительная мёртвая зона только раздражала бы.
+    Konva.dragDistance = (ev.pointerType === 'touch') ? 10 : 3;
     if (stylusEvent(ev)) { lastDownType = 'pen'; markPenSeen(); penDown = true; lastPenAt = Date.now(); return; }
     if (ev.pointerType !== 'touch') return;
     touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     if (penDown) return;                       // ладонь при письме пером — молчим
     if (gesture) { startGesture(); return; }   // добавился ещё палец — пересчитать опору
     // Два пальца — щипок сразу, тут гадать нечего.
-    if (touchPts.size >= 2) { pendingPan = null; startGesture(); return; }
+    if (touchPts.size >= 2) {
+      // Второй палец — это всегда жест доски. Что успел зацепить первый —
+      // возвращаем на место.
+      отменитьПеретаскиваниеОбъекта();
+      pendingPan = null; startGesture(); return;
+    }
     // Один палец в режиме пера или в режиме перемещения: НЕ хватаем доску сразу.
     // Сначала ждём движения — иначе пальцем нельзя ни выбрать объект, ни ткнуть
     // в кнопку на холсте, только возить доску.
