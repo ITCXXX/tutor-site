@@ -1,0 +1,71 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.gw { padding-top: 100px; min-height: 70vh; }
+.gw-card { background: var(--c-surface); border: 1px solid var(--c-border);
+           border-radius: var(--r-lg); padding: 1.3rem 1.4rem; }
+.gw-h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .3rem; }
+.gw-sub { color: var(--c-text-muted, #6b6b76); font-size: .9rem; margin: 0 0 1.2rem; }
+.gw-lab { display: block; font-weight: 600; font-size: .88rem; margin-bottom: .35rem; }
+.gw-in { width: 100%; border: 1px solid var(--c-border); border-radius: 10px;
+         padding: .6rem .8rem; font: inherit; background: var(--c-surface); color: inherit; }
+.gw-in:focus { outline: none; border-color: var(--c-primary-600); }
+.gw-people { margin: 1.1rem 0 0; display: grid; gap: .1rem; }
+.gw-p { display: flex; align-items: center; gap: .6rem; padding: .5rem .2rem;
+        border-bottom: 1px solid var(--c-border); }
+.gw-p:last-child { border-bottom: none; }
+.gw-p input { width: 17px; height: 17px; }
+.gw-role { font-size: .76rem; color: var(--c-text-muted, #6b6b76); margin-left: auto; }
+.gw-act { display: flex; gap: .6rem; margin-top: 1.3rem; }
+.gw-go { border: none; border-radius: 10px; padding: .6rem 1.2rem; font-weight: 600;
+         background: var(--c-primary-600); color: #fff; cursor: pointer; }
+.gw-cancel { border: 1px solid var(--c-border); border-radius: 10px; padding: .6rem 1.2rem;
+             text-decoration: none; color: inherit; }
+.gw-empty { color: var(--c-text-muted, #6b6b76); }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="gw">
+  <div class="container" style="max-width: 620px;">
+    <div class="gw-card">
+      <h1 class="gw-h1">Новая группа</h1>
+      <p class="gw-sub">
+        Собрать группу можно только из своих учеников и коллег: иначе в неё
+        попал бы кто угодно с сайта.
+      </p>
+
+      {% if кандидаты %}
+        <form method="post">
+          {% csrf_token %}
+          <label class="gw-lab" for="g-title">Название</label>
+          <input class="gw-in" id="g-title" name="title" maxlength="120"
+                 placeholder="Например: 9А, подготовка к ОГЭ" required>
+
+          <div class="gw-people">
+            <span class="gw-lab" style="margin-top:1rem;">Кого зовём</span>
+            {% for u in кандидаты %}
+              <label class="gw-p">
+                <input type="checkbox" name="members" value="{{ u.id }}">
+                <span>{{ u.display }}</span>
+                <span class="gw-role">{% if u.role == 'teacher' %}преподаватель{% else %}ученик{% endif %}</span>
+              </label>
+            {% endfor %}
+          </div>
+
+          <div class="gw-act">
+            <button class="gw-go" type="submit">Создать</button>
+            <a class="gw-cancel" href="{% url 'chat_home' %}">Отмена</a>
+          </div>
+        </form>
+      {% else %}
+        <p class="gw-empty">Звать пока некого: за вами не закреплён ни один ученик.</p>
+        <div class="gw-act"><a class="gw-cancel" href="{% url 'chat_home' %}">Назад</a></div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}

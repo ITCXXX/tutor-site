@@ -118,6 +118,15 @@
     border-color: #a3cfbb;
 }
 .proto-pill-complete:hover { background: #badbcc; color: #0a3622; border-color: #75b798; }
+
+.math-keys { display: flex; gap: .3rem; }
+.math-keys button { font: inherit; font-size: 1rem; line-height: 1; min-width: 2.4rem;
+                    padding: .4rem .5rem; border: 1px solid #cbd5e1; border-radius: .35rem;
+                    background: #fff; color: #334155; cursor: pointer; }
+.math-keys button:hover { background: #f1f5f9; }
+.answer-format-hint { margin-top: .4rem; font-size: .82rem; color: #64748b; line-height: 1.45; }
+.answer-format-hint code { background: #f1f5f9; padding: .05rem .3rem; border-radius: .2rem;
+                           color: #334155; }
 </style>
 {% endblock %}
 
@@ -265,6 +274,12 @@
                             Блокировать поле после верного ответа
                         </label>
                     </div>
+                    <!-- Спросить преподавателя: уводит в общую переписку,
+                         но с цитатой этой задачи. -->
+                    <a class="btn btn-outline-primary btn-sm"
+                       href="{% url 'chat_ask_about' assignment.id %}">
+                        <i class="bi bi-question-circle"></i> Спросить по задаче
+                    </a>
                     <!-- Сброс прогресса -->
                     <button class="btn btn-outline-danger btn-sm" id="resetBtn"
                             data-assignment-id="{{ assignment.id }}">
@@ -360,8 +375,12 @@
     <div class="row">
         <div class="col-lg-8">
             <div class="card mb-4">
-                <div class="card-header bg-light">
+                <div class="card-header bg-light d-flex align-items-center justify-content-between gap-2">
                     <h4 class="mb-0">{{ assignment.title }}</h4>
+                    <a class="btn btn-outline-primary btn-sm text-nowrap"
+                       href="{% url 'chat_ask_about' assignment.id %}">
+                        <i class="bi bi-question-circle"></i> Спросить по задаче
+                    </a>
                 </div>
                 <div class="card-body">
 
@@ -430,11 +449,80 @@
                                     </button>
                                 </div>
 
+                                {% elif task_data.answer_kind == 'proof' %}
+                                {% comment %}
+                                Задача на доказательство (№24). Ответа-числа нет,
+                                проверить доказательство машина не может. Ученик
+                                думает, открывает разбор и сам отмечает результат;
+                                отметка уходит на сервер как обычный ответ.
+                                {% endcomment %}
+                                <input type="hidden" id="answerInput" name="answer" value="">
+                                <div id="proof-row">
+                                    <p class="text-muted small mb-2">
+                                        Запишите доказательство на бумаге, затем сверьтесь с разбором
+                                        и честно отметьте результат — так задача попадёт в вашу статистику.
+                                    </p>
+                                    <div id="proof-step-1"><div class="d-flex gap-2 flex-wrap">
+                                        <button type="button" id="revealProofBtn" class="btn btn-primary">
+                                            <i class="bi bi-eye"></i> Показать доказательство
+                                        </button>
+                                        <button type="button" id="newProblemBtn" class="btn btn-outline-secondary">
+                                            <i class="bi bi-arrow-repeat"></i> Другая задача
+                                        </button>
+                                    </div></div>
+                                    {% comment %} hidden и d-flex на одном элементе несовместимы:
+                                       display:flex!important у Bootstrap объявлен позже и побеждает.
+                                       Поэтому прячется обёртка, а flex живёт внутри. {% endcomment %}
+                                    <div id="proof-step-2" hidden>
+                                        <div class="d-flex gap-2 flex-wrap">
+                                            <span class="align-self-center me-1">Как справились?</span>
+                                            <button type="button" class="btn btn-success js-self-mark" data-mark="solved">
+                                                <i class="bi bi-check-lg"></i> Доказал
+                                            </button>
+                                            <button type="button" class="btn btn-outline-danger js-self-mark" data-mark="failed">
+                                                <i class="bi bi-x-lg"></i> Не справился
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div id="proof-step-3" hidden>
+                                        <div class="d-flex gap-2 mt-2">
+                                            <button type="button" id="newProblemBtnAfter" class="btn btn-outline-secondary">
+                                                <i class="bi bi-arrow-repeat"></i> Следующая задача
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button type="submit" id="submitBtn" hidden></button>
                                 {% else %}
                                 <div class="mb-3">
                                     <label class="form-label">Введите ответ:</label>
                                     <input type="text" class="form-control js-latex-input" name="answer" id="answerInput"
                                            {% if problem.status == 'solved' %}disabled{% endif %}>
+                                    {% comment %} Вторая часть: корень и бесконечность с клавиатуры не набрать,
+                                       а на телефоне тем более. Кнопки показываем на всех задачах
+                                       второй части, а не там, где корень действительно есть, —
+                                       иначе сама кнопка подсказывала бы ответ. {% endcomment %}
+                                    {% if task_data.math_input %}
+                                    <div class="math-keys mt-2" id="math-keys">
+                                        <button type="button" data-ins="√()" data-back="1"
+                                                title="Корень: √(20) или просто √5">√</button>
+                                        <button type="button" data-ins="-∞" title="Минус бесконечность">−∞</button>
+                                        <button type="button" data-ins="+∞" title="Плюс бесконечность">+∞</button>
+                                    </div>
+                                    {% endif %}
+                                    {% if task_data.interval_answer %}
+                                    <div class="answer-format-hint" id="interval-hint">
+                                        Ответ — промежуток. Скобки: <b>[</b> — конец входит,
+                                        <b>(</b> — не входит. Объединение пишите плюсом,
+                                        например: <code>(-∞; -7] + (0; 7]</code>
+                                    </div>
+                                    {% endif %}
+                                    {% if task_data.answer_kind == 'pairs' %}
+                                    <div class="answer-format-hint" id="pairs-hint">
+                                        Ответ системы — пары значений, например:
+                                        <code>(2; 4), (2; -4)</code>
+                                    </div>
+                                    {% endif %}
                                 </div>
                                 <div class="d-flex gap-2">
                                     <button type="submit" class="btn btn-primary" id="submitBtn"
@@ -447,6 +535,21 @@
                                 </div>
                                 {% endif %}
                             </form>
+                        </div>
+                    </div>
+
+                    {% comment %}
+                    Разбор. Открывается вместе с ответом — после верного решения
+                    или после трёх попыток, не раньше. У №22 внутри лежит график:
+                    без него «постройте график функции» остаётся непроверяемым.
+                    {% endcomment %}
+                    <div class="card mt-4" id="solution-card"
+                         {% if problem.status != 'solved' or not problem.task_data.solution_html %}hidden{% endif %}>
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-lightbulb"></i> Разбор</h5>
+                            <div id="solution-body" class="math-content">
+                                {% if problem.status == 'solved' %}{{ problem.task_data.solution_html|safe }}{% endif %}
+                            </div>
                         </div>
                     </div>
 
@@ -794,6 +897,23 @@ function rebuildChoices(choices) {
     if (submitBtn) submitBtn.disabled = true;
 }
 
+function showSolution(html) {
+    const card = document.getElementById('solution-card');
+    const body = document.getElementById('solution-body');
+    if (!card || !body) return;
+    if (!html) { hideSolution(); return; }
+    body.innerHTML = html;
+    card.hidden = false;
+    if (window.MathJax) MathJax.typesetPromise([body]);
+}
+
+function hideSolution() {
+    const card = document.getElementById('solution-card');
+    const body = document.getElementById('solution-body');
+    if (card) card.hidden = true;
+    if (body) body.innerHTML = '';
+}
+
 async function loadNewProblem() {
     const btn = document.getElementById('newProblemBtn');
     const orig = btn.innerHTML;
@@ -807,6 +927,7 @@ async function loadNewProblem() {
         const result = await res.json();
         if (res.ok && result.success) {
             document.getElementById('problem-condition').innerHTML = result.condition_html;
+            hideSolution();
             const form = document.getElementById('answerForm');
             form.dataset.problemId = result.problem_id;
             form.dataset.solved = 'false';
@@ -849,8 +970,10 @@ document.getElementById('answerForm').addEventListener('submit', async function(
         });
         const result = await res.json();
         if (res.ok) {
+            showSolution(result.solution_html);
+            const isProof = !!document.getElementById('proof-row');
             if (result.correct) {
-                showAlert('Правильно!', 'success');
+                showAlert(isProof ? 'Засчитано: доказательство сдано' : 'Правильно!', 'success');
                 if (result.is_practice) {
                     const ea = document.getElementById('stat-attempted');
                     const ec = document.getElementById('stat-correct');
@@ -873,7 +996,8 @@ document.getElementById('answerForm').addEventListener('submit', async function(
                 document.getElementById('submitBtn').disabled = true;
                 document.querySelectorAll('.choice-btn').forEach(b => b.disabled = true);
             } else {
-                showAlert('Неправильно. Попробуйте ещё раз.', 'danger');
+                showAlert(isProof ? 'Отмечено. Разберите доказательство и вернитесь к этому типу позже.'
+                                  : 'Неправильно. Попробуйте ещё раз.', isProof ? 'warning' : 'danger');
                 if (result.is_practice) {
                     const ea = document.getElementById('stat-attempted');
                     if (ea) ea.textContent = result.session_attempted;
@@ -891,6 +1015,58 @@ document.getElementById('answerForm').addEventListener('submit', async function(
 });
 
 document.getElementById('newProblemBtn').addEventListener('click', loadNewProblem);
+
+// ── Режим доказательства (№24) ────────────────────────────────────────────
+// Разбор хранится в task_data на сервере, и отдаёт его тот же /exam/check/.
+// Чтобы показать доказательство ДО отметки, шлём пустую попытку? Нет:
+// попытка — это ответ, а ученик ещё не отвечал. Поэтому раскрытие идёт через
+// отдельный запрос без записи попытки — см. /exam/solution/<id>/.
+const proofRow = document.getElementById('proof-row');
+if (proofRow) {
+    const step1 = document.getElementById('proof-step-1');
+    const step2 = document.getElementById('proof-step-2');
+    const step3 = document.getElementById('proof-step-3');
+
+    function resetProofUI() {
+        step1.hidden = false;
+        step2.hidden = true;
+        step3.hidden = true;
+        document.querySelectorAll('.js-self-mark').forEach(b => b.disabled = false);
+    }
+
+    document.getElementById('revealProofBtn').addEventListener('click', async () => {
+        const problemId = document.getElementById('answerForm').dataset.problemId;
+        try {
+            const res = await fetch(`/exam/solution/${problemId}/`, {
+                headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+            });
+            const result = await res.json();
+            if (!res.ok) { showAlert(result.error || 'Не удалось получить разбор', 'danger'); return; }
+            showSolution(result.solution_html);
+            step1.hidden = true;
+            step2.hidden = false;
+            document.getElementById('solution-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (e) {
+            showAlert('Ошибка соединения', 'danger');
+        }
+    });
+
+    document.querySelectorAll('.js-self-mark').forEach(btn => btn.addEventListener('click', () => {
+        document.getElementById('answerInput').value = btn.dataset.mark;
+        document.querySelectorAll('.js-self-mark').forEach(b => b.disabled = true);
+        step2.hidden = true;
+        step3.hidden = false;
+        document.getElementById('answerForm').requestSubmit();
+    }));
+
+    document.getElementById('newProblemBtnAfter').addEventListener('click', async () => {
+        await loadNewProblem();
+        resetProofUI();
+    });
+
+    // «Другая задача» до раскрытия разбора — тоже сброс шагов.
+    document.getElementById('newProblemBtn').addEventListener('click', resetProofUI);
+}
 
 document.querySelectorAll('.generator-checkbox').forEach(cb => cb.addEventListener('change', async () => {
     const selected = Array.from(document.querySelectorAll('.generator-checkbox'))
@@ -929,4 +1105,31 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 {% endif %}
+
+<script>
+// Вставка знака в поле ответа: на место курсора, с сохранением фокуса.
+// Выделенное берётся внутрь скобок — выделил «20», нажал √, получил √(20).
+(function () {
+    const keys = document.getElementById('math-keys');
+    const input = document.getElementById('answerInput');
+    if (!keys || !input) return;
+    keys.addEventListener('click', function (e) {
+        const btn = e.target.closest('button[data-ins]');
+        if (!btn) return;
+        const ins = btn.dataset.ins;
+        const back = parseInt(btn.dataset.back || '0', 10);
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        const selected = input.value.slice(start, end);
+        const text = (back && selected)
+            ? ins.slice(0, -back) + selected + ins.slice(-back)
+            : ins;
+        input.value = input.value.slice(0, start) + text + input.value.slice(end);
+        const caret = start + text.length - (selected ? 0 : back);
+        input.focus();
+        input.setSelectionRange(caret, caret);
+    });
+})();
+</script>
+
 {% endblock %}

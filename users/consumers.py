@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Чат преподавателя с учеником поверх WebSocket.
+"""Переписка поверх WebSocket: личная и групповая.
 
 СВОЙ обработчик и СВОЙ маршрут. В board/consumers.py не лезем: доска — рабочий
 инструмент на занятиях, и поломка там дороже любого чата.
@@ -10,14 +10,22 @@
   • ограничитель частоты с честным отказом, а не молчанием;
   • работа с базой через database_sync_to_async.
 
-Чего у доски нет и что здесь своё: присутствие в ветке. Если собеседник сейчас
-смотрит на переписку, уведомление ему не нужно — он и так видит сообщение.
+Чего у доски нет и что здесь своё: присутствие в ветке. Кто сейчас смотрит на
+переписку, тому уведомление не нужно — он и так видит сообщение.
+
+ПРО ПРОВЕРКИ ВХОДЯЩЕГО. Обработчик получает не только текст: номер сообщения,
+на которое отвечают, и номер задания, о котором спрашивают. И то и другое —
+числа из браузера, то есть из рук человека, который может подставить любое.
+Поэтому оба проверяются: цитата обязана быть из ЭТОЙ ветки, а задание — из
+курса, куда человек записан. Иначе подстановкой чужого номера вытягивается
+чужой текст, а это утечка, а не шалость.
 """
 
 import time
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from django.urls import reverse
 from django.utils import timezone
 
 HISTORY = 50        # сколько последних сообщений отдаём при входе
@@ -47,7 +55,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return
 
         self.thread_id = thread['id']
-        self.other_id = thread['other_id']
+        self.members = thread['members']       # id всех участников, включая себя
         self.group = f'chat_{self.thread_id}'
         self._rate = []
 
@@ -57,7 +65,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         await self.send_json({
             'action': 'history',
-            'messages': await self._history(self.thread_id),
+            'messages': await self._history(self.thread_id, self.user.id),
             'me': self.user.id,
         })
         # Вошёл — значит прочитал то, что накопилось.
@@ -84,6 +92,15 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if action == 'read':
             await self._read_all()
             return
+        if action == 'resolve':
+            # Пометить вопрос закрытым (или снова открыть) — вручную.
+            итог = await self._toggle_answered(
+                self.thread_id, content.get('id'), bool(content.get('done')))
+            if итог is not None:
+                await self.channel_layer.group_send(self.group, {
+                    'type': 'chat.answered', 'id': итог['id'],
+                    'answered': итог['answered']})
+            return
         if action != 'send':
             return
 
@@ -98,18 +115,34 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         self._rate.append(now)
 
         text = (content.get('text') or '').strip()
-        if not text:
+        about = content.get('about')          # номер задания, если вопрос по задаче
+        if not text and not about:
             return
         text = text[:MAX_LEN]
 
-        msg = await self._save(self.thread_id, self.user.id, text)
+        msg = await self._save(
+            self.thread_id, self.user.id, text,
+            content.get('reply_to'), about, bool(content.get('question')))
+        if msg is None:
+            await self.send_json({'action': 'rejected', 'reason': 'bad_ref'})
+            return
+
         await self.channel_layer.group_send(
             self.group, {'type': 'chat.message', 'message': msg})
+        if msg.get('closes'):
+            # Ответом на вопрос вопрос и закрывается: отдельной кнопки для
+            # обычного случая быть не должно, иначе её просто не нажимают.
+            await self.channel_layer.group_send(self.group, {
+                'type': 'chat.answered', 'id': msg['closes'], 'answered': True})
 
-        # Собеседника нет в ветке — пусть узнает из уведомлений. Уведомление
-        # ОДНО на ветку: ключ не даёт расплодить их по числу реплик.
-        if self.other_id not in _online.get(self.thread_id, set()):
-            await self._notify_other(self.thread_id, self.other_id, self.user.id, text)
+        # Кого нет в ветке — тем уведомление. Уведомление ОДНО на ветку:
+        # ключ не даёт расплодить их по числу реплик.
+        сейчас_тут = _online.get(self.thread_id, set())
+        нет_на_месте = [uid for uid in self.members
+                        if uid != self.user.id and uid not in сейчас_тут]
+        if нет_на_месте:
+            await self._notify(self.thread_id, нет_на_месте, self.user.id,
+                               text or 'вопрос по задаче')
 
     # ── Исходящие (из группы) ──────────────────────────────────────────
     async def chat_message(self, event):
@@ -119,6 +152,10 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         # Собеседник прочитал: у автора галочка становится «прочитано».
         if event.get('by') != getattr(self.user, 'id', None):
             await self.send_json({'action': 'read', 'by': event['by'], 'at': event['at']})
+
+    async def chat_answered(self, event):
+        await self.send_json({'action': 'answered', 'id': event['id'],
+                              'answered': event['answered']})
 
     # ── Прочтение ──────────────────────────────────────────────────────
     async def _read_all(self):
@@ -134,7 +171,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     # ── База ───────────────────────────────────────────────────────────
     @database_sync_to_async
     def _get_thread(self, raw, user):
-        from .models import Thread
+        from .models import Thread, ThreadMember
         if not (user and user.is_authenticated):
             return None
         try:
@@ -142,31 +179,97 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         except (TypeError, ValueError):
             return None
         t = Thread.objects.filter(pk=tid).first()
-        if t is None or not t.has_access(user):
+        if t is None:
             return None
-        other = t.other_side(user)
-        return {'id': t.id, 'other_id': other.id if other else None}
+        участники = list(ThreadMember.objects.filter(thread=t)
+                         .values_list('user_id', flat=True))
+        if user.id not in участники:
+            return None
+        return {'id': t.id, 'members': участники}
 
     @database_sync_to_async
-    def _history(self, thread_id):
-        from .models import Message
-        qs = (Message.objects.filter(thread_id=thread_id)
-              .select_related('author').order_by('-created_at')[:HISTORY])
-        return [_as_dict(m) for m in reversed(list(qs))]
-
-    @database_sync_to_async
-    def _save(self, thread_id, author_id, text):
+    def _history(self, thread_id, me):
+        from .chat import read_watermark
         from .models import Message, Thread
-        m = Message.objects.create(thread_id=thread_id, author_id=author_id, text=text)
-        # Свежесть ветки — по ней сортируется список у преподавателя.
+        t = Thread.objects.filter(pk=thread_id).first()
+        порог = read_watermark(t, me) if t else None
+        qs = (Message.objects.filter(thread_id=thread_id)
+              .select_related('author', 'reply_to', 'reply_to__author',
+                              'about_assignment', 'about_assignment__lesson')
+              .order_by('-created_at')[:HISTORY])
+        return [_as_dict(m, порог) for m in reversed(list(qs))]
+
+    @database_sync_to_async
+    def _save(self, thread_id, author_id, text, reply_to, about, question):
+        from .models import Assignment, Message, Thread, User
+        from .views import _can_access_lesson
+
+        # Цитата — только из этой же ветки. Иначе номером чужого сообщения
+        # вытягивается чужой текст: он поедет в ленту как цитата.
+        источник = None
+        if reply_to:
+            источник = (Message.objects
+                        .filter(pk=reply_to, thread_id=thread_id)
+                        .select_related('author').first())
+            if источник is None:
+                return None
+
+        # Задание — только из курса, куда человек допущен. Проверку берём ту же,
+        # что у страницы урока: два разных правила доступа к одному уроку — это
+        # заявка на дыру.
+        задание = None
+        if about:
+            задание = (Assignment.objects
+                       .filter(pk=about)
+                       .select_related('lesson', 'lesson__module',
+                                       'lesson__module__course').first())
+            автор = User.objects.filter(pk=author_id).first()
+            if задание is None or автор is None or not _can_access_lesson(
+                    автор, задание.lesson):
+                return None
+
+        m = Message.objects.create(
+            thread_id=thread_id, author_id=author_id, text=text,
+            reply_to=источник, about_assignment=задание,
+            is_question=bool(question or задание is not None),
+        )
+        # Свежесть ветки — по ней сортируется список.
         Thread.objects.filter(pk=thread_id).update(updated_at=m.created_at)
-        return _as_dict(m)
+
+        # Ответили на чужой вопрос — вопрос закрыт. Своим ответом на свой же
+        # вопрос ничего не закрывается: человек часто дописывает мысль.
+        закрыт = None
+        if (источник is not None and источник.is_question
+                and источник.answered_at is None
+                and источник.author_id != author_id):
+            источник.answered_at = m.created_at
+            источник.save(update_fields=['answered_at'])
+            закрыт = источник.id
+
+        d = _as_dict(m, None)
+        d['closes'] = закрыт
+        return d
+
+    @database_sync_to_async
+    def _toggle_answered(self, thread_id, msg_id, done):
+        from .models import Message
+        m = Message.objects.filter(pk=msg_id, thread_id=thread_id,
+                                   is_question=True).first()
+        if m is None:
+            return None
+        m.answered_at = timezone.now() if done else None
+        m.save(update_fields=['answered_at'])
+        return {'id': m.id, 'answered': bool(m.answered_at)}
 
     @database_sync_to_async
     def _mark_read(self, thread_id, reader_id):
-        from .models import Message, Notification
-        n = (Message.objects.filter(thread_id=thread_id, read_at__isnull=True)
-             .exclude(author_id=reader_id).update(read_at=timezone.now()))
+        from .chat import mark_read
+        from .models import Notification, Thread, User
+        t = Thread.objects.filter(pk=thread_id).first()
+        u = User.objects.filter(pk=reader_id).first()
+        if t is None or u is None:
+            return 0
+        n = mark_read(t, u)
         if n:
             # Прочитал переписку — гасим и уведомление о ней.
             Notification.objects.filter(
@@ -175,31 +278,58 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         return n
 
     @database_sync_to_async
-    def _notify_other(self, thread_id, other_id, author_id, text):
-        from .models import Notification, User
-        if not other_id:
-            return
+    def _notify(self, thread_id, кому, author_id, text):
+        from .models import Notification, Thread, User
         автор = User.objects.filter(pk=author_id).first()
         имя = (автор.display if автор else '') or 'Собеседник'
-        Notification.objects.update_or_create(
-            user_id=other_id,
-            kind=Notification.KIND_MESSAGE,
-            key=f'thread:{thread_id}',
-            defaults={
-                'text': f'{имя}: {text[:120]}',
-                'url': f'/chat/{thread_id}/',
-                'is_read': False,
-            },
-        )
+        ветка = Thread.objects.filter(pk=thread_id).first()
+        где = ''
+        if ветка is not None and ветка.kind == Thread.KIND_GROUP:
+            где = ' (%s)' % (ветка.title or 'группа')
+        for uid in кому:
+            Notification.objects.update_or_create(
+                user_id=uid,
+                kind=Notification.KIND_MESSAGE,
+                key=f'thread:{thread_id}',
+                defaults={
+                    'text': f'{имя}{где}: {text[:120]}',
+                    'url': reverse('chat_thread', args=[thread_id]),
+                    'is_read': False,
+                },
+            )
 
 
-def _as_dict(m):
-    """Сообщение для отправки в браузер."""
-    return {
+def _as_dict(m, порог):
+    """Сообщение для отправки в браузер.
+
+    «Прочитано» больше не хранится на сообщении: у каждого участника своя
+    отметка «докуда дочитал». Прочитанным считаем то, что раньше отметки
+    самого отстающего — в группе «прочитано» должно значить «прочитали все»,
+    а не «хоть кто-то».
+    """
+    d = {
         'id': m.id,
         'author': m.author_id,
         'name': (getattr(m.author, 'display', '') or m.author.username),
         'text': m.text,
         'at': m.created_at.isoformat(),
-        'read': bool(m.read_at),
+        'read': bool(порог and m.created_at <= порог),
+        'question': m.is_question,
+        'answered': bool(m.answered_at),
     }
+    if m.reply_to_id and m.reply_to is not None:
+        d['reply'] = {
+            'id': m.reply_to_id,
+            'name': (getattr(m.reply_to.author, 'display', '')
+                     or m.reply_to.author.username),
+            'text': m.reply_to.text[:160],
+        }
+    if m.about_assignment_id and m.about_assignment is not None:
+        з = m.about_assignment
+        d['about'] = {
+            'id': з.id,
+            'title': з.title,
+            'lesson': з.lesson.title if з.lesson_id else '',
+            'url': reverse('lesson_detail', args=[з.lesson_id]) if з.lesson_id else '',
+        }
+    return d

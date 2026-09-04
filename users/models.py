@@ -1336,28 +1336,42 @@ class GroupAttempt(models.Model):
 # Чат преподавателя с учеником
 # --------------------------------------------------
 class Thread(models.Model):
-    """Ветка переписки. Сейчас — одна общая на пару «преподаватель — ученик».
+    """Ветка переписки: личная (на двоих) или групповая.
 
-    Поле lesson заведено на вырост и пока всегда пустое: когда понадобятся
-    обсуждения при конкретной домашке, они лягут сюда же, и различать их будет
-    одно поле, а не отдельная таблица.
+    Личная переписка — частный случай группы на двоих, а не отдельная сущность.
+    Раньше в ветке лежали два жёстких поля, teacher и student; группа в них не
+    влезает. Соблазн был оставить их «для пар», а группам завести список
+    участников — тогда на вопрос «кто в этой ветке» появилось бы два ответа, и
+    они бы разошлись. Участники живут ровно в одном месте: ThreadMember.
+
+    Цена этого решения — pair_key. Уникальность личной переписки («одна ветка
+    на двоих») раньше держало ограничение по паре полей; по таблице участников
+    СУБД такого ограничения не построит. Поэтому у личной ветки есть строка
+    вида «12-57» (меньший id первым), уникальная среди личных. Без неё две
+    вкладки, открытые одновременно, заводят две «личные» ветки с одним и тем же
+    человеком, и половина истории пропадает в той, которую больше не открыли.
     """
 
-    teacher = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name='threads_as_teacher',
-        limit_choices_to={'role': 'teacher'}, verbose_name='Преподаватель',
+    KIND_DIRECT = 'direct'
+    KIND_GROUP = 'group'
+    KIND_CHOICES = [
+        (KIND_DIRECT, 'Личная переписка'),
+        (KIND_GROUP, 'Группа'),
+    ]
+
+    kind = models.CharField(
+        'Тип', max_length=8, choices=KIND_CHOICES, default=KIND_DIRECT)
+    # Только у группы. У личной переписки названия нет: она называется именем
+    # собеседника, а он у каждой стороны свой.
+    title = models.CharField('Название группы', max_length=120, blank=True)
+    owner = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='threads_owned', verbose_name='Кто собрал',
     )
-    student = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name='threads_as_student',
-        limit_choices_to={'role': 'student'}, verbose_name='Ученик',
-    )
-    # Пусто — общая ветка; заполнено — обсуждение конкретной домашки.
-    lesson = models.ForeignKey(
-        Lesson, on_delete=models.CASCADE, null=True, blank=True,
-        related_name='threads', verbose_name='Урок (если обсуждение домашки)',
-    )
+    # «12-57»: меньший id первым. Пусто у групп — см. пояснение в описании класса.
+    pair_key = models.CharField('Ключ пары', max_length=40, blank=True, db_index=True)
     created_at = models.DateTimeField('Заведена', auto_now_add=True)
-    # Время последнего сообщения — по нему список веток сортируется у преподавателя.
+    # Время последнего сообщения: по нему список веток сортируется.
     updated_at = models.DateTimeField('Последнее сообщение', auto_now_add=True)
 
     class Meta:
@@ -1365,40 +1379,87 @@ class Thread(models.Model):
         verbose_name_plural = 'Ветки переписки'
         ordering = ['-updated_at']
         constraints = [
-            # Общая ветка на пару — ровно одна. unique_together тут не годится:
-            # в SQL два NULL не равны друг другу, и пустой lesson не помешал бы
-            # завести вторую такую же ветку.
             models.UniqueConstraint(
-                fields=['teacher', 'student'],
-                condition=Q(lesson__isnull=True),
-                name='uniq_general_thread_per_pair',
+                fields=['pair_key'], condition=Q(kind='direct'),
+                name='uniq_direct_pair',
             ),
-            models.UniqueConstraint(
-                fields=['teacher', 'student', 'lesson'],
-                condition=Q(lesson__isnull=False),
-                name='uniq_lesson_thread_per_pair',
-            ),
-        ]
-        indexes = [
-            models.Index(fields=['teacher', '-updated_at']),
-            models.Index(fields=['student', '-updated_at']),
         ]
 
     def __str__(self):
-        куда = self.lesson.title if self.lesson_id else 'общая'
-        return f"{self.teacher} ↔ {self.student} ({куда})"
+        if self.kind == self.KIND_GROUP:
+            return self.title or 'Группа #%s' % self.pk
+        имена = [m.user.display for m in self.memberships.all()[:2]]
+        return ' ↔ '.join(имена) if имена else 'Переписка #%s' % self.pk
+
+    @staticmethod
+    def make_pair_key(a_id, b_id):
+        """Ключ личной переписки. Порядок не важен: сортируем, а не гадаем."""
+        малый, большой = sorted([int(a_id), int(b_id)])
+        return '%d-%d' % (малый, большой)
+
+    @property
+    def is_group(self):
+        return self.kind == self.KIND_GROUP
 
     def other_side(self, user):
-        """Собеседник для этого пользователя (или None, если он не участник)."""
-        if user.id == self.teacher_id:
-            return self.student
-        if user.id == self.student_id:
-            return self.teacher
+        """Собеседник в ЛИЧНОЙ переписке. У группы собеседника нет — вернём None."""
+        if self.kind != self.KIND_DIRECT:
+            return None
+        for m in self.memberships.all():
+            if m.user_id != user.id:
+                return m.user
         return None
 
+    def display_for(self, user):
+        """Как ветка называется для этого человека."""
+        if self.kind == self.KIND_GROUP:
+            return self.title or 'Группа'
+        другой = self.other_side(user)
+        return другой.display if другой else 'Переписка'
+
     def has_access(self, user):
-        return bool(user and user.is_authenticated
-                    and user.id in (self.teacher_id, self.student_id))
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+        return self.memberships.filter(user=user).exists()
+
+
+class ThreadMember(models.Model):
+    """Участие человека в ветке — и его личная отметка «докуда прочитано».
+
+    Отметка о прочтении живёт ЗДЕСЬ, а не на сообщении. На сообщении она была
+    одна на всех: для пары это работает, для группы бессмысленно — прочитано
+    кем? Указатель у каждого участника отвечает на этот вопрос честно, и из
+    него же дёшево считается «непрочитанных: 3» — без отдельного поля-счётчика,
+    который пришлось бы держать в согласии с лентой.
+    """
+
+    thread = models.ForeignKey(
+        Thread, on_delete=models.CASCADE, related_name='memberships',
+        verbose_name='Ветка',
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='chat_memberships',
+        verbose_name='Участник',
+    )
+    # Кто может звать в группу и переименовывать её. У личной переписки не важен.
+    is_admin = models.BooleanField('Распорядитель', default=False)
+    joined_at = models.DateTimeField('Вошёл', auto_now_add=True)
+    # Пусто — не читал ничего. Иначе: время последнего прочитанного сообщения.
+    last_read_at = models.DateTimeField('Докуда прочитано', null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Участник переписки'
+        verbose_name_plural = 'Участники переписки'
+        constraints = [
+            models.UniqueConstraint(fields=['thread', 'user'],
+                                    name='uniq_thread_member'),
+        ]
+        indexes = [
+            models.Index(fields=['user', 'thread']),
+        ]
+
+    def __str__(self):
+        return '%s в %s' % (self.user, self.thread_id)
 
 
 class Message(models.Model):
@@ -1407,6 +1468,15 @@ class Message(models.Model):
     Хранится всегда, независимо от того, был ли собеседник на сайте: лента —
     это история, а не эфир. Вложений пока нет намеренно: файлы уже умеет
     домашка, и второй тракт загрузки заводить рано.
+
+    Три надстройки поверх текста:
+      • reply_to — ответ на сообщение, как в телеграме;
+      • about_assignment — вопрос ПО ЗАДАЧЕ. Пишется в обычную ветку, но несёт
+        ссылку на задание и рисуется карточкой. Отдельной ветки на домашку
+        сознательно нет: разговор про учёбу должен лежать в одном месте, иначе
+        человек ищет, где он спрашивал;
+      • is_question — пометка «это вопрос». Нужна, чтобы преподаватель видел
+        список неотвеченного, а не вычитывал ленту заново.
     """
 
     thread = models.ForeignKey(
@@ -1419,8 +1489,22 @@ class Message(models.Model):
     )
     text = models.TextField('Текст')
     created_at = models.DateTimeField('Когда', auto_now_add=True)
-    # Пусто — собеседник ещё не читал. По этому полю считается «непрочитанных: 3».
-    read_at = models.DateTimeField('Прочитано', null=True, blank=True)
+    edited_at = models.DateTimeField('Правлено', null=True, blank=True)
+    # Ответ на сообщение. SET_NULL, а не CASCADE: удалили исходное — пропадает
+    # цитата, а не ответ вместе с ней.
+    reply_to = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='replies', verbose_name='В ответ на',
+    )
+    # Вопрос по конкретной задаче: сообщение обычное, но с карточкой задания.
+    about_assignment = models.ForeignKey(
+        Assignment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='chat_mentions', verbose_name='О задании',
+    )
+    is_question = models.BooleanField('Это вопрос', default=False)
+    # Заполняется, когда на вопрос ответили. Пусто у обычных сообщений тоже —
+    # смысл имеет только вместе с is_question.
+    answered_at = models.DateTimeField('Отвечено', null=True, blank=True)
 
     class Meta:
         verbose_name = 'Сообщение'
@@ -1428,8 +1512,8 @@ class Message(models.Model):
         ordering = ['created_at']
         indexes = [
             models.Index(fields=['thread', 'created_at']),
-            # Непрочитанные ищем по ветке и пустой отметке прочтения.
-            models.Index(fields=['thread', 'read_at']),
+            # Неотвеченные вопросы: их спрашивают по ветке.
+            models.Index(fields=['thread', 'is_question', 'answered_at']),
         ]
 
     def __str__(self):

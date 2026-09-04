@@ -10,8 +10,12 @@
 .cw-head { display: flex; align-items: center; gap: .7rem; margin-bottom: .7rem; }
 .cw-back { color: var(--c-text-muted, #6b6b76); text-decoration: none; font-size: 1.2rem; line-height: 1; }
 .cw-back:hover { color: var(--c-primary-600); }
-.cw-title { font-size: 1.25rem; font-weight: 700; margin: 0; flex: 1; }
-.cw-state { font-size: .8rem; color: var(--c-text-muted, #6b6b76); }
+.cw-title { font-size: 1.25rem; font-weight: 700; margin: 0; }
+.cw-who { flex: 1; min-width: 0; }
+.cw-people { font-size: .78rem; color: var(--c-text-muted, #6b6b76); overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap; }
+.cw-people a { color: inherit; }
+.cw-state { font-size: .8rem; color: var(--c-text-muted, #6b6b76); flex: none; }
 .cw-state.off { color: #c0392b; }
 
 .cw-feed { flex: 1; overflow-y: auto; background: var(--c-surface);
@@ -20,23 +24,68 @@
 .cw-empty { margin: auto; color: var(--c-text-muted, #6b6b76); text-align: center; font-size: .92rem; }
 
 .msg { max-width: 78%; padding: .5rem .8rem; border-radius: 14px; line-height: 1.45;
-       white-space: pre-wrap; word-wrap: break-word; }
+       word-wrap: break-word; position: relative; }
+.msg-body { white-space: pre-wrap; }
 .msg.them { align-self: flex-start; background: var(--c-bg-soft); border-bottom-left-radius: 5px; }
 .msg.me { align-self: flex-end; background: var(--c-primary-600); color: #fff; border-bottom-right-radius: 5px; }
-.msg-meta { font-size: .72rem; opacity: .68; margin-top: .2rem; display: flex; gap: .4rem; justify-content: flex-end; }
+.msg-from { font-size: .76rem; font-weight: 700; opacity: .8; margin-bottom: .15rem; }
+.msg-meta { font-size: .72rem; opacity: .68; margin-top: .2rem; display: flex; gap: .4rem;
+            align-items: center; justify-content: flex-end; }
 .msg.them .msg-meta { justify-content: flex-start; }
 .day { align-self: center; font-size: .74rem; color: var(--c-text-muted, #6b6b76);
        background: var(--c-bg-soft); padding: .15rem .7rem; border-radius: 10px; margin: .3rem 0; }
 
-.cw-form { display: flex; gap: .5rem; margin-top: .7rem; }
+/* Цитата внутри сообщения — как пересланное в мессенджерах. */
+.q { border-left: 3px solid currentColor; opacity: .85; padding: .12rem .55rem;
+     margin-bottom: .35rem; font-size: .85rem; border-radius: 3px; }
+.q-from { font-weight: 700; font-size: .78rem; }
+.q-text { white-space: pre-wrap; }
+.q-task { display: block; text-decoration: none; color: inherit; }
+.q-task .q-from { display: block; }
+.q-lesson { font-size: .75rem; opacity: .8; }
+
+/* Пометка «это вопрос» */
+.msg.q-open { box-shadow: inset 0 0 0 2px #e8a33d; }
+.tag { font-size: .7rem; padding: .05rem .4rem; border-radius: 7px; font-weight: 700; }
+.tag-q { background: #e8a33d; color: #3a2a06; }
+.tag-done { background: #2e9e5b; color: #fff; }
+
+.msg-act { position: absolute; top: -9px; right: 6px; display: none; gap: .25rem; }
+.msg:hover .msg-act, .msg.touched .msg-act { display: flex; }
+.msg-act button { border: 1px solid var(--c-border); background: var(--c-surface);
+                  color: var(--c-text, #24242c); border-radius: 8px; font-size: .72rem;
+                  padding: .1rem .45rem; cursor: pointer; line-height: 1.5; }
+.msg-act button:hover { border-color: var(--c-primary-600); color: var(--c-primary-600); }
+
+/* Полоска цитаты над полем ввода */
+.cw-quote { display: none; align-items: flex-start; gap: .6rem; margin-top: .6rem;
+            background: var(--c-bg-soft); border-left: 3px solid var(--c-primary-600);
+            border-radius: 6px; padding: .45rem .6rem; font-size: .85rem; }
+.cw-quote.on { display: flex; }
+.cw-quote-txt { flex: 1; min-width: 0; }
+.cw-quote-txt b { display: block; font-size: .78rem; }
+.cw-quote-txt span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                     color: var(--c-text-muted, #6b6b76); }
+.cw-quote-x { flex: none; border: none; background: none; font-size: 1.05rem; line-height: 1;
+              cursor: pointer; color: var(--c-text-muted, #6b6b76); }
+
+.cw-form { display: flex; gap: .5rem; margin-top: .7rem; align-items: flex-end; }
 .cw-input { flex: 1; resize: none; border: 1px solid var(--c-border); border-radius: 12px;
             padding: .65rem .85rem; font: inherit; font-size: .95rem; background: var(--c-surface);
             color: inherit; max-height: 140px; }
 .cw-input:focus { outline: none; border-color: var(--c-primary-600); }
-.cw-send { flex: none; border: none; border-radius: 12px; padding: 0 1.15rem;
+.cw-q { flex: none; border: 1px solid var(--c-border); background: var(--c-surface); color: inherit;
+        border-radius: 12px; width: 42px; height: 42px; font-size: 1.1rem; font-weight: 700; cursor: pointer; }
+.cw-q.on { background: #e8a33d; border-color: #e8a33d; color: #3a2a06; }
+.cw-send { flex: none; border: none; border-radius: 12px; padding: 0 1.15rem; height: 42px;
            background: var(--c-primary-600); color: #fff; font-weight: 600; cursor: pointer; }
 .cw-send:disabled { opacity: .5; cursor: default; }
 .cw-hint { font-size: .76rem; color: var(--c-text-muted, #6b6b76); margin-top: .35rem; }
+
+@media (max-width: 600px) {
+  .msg { max-width: 88%; }
+  .cw-inner { height: calc(100vh - 108px); }
+}
 </style>
 {% endblock %}
 
@@ -45,7 +94,15 @@
   <div class="container cw-inner">
     <div class="cw-head">
       <a class="cw-back" href="{% url 'chat_home' %}" title="К списку" aria-label="К списку">←</a>
-      <h1 class="cw-title">{{ собеседник.display }}</h1>
+      <div class="cw-who">
+        <h1 class="cw-title">{{ заголовок }}</h1>
+        {% if thread.is_group %}
+          <div class="cw-people">
+            {% for u in участники %}{{ u.display }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            {% if управляю %} · <a href="{% url 'chat_group_add' thread.id %}">состав</a>{% endif %}
+          </div>
+        {% endif %}
+      </div>
       <span class="cw-state" id="cw-state">соединяемся…</span>
     </div>
 
@@ -53,20 +110,33 @@
       <div class="cw-empty" id="cw-empty">Сообщений пока нет. Напишите первым.</div>
     </div>
 
+    <div class="cw-quote" id="cw-quote">
+      <div class="cw-quote-txt">
+        <b id="cw-quote-from"></b>
+        <span id="cw-quote-text"></span>
+      </div>
+      <button type="button" class="cw-quote-x" id="cw-quote-x" title="Убрать цитату">×</button>
+    </div>
+
     <form class="cw-form" id="cw-form">
       <textarea class="cw-input" id="cw-input" rows="1" placeholder="Сообщение…"
                 maxlength="4000" autocomplete="off"></textarea>
+      <button class="cw-q" id="cw-q" type="button" title="Пометить как вопрос"
+              aria-pressed="false">?</button>
       <button class="cw-send" id="cw-send" type="submit">Отправить</button>
     </form>
-    <div class="cw-hint">Enter — отправить, Shift+Enter — новая строка.</div>
+    <div class="cw-hint">Enter — отправить, Shift+Enter — новая строка. «?» помечает сообщение вопросом.</div>
   </div>
 </section>
+
+{{ предзаполнение|json_script:"cw-prefill" }}
 
 <script>
 (function () {
   "use strict";
   var THREAD = {{ thread.id }};
   var ME = {{ request.user.id }};
+  var ГРУППА = {% if thread.is_group %}true{% else %}false{% endif %};
 
   var feed = document.getElementById('cw-feed');
   var empty = document.getElementById('cw-empty');
@@ -74,8 +144,15 @@
   var input = document.getElementById('cw-input');
   var send = document.getElementById('cw-send');
   var state = document.getElementById('cw-state');
+  var qBtn = document.getElementById('cw-q');
+  var quote = document.getElementById('cw-quote');
+  var quoteFrom = document.getElementById('cw-quote-from');
+  var quoteText = document.getElementById('cw-quote-text');
 
   var ws = null, retry = 1000, alive = null, lastDay = '';
+  // Что прицеплено к следующему сообщению: ответ на чьё-то или задание.
+  var прицеп = { reply: null, about: null };
+  var вопрос = false;
 
   function setState(текст, плохо) {
     state.textContent = текст;
@@ -88,8 +165,7 @@
 
   function dayLabel(iso) {
     var d = new Date(iso), n = new Date();
-    var same = d.toDateString() === n.toDateString();
-    if (same) return 'сегодня';
+    if (d.toDateString() === n.toDateString()) return 'сегодня';
     var в = new Date(n); в.setDate(n.getDate() - 1);
     if (d.toDateString() === в.toDateString()) return 'вчера';
     return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
@@ -98,34 +174,153 @@
     return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   }
 
+  // Всё содержимое кладём через textContent: чужой текст в innerHTML — это
+  // готовая дыра, а сообщения здесь пишут живые люди.
+  function el(tag, cls, текст) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (текст !== undefined && текст !== null) n.textContent = текст;
+    return n;
+  }
+
+  function рисоватьЦитату(m) {
+    if (m.about) {
+      var a = el('a', 'q q-task');
+      a.href = m.about.url || '#';
+      a.appendChild(el('b', 'q-from', 'Задача: ' + m.about.title));
+      if (m.about.lesson) a.appendChild(el('div', 'q-lesson', m.about.lesson));
+      return a;
+    }
+    if (m.reply) {
+      var q = el('div', 'q');
+      q.appendChild(el('div', 'q-from', m.reply.name));
+      q.appendChild(el('div', 'q-text', m.reply.text));
+      return q;
+    }
+    return null;
+  }
+
   function draw(m, снизу) {
     if (empty) { empty.remove(); empty = null; }
     var день = dayLabel(m.at);
     if (день !== lastDay) {
-      var s = document.createElement('div');
-      s.className = 'day'; s.textContent = день;
-      feed.appendChild(s); lastDay = день;
+      feed.appendChild(el('div', 'day', день));
+      lastDay = день;
     }
-    var el = document.createElement('div');
-    el.className = 'msg ' + (m.author === ME ? 'me' : 'them');
-    el.dataset.id = m.id;
-    var t = document.createElement('div');
-    t.textContent = m.text;
-    var meta = document.createElement('div');
-    meta.className = 'msg-meta';
-    meta.textContent = timeLabel(m.at) + (m.author === ME ? (m.read ? ' · прочитано' : ' · отправлено') : '');
-    el.appendChild(t); el.appendChild(meta);
-    feed.appendChild(el);
+
+    var моё = m.author === ME;
+    var box = el('div', 'msg ' + (моё ? 'me' : 'them'));
+    box.dataset.id = m.id;
+    if (m.question && !m.answered) box.classList.add('q-open');
+
+    if (ГРУППА && !моё) box.appendChild(el('div', 'msg-from', m.name));
+    var ц = рисоватьЦитату(m);
+    if (ц) box.appendChild(ц);
+    if (m.text) box.appendChild(el('div', 'msg-body', m.text));
+
+    var meta = el('div', 'msg-meta');
+    meta.appendChild(el('span', '', timeLabel(m.at)));
+    if (m.question) {
+      var t = el('span', 'tag ' + (m.answered ? 'tag-done' : 'tag-q'),
+                 m.answered ? 'отвечено' : 'вопрос');
+      t.dataset.role = 'qtag';
+      meta.appendChild(t);
+    }
+    if (моё) {
+      var r = el('span', '', m.read ? 'прочитано' : 'отправлено');
+      r.dataset.role = 'read';
+      meta.appendChild(r);
+    }
+    box.appendChild(meta);
+
+    // Кнопки: ответить всегда, «закрыть вопрос» — только на открытом вопросе.
+    var act = el('div', 'msg-act');
+    var bReply = el('button', '', 'Ответить');
+    bReply.type = 'button';
+    bReply.addEventListener('click', function () { взятьВОтвет(m); });
+    act.appendChild(bReply);
+    if (m.question) {
+      var bDone = el('button', '', m.answered ? 'Открыть' : 'Закрыть');
+      bDone.type = 'button';
+      bDone.dataset.role = 'qbtn';
+      bDone.addEventListener('click', function () {
+        var сейчас = box.classList.contains('q-open');
+        ws && ws.readyState === 1 && ws.send(JSON.stringify(
+          { action: 'resolve', id: m.id, done: сейчас }));
+      });
+      act.appendChild(bDone);
+    }
+    box.appendChild(act);
+
+    // На сенсорном экране наведения нет — показываем кнопки по касанию.
+    box.addEventListener('click', function (e) {
+      if (e.target.closest('.msg-act') || e.target.closest('a')) return;
+      feed.querySelectorAll('.msg.touched').forEach(function (n) {
+        if (n !== box) n.classList.remove('touched');
+      });
+      box.classList.toggle('touched');
+    });
+
+    feed.appendChild(box);
     if (снизу) toBottom();
   }
 
+  function пометитьОтвеченным(id, отвечено) {
+    var box = feed.querySelector('.msg[data-id="' + id + '"]');
+    if (!box) return;
+    box.classList.toggle('q-open', !отвечено);
+    var tag = box.querySelector('[data-role="qtag"]');
+    if (tag) {
+      tag.className = 'tag ' + (отвечено ? 'tag-done' : 'tag-q');
+      tag.textContent = отвечено ? 'отвечено' : 'вопрос';
+    }
+    var btn = box.querySelector('[data-role="qbtn"]');
+    if (btn) btn.textContent = отвечено ? 'Открыть' : 'Закрыть';
+  }
+
   function markAllRead() {
-    // Собеседник прочитал — обновляем подпись у СВОИХ сообщений.
-    feed.querySelectorAll('.msg.me .msg-meta').forEach(function (m) {
-      m.textContent = m.textContent.replace(' · отправлено', ' · прочитано');
+    feed.querySelectorAll('.msg.me [data-role="read"]').forEach(function (n) {
+      n.textContent = 'прочитано';
     });
   }
 
+  // ── Прицеп: ответ или задача ────────────────────────────────────────
+  function показатьПрицеп(кто, что) {
+    quoteFrom.textContent = кто;
+    quoteText.textContent = что;
+    quote.classList.add('on');
+  }
+  function снятьПрицеп() {
+    прицеп.reply = null; прицеп.about = null;
+    quote.classList.remove('on');
+  }
+  function взятьВОтвет(m) {
+    прицеп.reply = m.id; прицеп.about = null;
+    показатьПрицеп('В ответ ' + m.name, m.text || 'задача');
+    input.focus();
+  }
+  document.getElementById('cw-quote-x').addEventListener('click', снятьПрицеп);
+
+  qBtn.addEventListener('click', function () {
+    вопрос = !вопрос;
+    qBtn.classList.toggle('on', вопрос);
+    qBtn.setAttribute('aria-pressed', вопрос ? 'true' : 'false');
+    input.focus();
+  });
+
+  // Пришли по кнопке «спросить по задаче» — цитата уже прицеплена.
+  var предзаполнение = null;
+  try { предзаполнение = JSON.parse(document.getElementById('cw-prefill').textContent); }
+  catch (e) { предзаполнение = null; }
+  if (предзаполнение && предзаполнение.id) {
+    прицеп.about = предзаполнение.id;
+    вопрос = true;
+    qBtn.classList.add('on');
+    qBtn.setAttribute('aria-pressed', 'true');
+    показатьПрицеп('Вопрос по задаче', предзаполнение.title);
+  }
+
+  // ── Соединение ──────────────────────────────────────────────────────
   function open() {
     var схема = location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(схема + location.host + '/ws/chat/' + THREAD + '/');
@@ -152,14 +347,15 @@
       } else if (d.action === 'message') {
         var снизу = atBottom();
         draw(d.message, снизу);
-        // Пришло чужое, а мы смотрим на ленту — значит прочитали.
         if (d.message.author !== ME && document.visibilityState === 'visible') {
           ws.send(JSON.stringify({ action: 'read' }));
         }
       } else if (d.action === 'read') {
         markAllRead();
+      } else if (d.action === 'answered') {
+        пометитьОтвеченным(d.id, d.answered);
       } else if (d.action === 'rejected') {
-        setState('слишком часто — подождите', true);
+        setState(d.reason === 'bad_ref' ? 'цитата не подошла' : 'слишком часто — подождите', true);
         setTimeout(function () { if (ws && ws.readyState === 1) setState('на связи'); }, 2500);
       }
     };
@@ -177,10 +373,17 @@
 
   function submit() {
     var text = input.value.trim();
-    if (!text || !ws || ws.readyState !== 1) return;
-    ws.send(JSON.stringify({ action: 'send', text: text }));
+    if ((!text && !прицеп.about) || !ws || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({
+      action: 'send', text: text,
+      reply_to: прицеп.reply, about: прицеп.about, question: вопрос
+    }));
     input.value = '';
     input.style.height = 'auto';
+    снятьПрицеп();
+    вопрос = false;
+    qBtn.classList.remove('on');
+    qBtn.setAttribute('aria-pressed', 'false');
     input.focus();
   }
 
@@ -193,7 +396,6 @@
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 140) + 'px';
   });
-  // Вернулись на вкладку — отмечаем прочитанным.
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible' && ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ action: 'read' }));

@@ -5,7 +5,12 @@
 {% block extra_css %}
 <style>
 .ch-wrap { padding-top: 100px; min-height: 70vh; }
-.ch-h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 1rem; }
+.ch-head { display: flex; align-items: center; gap: .8rem; margin: 0 0 1rem; }
+.ch-h1 { font-size: 1.5rem; font-weight: 700; margin: 0; flex: 1; }
+.ch-new { flex: none; border: 1px solid var(--c-primary-600); color: var(--c-primary-600);
+          background: transparent; border-radius: 10px; padding: .4rem .85rem;
+          font-size: .88rem; font-weight: 600; text-decoration: none; }
+.ch-new:hover { background: var(--c-primary-600); color: #fff; }
 .ch-list { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-lg); overflow: hidden; }
 .ch-row { display: flex; align-items: center; gap: .85rem; padding: .9rem 1.1rem;
           border-bottom: 1px solid var(--c-border); text-decoration: none; color: inherit; }
@@ -13,6 +18,8 @@
 .ch-row:hover { background: var(--c-bg-soft); color: inherit; }
 .ch-row:focus-visible { outline: 2px solid var(--c-primary-600); outline-offset: -2px; }
 .ch-name { font-weight: 600; flex: 1; }
+.ch-kind { flex: none; font-size: .75rem; padding: .12rem .5rem; border-radius: 8px;
+           background: var(--c-bg-soft); color: var(--c-text-muted, #6b6b76); }
 .ch-badge { flex: none; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 11px;
             background: var(--c-primary-600); color: #fff; font-size: .78rem; font-weight: 600;
             display: inline-flex; align-items: center; justify-content: center; }
@@ -27,45 +34,51 @@
 {% block content %}
 <section class="ch-wrap">
   <div class="container" style="max-width: 720px;">
-    <h1 class="ch-h1">Переписка</h1>
+    <div class="ch-head">
+      <h1 class="ch-h1">Переписка</h1>
+      {% if может_группу %}
+        <a class="ch-new" href="{% url 'chat_group_new' %}">Собрать группу</a>
+      {% endif %}
+    </div>
 
-    {% if нет_преподавателя %}
-      <div class="ch-empty">
-        Вам ещё не назначен преподаватель, поэтому писать пока некому.
-        Как только вас закрепят за преподавателем, переписка появится здесь.
+    {% if threads %}
+      <div class="ch-list">
+        {% for t in threads %}
+          <a class="ch-row" href="{% url 'chat_thread' t.id %}">
+            <span class="ch-name">{{ t.заголовок }}</span>
+            {% if t.is_group %}<span class="ch-kind">группа</span>{% endif %}
+            {% if t.непрочитано %}<span class="ch-badge">{{ t.непрочитано }}</span>{% endif %}
+          </a>
+        {% endfor %}
       </div>
+    {% endif %}
 
-    {% else %}
+    {% if новые %}
+      <div class="ch-sec">Ещё не писали</div>
+      <div class="ch-list">
+        {% for s in новые %}
+          <a class="ch-row" href="{% url 'chat_start' s.id %}">
+            <span class="ch-name">{{ s.display }}</span>
+            <span class="ch-sub">начать</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
 
-      {% if threads %}
-        <div class="ch-list">
-          {% for t in threads %}
-            <a class="ch-row" href="{% url 'chat_thread' t.id %}">
-              <span class="ch-name">{{ t.student.display }}</span>
-              {% if t.непрочитано %}<span class="ch-badge">{{ t.непрочитано }}</span>{% endif %}
-            </a>
-          {% endfor %}
-        </div>
-      {% endif %}
-
-      {% if новые %}
-        <div class="ch-sec">Ещё не писали</div>
-        <div class="ch-list">
-          {% for s in новые %}
-            <a class="ch-row" href="{% url 'chat_start' s.id %}">
-              <span class="ch-name">{{ s.display }}</span>
-              <span class="ch-sub">начать</span>
-            </a>
-          {% endfor %}
-        </div>
-      {% endif %}
-
-      {% if not threads and not новые %}
-        <div class="ch-empty">
+    {% if нет_собеседников %}
+      <div class="ch-empty">
+        {% comment %}
+        Разные роли остаются без собеседника по разным причинам, и списывать
+        обе на «пусто» — значит заставить человека гадать, что он сломал.
+        Он ничего не сломал.
+        {% endcomment %}
+        {% if request.user.role == 'student' %}
+          Вам ещё не назначен преподаватель, поэтому писать пока некому.
+          Как только вас закрепят, переписка появится здесь.
+        {% else %}
           За вами пока не закреплён ни один ученик — писать некому.
-        </div>
-      {% endif %}
-
+        {% endif %}
+      </div>
     {% endif %}
   </div>
 </section>

@@ -1,98 +1,196 @@
 # -*- coding: utf-8 -*-
-"""Чат преподавателя с учеником: страницы.
+"""Переписка: страницы. Сообщения ходят по WebSocket (users/consumers.py).
 
-Сообщения ходят по WebSocket (users/consumers.py), здесь только показ ленты и
-разрешение доступа. История приходит уже из обработчика, поэтому вид не тянет
-сообщения сам — иначе они пришли бы дважды.
+Здесь только показ и разрешение доступа. Историю страница не тянет: её отдаёт
+обработчик при подключении — иначе первые полсотни сообщений пришли бы дважды,
+из шаблона и из сокета.
+
+Правила «кто кому вправе писать» лежат не здесь, а в users/chat.py: тем же
+правилам подчиняется обработчик сокета, и две копии разошлись бы.
 """
 
+from django.contrib import messages as django_messages
 from django.contrib.auth.decorators import login_required
-from django.db.models import Count, Q
 from django.http import Http404
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 
-from .models import Message, Thread, User
-
-
-def _общая_ветка(teacher, student):
-    """Общая ветка пары. Заводится при первом заходе, одна на двоих."""
-    thread, _ = Thread.objects.get_or_create(
-        teacher=teacher, student=student, lesson=None)
-    return thread
+from .chat import (addressable_for, create_group, direct_thread, may_manage,
+                   may_talk_to, threads_for)
+from .models import Assignment, Thread, ThreadMember, User
 
 
 @login_required
 def chat_home(request):
-    """Вход в переписку.
+    """Список переписок: и личные, и группы, свежие сверху.
 
-    Ученику открывать нечего, кроме разговора со своим преподавателем, — ведём
-    прямо в него. Преподавателю показываем список учеников: у него их много.
+    Ученика больше не уносим сразу в разговор с преподавателем: у него теперь
+    может быть и группа, и перекинуть его мимо списка значит спрятать её.
     """
     user = request.user
+    ветки = threads_for(user)
 
-    if user.role == 'student':
-        профиль = getattr(user, 'student_profile', None)
-        преподаватель = профиль.teacher if профиль else None
-        if преподаватель is None:
-            # Честно говорим, почему пусто: списывать это на «ошибку» нельзя,
-            # человек ничего не сломал — ему просто ещё не назначили преподавателя.
-            return render(request, 'users/chat_list.html', {
-                'title': 'Переписка',
-                'threads': [],
-                'нет_преподавателя': True,
-            })
-        return redirect('chat_thread', thread_id=_общая_ветка(преподаватель, user).id)
-
-    # Преподаватель: список учеников, сверху — где есть непрочитанное.
-    ветки = (Thread.objects
-             .filter(teacher=user, lesson__isnull=True)
-             .select_related('student', 'student__student_profile')
-             .annotate(непрочитано=Count(
-                 'messages',
-                 filter=Q(messages__read_at__isnull=True) & ~Q(messages__author=user)))
-             .order_by('-updated_at'))
-
-    # Ученики, с которыми переписки ещё не было: без них список пуст в самом
-    # начале, и непонятно, кому вообще можно написать.
-    свои = User.objects.filter(student_profile__teacher=user, role='student')
-    есть = {t.student_id for t in ветки}
-    новые = [s for s in свои if s.id not in есть]
+    # С кем переписки ещё не было. Без этого список пуст в самом начале, и
+    # непонятно, кому вообще можно написать.
+    занятые = set()
+    for t in ветки:
+        if t.kind == Thread.KIND_DIRECT:
+            другой = t.other_side(user)
+            if другой:
+                занятые.add(другой.id)
+    новые = [u for u in addressable_for(user) if u.id not in занятые]
 
     return render(request, 'users/chat_list.html', {
         'title': 'Переписка',
         'threads': ветки,
         'новые': новые,
-        'нет_преподавателя': False,
+        'может_группу': user.role == 'teacher',
+        'нет_собеседников': not ветки and not новые,
     })
 
 
 @login_required
-def chat_start(request, student_id):
-    """Преподаватель начинает переписку с учеником из списка."""
-    if request.user.role != 'teacher':
+def chat_start(request, user_id):
+    """Открыть личную переписку с человеком (заводя её при первом обращении)."""
+    другой = get_object_or_404(User, pk=user_id)
+    if not may_talk_to(request.user, другой):
+        # Не «нельзя», а 404: перебор номеров не должен подсказывать, кто есть.
         raise Http404
-    student = User.objects.filter(pk=student_id, role='student').first()
-    if student is None:
-        raise Http404
-    return redirect('chat_thread', thread_id=_общая_ветка(request.user, student).id)
+    return redirect('chat_thread', thread_id=direct_thread(request.user, другой).id)
 
 
 @login_required
 def chat_thread(request, thread_id):
     """Одна лента переписки."""
     thread = (Thread.objects
-              .select_related('teacher', 'student', 'lesson')
+              .prefetch_related('memberships__user')
               .filter(pk=thread_id).first())
     if thread is None or not thread.has_access(request.user):
         # Не «нет доступа», а именно 404: чужая переписка не должна выдавать
         # даже факт своего существования.
         raise Http404
 
-    собеседник = thread.other_side(request.user)
+    # Пришли по кнопке «спросить по задаче» — цитата подставится в поле ввода.
+    задание = None
+    сырое = request.GET.get('about')
+    if сырое:
+        from .views import _can_access_lesson
+        з = (Assignment.objects
+             .filter(pk=сырое)
+             .select_related('lesson', 'lesson__module', 'lesson__module__course')
+             .first())
+        # Проверяем ТОЙ ЖЕ проверкой, что и страница урока: два разных правила
+        # доступа к одному уроку — заявка на дыру.
+        if з is not None and _can_access_lesson(request.user, з.lesson):
+            задание = з
+
+    участники = list(thread.memberships.all())
     return render(request, 'users/chat.html', {
-        'title': f'Переписка · {собеседник.display if собеседник else ""}',
+        'title': 'Переписка · %s' % thread.display_for(request.user),
         'thread': thread,
-        'собеседник': собеседник,
-        'непрочитано': Message.objects.filter(
-            thread=thread, read_at__isnull=True).exclude(author=request.user).count(),
+        'заголовок': thread.display_for(request.user),
+        'участники': [m.user for m in участники],
+        'управляю': may_manage(thread, request.user),
+        # Через json_script, а не в разметку: название задачи пишет человек, и
+        # вставлять его в исходник страницы руками — это дыра.
+        'предзаполнение': ({'id': задание.id, 'title': задание.title}
+                           if задание else {}),
     })
+
+
+@login_required
+def chat_group_new(request):
+    """Собрать группу. Собирает только преподаватель и только из своих.
+
+    Иначе ученик заводит группу с кем угодно, зная лишь номер, — обычная дыра
+    в чатах, а не выдуманная опасность.
+    """
+    if request.user.role != 'teacher':
+        raise Http404
+
+    кандидаты = addressable_for(request.user)
+    if request.method == 'POST':
+        название = (request.POST.get('title') or '').strip()
+        отмечены = set(request.POST.getlist('members'))
+        выбранные = [u for u in кандидаты if str(u.id) in отмечены]
+        if not название:
+            django_messages.error(request, 'У группы должно быть название.')
+        elif not выбранные:
+            django_messages.error(request, 'Выберите хотя бы одного участника.')
+        else:
+            ветка = create_group(request.user, название, выбранные)
+            return redirect('chat_thread', thread_id=ветка.id)
+
+    return render(request, 'users/chat_group_new.html', {
+        'title': 'Новая группа',
+        'кандидаты': кандидаты,
+    })
+
+
+@login_required
+def chat_group_add(request, thread_id):
+    """Позвать в группу ещё людей. Только распорядитель и только своих."""
+    thread = get_object_or_404(Thread, pk=thread_id)
+    if not may_manage(thread, request.user):
+        raise Http404
+
+    if request.method == 'POST':
+        уже = set(thread.memberships.values_list('user_id', flat=True))
+        отмечены = set(request.POST.getlist('members'))
+        добавили = 0
+        for u in addressable_for(request.user):
+            if str(u.id) in отмечены and u.id not in уже:
+                ThreadMember.objects.create(thread=thread, user=u)
+                добавили += 1
+        название = (request.POST.get('title') or '').strip()
+        if название and название != thread.title:
+            thread.title = название[:120]
+            thread.save(update_fields=['title'])
+        if добавили:
+            django_messages.success(
+                request, 'Добавлено участников: %d.' % добавили)
+        return redirect('chat_thread', thread_id=thread.id)
+
+    уже = set(thread.memberships.values_list('user_id', flat=True))
+    return render(request, 'users/chat_group_edit.html', {
+        'title': 'Состав группы',
+        'thread': thread,
+        'участники': [m.user for m in thread.memberships.select_related('user')],
+        'кандидаты': [u for u in addressable_for(request.user) if u.id not in уже],
+    })
+
+
+@login_required
+def chat_ask_about(request, assignment_id):
+    """«Спросить по задаче»: ведёт в ОБЩУЮ переписку с цитатой задания.
+
+    Именно в общую, а не в отдельную ветку при домашке. Разговор про учёбу
+    должен лежать в одном месте: иначе человек потом ищет, где он спрашивал, —
+    и находит три ленты, в каждой по половине разговора.
+    """
+    from .views import _can_access_lesson
+    задание = get_object_or_404(
+        Assignment.objects.select_related('lesson', 'lesson__module',
+                                          'lesson__module__course'),
+        pk=assignment_id)
+    if not _can_access_lesson(request.user, задание.lesson):
+        raise Http404
+
+    собеседник = None
+    if request.user.role == 'student':
+        профиль = getattr(request.user, 'student_profile', None)
+        собеседник = профиль.teacher if профиль else None
+    else:
+        # Преподаватель спрашивает по задаче — значит пишет владельцу курса,
+        # если это не он сам; такое бывает при совместных курсах.
+        владелец = задание.lesson.module.course.owner
+        собеседник = владелец if владелец and владелец.id != request.user.id else None
+
+    if собеседник is None:
+        django_messages.error(
+            request, 'Некому написать: преподаватель ещё не назначен.')
+        return redirect('lesson_detail', lesson_id=задание.lesson_id)
+
+    ветка = direct_thread(request.user, собеседник)
+    адрес = reverse('chat_thread', args=[ветка.id])
+    return redirect('%s?about=%d' % (адрес, задание.id))
