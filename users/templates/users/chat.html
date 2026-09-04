@@ -1,0 +1,207 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.cw { padding-top: 92px; padding-bottom: 1.5rem; }
+.cw-inner { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column;
+            height: calc(100vh - 118px); min-height: 380px; }
+.cw-head { display: flex; align-items: center; gap: .7rem; margin-bottom: .7rem; }
+.cw-back { color: var(--c-text-muted, #6b6b76); text-decoration: none; font-size: 1.2rem; line-height: 1; }
+.cw-back:hover { color: var(--c-primary-600); }
+.cw-title { font-size: 1.25rem; font-weight: 700; margin: 0; flex: 1; }
+.cw-state { font-size: .8rem; color: var(--c-text-muted, #6b6b76); }
+.cw-state.off { color: #c0392b; }
+
+.cw-feed { flex: 1; overflow-y: auto; background: var(--c-surface);
+           border: 1px solid var(--c-border); border-radius: var(--r-lg);
+           padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .55rem; }
+.cw-empty { margin: auto; color: var(--c-text-muted, #6b6b76); text-align: center; font-size: .92rem; }
+
+.msg { max-width: 78%; padding: .5rem .8rem; border-radius: 14px; line-height: 1.45;
+       white-space: pre-wrap; word-wrap: break-word; }
+.msg.them { align-self: flex-start; background: var(--c-bg-soft); border-bottom-left-radius: 5px; }
+.msg.me { align-self: flex-end; background: var(--c-primary-600); color: #fff; border-bottom-right-radius: 5px; }
+.msg-meta { font-size: .72rem; opacity: .68; margin-top: .2rem; display: flex; gap: .4rem; justify-content: flex-end; }
+.msg.them .msg-meta { justify-content: flex-start; }
+.day { align-self: center; font-size: .74rem; color: var(--c-text-muted, #6b6b76);
+       background: var(--c-bg-soft); padding: .15rem .7rem; border-radius: 10px; margin: .3rem 0; }
+
+.cw-form { display: flex; gap: .5rem; margin-top: .7rem; }
+.cw-input { flex: 1; resize: none; border: 1px solid var(--c-border); border-radius: 12px;
+            padding: .65rem .85rem; font: inherit; font-size: .95rem; background: var(--c-surface);
+            color: inherit; max-height: 140px; }
+.cw-input:focus { outline: none; border-color: var(--c-primary-600); }
+.cw-send { flex: none; border: none; border-radius: 12px; padding: 0 1.15rem;
+           background: var(--c-primary-600); color: #fff; font-weight: 600; cursor: pointer; }
+.cw-send:disabled { opacity: .5; cursor: default; }
+.cw-hint { font-size: .76rem; color: var(--c-text-muted, #6b6b76); margin-top: .35rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="cw">
+  <div class="container cw-inner">
+    <div class="cw-head">
+      <a class="cw-back" href="{% url 'chat_home' %}" title="К списку" aria-label="К списку">←</a>
+      <h1 class="cw-title">{{ собеседник.display }}</h1>
+      <span class="cw-state" id="cw-state">соединяемся…</span>
+    </div>
+
+    <div class="cw-feed" id="cw-feed">
+      <div class="cw-empty" id="cw-empty">Сообщений пока нет. Напишите первым.</div>
+    </div>
+
+    <form class="cw-form" id="cw-form">
+      <textarea class="cw-input" id="cw-input" rows="1" placeholder="Сообщение…"
+                maxlength="4000" autocomplete="off"></textarea>
+      <button class="cw-send" id="cw-send" type="submit">Отправить</button>
+    </form>
+    <div class="cw-hint">Enter — отправить, Shift+Enter — новая строка.</div>
+  </div>
+</section>
+
+<script>
+(function () {
+  "use strict";
+  var THREAD = {{ thread.id }};
+  var ME = {{ request.user.id }};
+
+  var feed = document.getElementById('cw-feed');
+  var empty = document.getElementById('cw-empty');
+  var form = document.getElementById('cw-form');
+  var input = document.getElementById('cw-input');
+  var send = document.getElementById('cw-send');
+  var state = document.getElementById('cw-state');
+
+  var ws = null, retry = 1000, alive = null, lastDay = '';
+
+  function setState(текст, плохо) {
+    state.textContent = текст;
+    state.classList.toggle('off', !!плохо);
+  }
+  function atBottom() {
+    return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+  }
+  function toBottom() { feed.scrollTop = feed.scrollHeight; }
+
+  function dayLabel(iso) {
+    var d = new Date(iso), n = new Date();
+    var same = d.toDateString() === n.toDateString();
+    if (same) return 'сегодня';
+    var в = new Date(n); в.setDate(n.getDate() - 1);
+    if (d.toDateString() === в.toDateString()) return 'вчера';
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  }
+  function timeLabel(iso) {
+    return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function draw(m, снизу) {
+    if (empty) { empty.remove(); empty = null; }
+    var день = dayLabel(m.at);
+    if (день !== lastDay) {
+      var s = document.createElement('div');
+      s.className = 'day'; s.textContent = день;
+      feed.appendChild(s); lastDay = день;
+    }
+    var el = document.createElement('div');
+    el.className = 'msg ' + (m.author === ME ? 'me' : 'them');
+    el.dataset.id = m.id;
+    var t = document.createElement('div');
+    t.textContent = m.text;
+    var meta = document.createElement('div');
+    meta.className = 'msg-meta';
+    meta.textContent = timeLabel(m.at) + (m.author === ME ? (m.read ? ' · прочитано' : ' · отправлено') : '');
+    el.appendChild(t); el.appendChild(meta);
+    feed.appendChild(el);
+    if (снизу) toBottom();
+  }
+
+  function markAllRead() {
+    // Собеседник прочитал — обновляем подпись у СВОИХ сообщений.
+    feed.querySelectorAll('.msg.me .msg-meta').forEach(function (m) {
+      m.textContent = m.textContent.replace(' · отправлено', ' · прочитано');
+    });
+  }
+
+  function open() {
+    var схема = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(схема + location.host + '/ws/chat/' + THREAD + '/');
+
+    ws.onopen = function () {
+      retry = 1000;
+      setState('на связи');
+      send.disabled = false;
+      // Сердцебиение: без него молчащее соединение может оборвать посредник.
+      clearInterval(alive);
+      alive = setInterval(function () {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action: 'ping' }));
+      }, 25000);
+    };
+
+    ws.onmessage = function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.action === 'history') {
+        feed.querySelectorAll('.msg, .day').forEach(function (n) { n.remove(); });
+        lastDay = '';
+        (d.messages || []).forEach(function (m) { draw(m, false); });
+        toBottom();
+      } else if (d.action === 'message') {
+        var снизу = atBottom();
+        draw(d.message, снизу);
+        // Пришло чужое, а мы смотрим на ленту — значит прочитали.
+        if (d.message.author !== ME && document.visibilityState === 'visible') {
+          ws.send(JSON.stringify({ action: 'read' }));
+        }
+      } else if (d.action === 'read') {
+        markAllRead();
+      } else if (d.action === 'rejected') {
+        setState('слишком часто — подождите', true);
+        setTimeout(function () { if (ws && ws.readyState === 1) setState('на связи'); }, 2500);
+      }
+    };
+
+    ws.onclose = function () {
+      clearInterval(alive);
+      send.disabled = true;
+      setState('связь потеряна, соединяемся…', true);
+      // Переподключение с нарастающей паузой — как на доске.
+      setTimeout(open, retry);
+      retry = Math.min(retry * 2, 15000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+
+  function submit() {
+    var text = input.value.trim();
+    if (!text || !ws || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({ action: 'send', text: text }));
+    input.value = '';
+    input.style.height = 'auto';
+    input.focus();
+  }
+
+  form.addEventListener('submit', function (e) { e.preventDefault(); submit(); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+  });
+  // Поле растёт под текст, но не бесконечно.
+  input.addEventListener('input', function () {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  });
+  // Вернулись на вкладку — отмечаем прочитанным.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ action: 'read' }));
+    }
+  });
+
+  send.disabled = true;
+  open();
+})();
+</script>
+{% endblock %}

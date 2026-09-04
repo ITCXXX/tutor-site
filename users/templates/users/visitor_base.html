@@ -125,6 +125,7 @@
                                 {% endif %}
                             </a>
                         </li>
+                        <li class="nav-item"><a class="nav-link" href="{% url 'chat_home' %}">Переписка</a></li>
                         <li class="nav-item"><a class="nav-link" href="{% url 'board:list' %}">Доска</a></li>
 
                         {% if user.role == 'student' %}

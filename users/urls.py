@@ -8,6 +8,7 @@ from . import views_materials
 from . import views_oge1_5
 from . import views_media
 from . import views_seo
+from . import views_chat
 
 # ===== 1. СОЗДАЕМ РОУТЕР ДЛЯ API =====
 router = DefaultRouter()
@@ -113,6 +114,8 @@ urlpatterns = [
     path('exam/db-reset/<int:assignment_id>/',
          views_exam.reset_db_assignment, name='reset_db_assignment'),
     path('exam/generate-new/<int:assignment_id>/', views_exam.generate_new_problem, name='generate_new_problem'),
+    # Разбор задачи на доказательство (№24) до ответа: попытка не пишется.
+    path('exam/solution/<int:problem_id>/', views_exam.problem_solution, name='problem_solution'),
     path('lesson/<int:lesson_id>/practice/',
          views_exam.lesson_practice, name='lesson_practice'),
     path('lesson/<int:lesson_id>/next/',
@@ -136,6 +139,11 @@ urlpatterns = [
     # path('exam/course/<int:course_id>/', views_exam.exam_course_detail, name='exam_course_detail'),
     # path('exam/prototype/<int:prototype_id>/', views_exam.prototype_detail, name='prototype_detail'),
     # path('exam/statistics/', views_exam.student_statistics, name='exam_statistics'),
+
+    # ===== Переписка преподавателя с учеником =====
+    path('chat/', views_chat.chat_home, name='chat_home'),
+    path('chat/start/<int:student_id>/', views_chat.chat_start, name='chat_start'),
+    path('chat/<int:thread_id>/', views_chat.chat_thread, name='chat_thread'),
 ]
 
 # ===== 3. ОБРАБОТЧИКИ ОШИБОК =====

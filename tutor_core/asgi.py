@@ -25,12 +25,16 @@ from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 from channels.security.websocket import AllowedHostsOriginValidator  # noqa: E402
 
 import board.routing  # noqa: E402
+import users.routing  # noqa: E402
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
     "websocket": AllowedHostsOriginValidator(
         AuthMiddlewareStack(
-            URLRouter(board.routing.websocket_urlpatterns)
+            # Маршруты складываются: доска и чат кабинета — разные подсистемы,
+            # каждая со своим обработчиком.
+            URLRouter(board.routing.websocket_urlpatterns
+                      + users.routing.websocket_urlpatterns)
         )
     ),
 })

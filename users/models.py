@@ -1,5 +1,6 @@
 # users/models.py
 from django.db import models
+from django.db.models import Q
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.validators import URLValidator
@@ -868,9 +869,11 @@ class Notification(models.Model):
 
     KIND_SUBMITTED = 'submitted'   # ученик прислал работу — преподавателю
     KIND_REVIEWED = 'reviewed'     # работу проверили — ученику
+    KIND_MESSAGE = 'message'       # написали в чат — тому, кого нет на сайте
     KIND_CHOICES = [
         (KIND_SUBMITTED, 'Прислали работу'),
         (KIND_REVIEWED, 'Работу проверили'),
+        (KIND_MESSAGE, 'Новое сообщение'),
     ]
 
     user = models.ForeignKey(
@@ -882,6 +885,11 @@ class Notification(models.Model):
     # Куда ведёт. Храним готовый путь, а не тип с номером: адрес считается в
     # момент события, когда под рукой и курс, и урок, и роль читателя.
     url = models.CharField('Ссылка', max_length=500, blank=True)
+    # Ключ повторности: «про что» это уведомление. Пустой — обычное разовое.
+    # Непустой вместе с (кем, видом) уникален, и это даёт две вещи сразу:
+    # напоминание о сроке не уйдёт дважды, а сообщения в одной ветке
+    # складываются в ОДНУ запись, а не сыплются по штуке на реплику.
+    key = models.CharField('Ключ повторности', max_length=120, blank=True)
     is_read = models.BooleanField('Прочитано', default=False)
     created_at = models.DateTimeField('Когда', auto_now_add=True)
 
@@ -892,6 +900,15 @@ class Notification(models.Model):
         # Счётчик непрочитанных считается на КАЖДОЙ странице, поэтому индекс
         # именно под этот запрос.
         indexes = [models.Index(fields=['user', 'is_read', '-created_at'])]
+        constraints = [
+            # Уникальность только у ПОМЕЧЕННЫХ ключом. Пустой ключ — у обычных
+            # разовых уведомлений, их может быть сколько угодно.
+            models.UniqueConstraint(
+                fields=['user', 'kind', 'key'],
+                condition=~Q(key=''),
+                name='uniq_notification_key',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.user.username}: {self.text[:40]}'
@@ -1307,3 +1324,107 @@ class GroupAttempt(models.Model):
 
     def __str__(self):
         return f"{self.student.user.username} · {self.sub_question} → {self.answer}"
+
+
+# --------------------------------------------------
+# Чат преподавателя с учеником
+# --------------------------------------------------
+class Thread(models.Model):
+    """Ветка переписки. Сейчас — одна общая на пару «преподаватель — ученик».
+
+    Поле lesson заведено на вырост и пока всегда пустое: когда понадобятся
+    обсуждения при конкретной домашке, они лягут сюда же, и различать их будет
+    одно поле, а не отдельная таблица.
+    """
+
+    teacher = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='threads_as_teacher',
+        limit_choices_to={'role': 'teacher'}, verbose_name='Преподаватель',
+    )
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='threads_as_student',
+        limit_choices_to={'role': 'student'}, verbose_name='Ученик',
+    )
+    # Пусто — общая ветка; заполнено — обсуждение конкретной домашки.
+    lesson = models.ForeignKey(
+        Lesson, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='threads', verbose_name='Урок (если обсуждение домашки)',
+    )
+    created_at = models.DateTimeField('Заведена', auto_now_add=True)
+    # Время последнего сообщения — по нему список веток сортируется у преподавателя.
+    updated_at = models.DateTimeField('Последнее сообщение', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Ветка переписки'
+        verbose_name_plural = 'Ветки переписки'
+        ordering = ['-updated_at']
+        constraints = [
+            # Общая ветка на пару — ровно одна. unique_together тут не годится:
+            # в SQL два NULL не равны друг другу, и пустой lesson не помешал бы
+            # завести вторую такую же ветку.
+            models.UniqueConstraint(
+                fields=['teacher', 'student'],
+                condition=Q(lesson__isnull=True),
+                name='uniq_general_thread_per_pair',
+            ),
+            models.UniqueConstraint(
+                fields=['teacher', 'student', 'lesson'],
+                condition=Q(lesson__isnull=False),
+                name='uniq_lesson_thread_per_pair',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['teacher', '-updated_at']),
+            models.Index(fields=['student', '-updated_at']),
+        ]
+
+    def __str__(self):
+        куда = self.lesson.title if self.lesson_id else 'общая'
+        return f"{self.teacher} ↔ {self.student} ({куда})"
+
+    def other_side(self, user):
+        """Собеседник для этого пользователя (или None, если он не участник)."""
+        if user.id == self.teacher_id:
+            return self.student
+        if user.id == self.student_id:
+            return self.teacher
+        return None
+
+    def has_access(self, user):
+        return bool(user and user.is_authenticated
+                    and user.id in (self.teacher_id, self.student_id))
+
+
+class Message(models.Model):
+    """Одно сообщение в ветке.
+
+    Хранится всегда, независимо от того, был ли собеседник на сайте: лента —
+    это история, а не эфир. Вложений пока нет намеренно: файлы уже умеет
+    домашка, и второй тракт загрузки заводить рано.
+    """
+
+    thread = models.ForeignKey(
+        Thread, on_delete=models.CASCADE, related_name='messages',
+        verbose_name='Ветка',
+    )
+    author = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='chat_messages',
+        verbose_name='Автор',
+    )
+    text = models.TextField('Текст')
+    created_at = models.DateTimeField('Когда', auto_now_add=True)
+    # Пусто — собеседник ещё не читал. По этому полю считается «непрочитанных: 3».
+    read_at = models.DateTimeField('Прочитано', null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Сообщение'
+        verbose_name_plural = 'Сообщения'
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['thread', 'created_at']),
+            # Непрочитанные ищем по ветке и пустой отметке прочтения.
+            models.Index(fields=['thread', 'read_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.author}: {self.text[:40]}"

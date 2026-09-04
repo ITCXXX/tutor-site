@@ -1,0 +1,72 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extra_css %}
+<style>
+.ch-wrap { padding-top: 100px; min-height: 70vh; }
+.ch-h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 1rem; }
+.ch-list { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-lg); overflow: hidden; }
+.ch-row { display: flex; align-items: center; gap: .85rem; padding: .9rem 1.1rem;
+          border-bottom: 1px solid var(--c-border); text-decoration: none; color: inherit; }
+.ch-row:last-child { border-bottom: none; }
+.ch-row:hover { background: var(--c-bg-soft); color: inherit; }
+.ch-row:focus-visible { outline: 2px solid var(--c-primary-600); outline-offset: -2px; }
+.ch-name { font-weight: 600; flex: 1; }
+.ch-badge { flex: none; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 11px;
+            background: var(--c-primary-600); color: #fff; font-size: .78rem; font-weight: 600;
+            display: inline-flex; align-items: center; justify-content: center; }
+.ch-sub { color: var(--c-text-muted, #6b6b76); font-size: .87rem; }
+.ch-sec { margin: 1.6rem 0 .6rem; font-size: .8rem; font-weight: 600; letter-spacing: .06em;
+          text-transform: uppercase; color: var(--c-text-muted, #6b6b76); }
+.ch-empty { background: var(--c-surface); border: 1px solid var(--c-border);
+            border-radius: var(--r-lg); padding: 1.4rem 1.2rem; color: var(--c-text-muted, #6b6b76); }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="ch-wrap">
+  <div class="container" style="max-width: 720px;">
+    <h1 class="ch-h1">Переписка</h1>
+
+    {% if нет_преподавателя %}
+      <div class="ch-empty">
+        Вам ещё не назначен преподаватель, поэтому писать пока некому.
+        Как только вас закрепят за преподавателем, переписка появится здесь.
+      </div>
+
+    {% else %}
+
+      {% if threads %}
+        <div class="ch-list">
+          {% for t in threads %}
+            <a class="ch-row" href="{% url 'chat_thread' t.id %}">
+              <span class="ch-name">{{ t.student.display }}</span>
+              {% if t.непрочитано %}<span class="ch-badge">{{ t.непрочитано }}</span>{% endif %}
+            </a>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      {% if новые %}
+        <div class="ch-sec">Ещё не писали</div>
+        <div class="ch-list">
+          {% for s in новые %}
+            <a class="ch-row" href="{% url 'chat_start' s.id %}">
+              <span class="ch-name">{{ s.display }}</span>
+              <span class="ch-sub">начать</span>
+            </a>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      {% if not threads and not новые %}
+        <div class="ch-empty">
+          За вами пока не закреплён ни один ученик — писать некому.
+        </div>
+      {% endif %}
+
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
