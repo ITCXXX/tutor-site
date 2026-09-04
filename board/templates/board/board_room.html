@@ -425,6 +425,31 @@
     .vp-empty { color: #9a9aa2; font-size: 12px; padding: 6px 0; }
     .vp-hint { font-size: 11px; color: #8a8a94; margin-top: 8px; }
 
+    /* Громкость ВХОДЯЩЕГО голоса — своя, отдельно от системной.
+       Выбрать «громкость звонка» вместо «громкости медиа» страница не может:
+       какой системный поток использовать, решает браузер, и web-API для этого
+       нет. Зато можно сделать голос громче у себя — до 200%, через усиление. */
+    .vp-vol { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
+    .vp-vol input[type=range] { flex: 1; min-width: 0; accent-color: #2ec07c; }
+    .vp-vol-num { font-size: 11px; color: #6b6b76; width: 38px; text-align: right; flex: none; }
+    .vp-vol-ic { font-size: 13px; flex: none; }
+
+    /* Свёрнутая панель — компактная зелёная плашка. Разговор идёт, панель не
+       занимает угол доски и не закрывает записи. */
+    #voice-panel.folded { width: auto; padding: 5px 8px; background: #e6f7ee; border-color: #2ec07c; }
+    #voice-panel.folded .vp-head { margin-bottom: 0; }
+    #voice-panel.folded .vp-title { color: #1f8f5b; font-size: 12px; }
+    #voice-panel.folded #vp-list,
+    #voice-panel.folded #vp-reacquire,
+    #voice-panel.folded .vp-vol,
+    #voice-panel.folded .vp-hint,
+    #voice-panel.folded #vp-mute,
+    #voice-panel.folded #vp-leave { display: none; }
+    #vp-fold { flex: none; }
+    .vp-live { width: 9px; height: 9px; border-radius: 50%; background: #2ec07c; flex: none; display: none; }
+    #voice-panel.folded .vp-live { display: block; }
+    #voice-panel.folded.talking .vp-live { box-shadow: 0 0 0 3px rgba(46,192,124,.3); }
+
 
     /* Голосование. Заливка варианта — это и есть столбик результата: отдельная
        диаграмма заняла бы вдвое больше места при той же информации. */
@@ -1888,11 +1913,19 @@
 </div>
 <div id="voice-panel" hidden>
     <div class="vp-head">
+        <span class="vp-live" title="Разговор идёт"></span>
         <span class="vp-title">Голос</span>
         <button type="button" id="vp-mute" title="Выключить микрофон, оставаясь в разговоре">Выключить микрофон</button>
         <button type="button" id="vp-leave" title="Выйти из разговора">Выйти</button>
+        <button type="button" id="vp-fold" title="Свернуть панель">–</button>
     </div>
     <div id="vp-list"></div>
+    <div class="vp-vol">
+        <span class="vp-vol-ic">🔊</span>
+        <input type="range" id="vp-volume" min="0" max="200" step="5" value="100"
+               title="Громкость входящего голоса. Выше 100% — усиление: помогает, когда телефон крутит громкость медиа, а голос всё равно тихий">
+        <span class="vp-vol-num" id="vp-volume-num">100%</span>
+    </div>
     <button type="button" id="vp-reacquire" class="vp-fix" title="Взять микрофон заново, не выходя из разговора. Помогает, если микрофон был занят другим приложением (Zoom) в момент включения голоса.">Переподключить микрофон</button>
     <div class="vp-hint">Звук идёт напрямую между браузерами, минуя сервер. Вас не слышно — нажмите «Переподключить микрофон»: частая причина в том, что микрофон держало другое приложение (Zoom), и взятая тогда дорожка звука не даёт.</div>
 </div>

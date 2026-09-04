@@ -13337,6 +13337,7 @@
       }
       p.audio.srcObject = stream;
       p.hasAudio = true;
+      applyPeerVolume(p);      // громкость у нового собеседника — та же, что у всех
       playPeerAudio(p);
       watchLevel(p, stream);
     };
@@ -13744,6 +13745,89 @@
   }
 
   // ── Оформление ────────────────────────────────────────────────────────
+  // ── Своя громкость входящего голоса ──────────────────────────────────
+  //
+  // ЧЕГО ЗДЕСЬ НЕТ И БЫТЬ НЕ МОЖЕТ: выбора системного потока. Телефон крутит
+  // «громкость медиа» вместо «громкости звонка» потому, что так решил браузер,
+  // а не потому, что мы что-то не настроили: web-API, которым страница могла бы
+  // попросить разговорный поток, не существует ни в Chrome, ни в Safari. Со
+  // своей стороны мы уже делаем всё, что обычно вводит браузер в разговорный
+  // режим: берём микрофон с эхоподавлением и глушим его флагом enabled, а не
+  // остановкой дорожки.
+  //
+  // Что в нашей власти — сделать голос громче У СЕБЯ. До 100% хватает обычной
+  // громкости элемента. Выше — только усилением через Web Audio, и включаем мы
+  // его ТОЛЬКО когда просят больше сотни: обычный путь через элемент обкатан на
+  // занятиях, а цепочка Web Audio на части браузеров капризна, и рисковать
+  // звуком ради случая, который никому не нужен, незачем.
+  let voiceVolume = 1;      // 0…2
+  try {
+    const сохр = parseFloat(localStorage.getItem('boardVoiceVolume'));
+    if (isFinite(сохр) && сохр >= 0 && сохр <= 2) voiceVolume = сохр;
+  } catch (e) {}
+  // Контекст берём ТОТ ЖЕ, что у измерителя громкости (объявлен выше): второй
+  // AudioContext на страницу — лишний расход и лишний повод для рассинхрона.
+  function applyPeerVolume(p) {
+    if (!p || !p.audio) return;
+    if (voiceVolume <= 1) {
+      // Обычный путь: усиления не нужно — если цепочка была, разбираем её.
+      if (p.volGain) {
+        try { p.volSrc.disconnect(); p.volGain.disconnect(); } catch (e) {}
+        p.volGain = null; p.volSrc = null;
+      }
+      p.audio.muted = false;
+      p.audio.volume = voiceVolume;
+      return;
+    }
+    try {
+      if (!voiceCtx) voiceCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (voiceCtx.state === 'suspended') voiceCtx.resume().catch(() => {});
+      if (!p.volGain) {
+        p.volSrc = voiceCtx.createMediaStreamSource(p.audio.srcObject);
+        p.volGain = voiceCtx.createGain();
+        p.volSrc.connect(p.volGain); p.volGain.connect(voiceCtx.destination);
+        // Элемент глушим, но НЕ убираем: без живого элемента Chrome не держит
+        // дорожку peer-соединения, и звук пропадает вовсе.
+        p.audio.muted = true;
+      }
+      p.volGain.gain.value = voiceVolume;
+    } catch (e) {
+      // Не вышло усилить — отдаём хотя бы полную обычную громкость, молча
+      // потеряв надбавку. Тишина была бы хуже.
+      p.audio.muted = false;
+      p.audio.volume = 1;
+    }
+  }
+
+  function applyVoiceVolume() {
+    voicePeers.forEach(applyPeerVolume);
+    const num = document.getElementById('vp-volume-num');
+    if (num) num.textContent = Math.round(voiceVolume * 100) + '%';
+    const sl = document.getElementById('vp-volume');
+    if (sl && Math.abs(+sl.value - voiceVolume * 100) > 0.5) sl.value = Math.round(voiceVolume * 100);
+  }
+
+  function setVoiceVolume(v) {
+    voiceVolume = Math.max(0, Math.min(2, v));
+    try { localStorage.setItem('boardVoiceVolume', String(voiceVolume)); } catch (e) {}
+    applyVoiceVolume();
+  }
+
+  // ── Свёрнутая панель ─────────────────────────────────────────────────
+  let voiceFolded = false;
+  try { voiceFolded = localStorage.getItem('boardVoiceFolded') === '1'; } catch (e) {}
+  function applyVoiceFold() {
+    const p = voicePanel(); if (!p) return;
+    p.classList.toggle('folded', voiceFolded);
+    const b = document.getElementById('vp-fold');
+    if (b) { b.textContent = voiceFolded ? '+' : '–'; b.title = voiceFolded ? 'Развернуть панель' : 'Свернуть панель'; }
+  }
+  function setVoiceFolded(on) {
+    voiceFolded = !!on;
+    try { localStorage.setItem('boardVoiceFolded', voiceFolded ? '1' : '0'); } catch (e) {}
+    applyVoiceFold();
+  }
+
   function updateVoiceUI() {
     const b = voiceBtn(), p = voicePanel();
     if (b) {
@@ -13751,6 +13835,8 @@
       b.textContent = voiceOn ? (voiceMuted ? 'Голос (микрофон выкл.)' : 'Голос') : 'Голос';
     }
     if (p) p.hidden = !voiceOn;
+    applyVoiceFold();
+    applyVoiceVolume();
     const mute = document.getElementById('vp-mute');
     if (mute) { mute.textContent = voiceMuted ? 'Включить микрофон' : 'Выключить микрофон'; mute.classList.toggle('off', voiceMuted); }
     renderVoiceList();
@@ -13792,6 +13878,21 @@
     if (leave) leave.addEventListener('click', voiceStop);
     const again = document.getElementById('vp-reacquire');
     if (again) again.addEventListener('click', voiceReacquire);
+    const fold = document.getElementById('vp-fold');
+    if (fold) fold.addEventListener('click', () => setVoiceFolded(!voiceFolded));
+    // По свёрнутой плашке щёлкают, чтобы развернуть: искать маленький плюсик
+    // посреди занятия неудобно.
+    const panel = voicePanel();
+    if (panel) panel.addEventListener('click', (e) => {
+      if (voiceFolded && !e.target.closest('button')) setVoiceFolded(false);
+    });
+    const vol = document.getElementById('vp-volume');
+    if (vol) {
+      vol.addEventListener('input', () => setVoiceVolume((+vol.value || 0) / 100));
+      vol.value = Math.round(voiceVolume * 100);
+    }
+    applyVoiceFold();
+    applyVoiceVolume();
     // Уходим со страницы — вежливо прощаемся, чтобы у соседей не висел «мертвец».
     window.addEventListener('pagehide', () => { if (voiceOn) { try { rtcSend('bye', null, null); } catch (e) {} closeAllPeers(); } });
   })();
