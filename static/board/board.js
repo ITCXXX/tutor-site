@@ -2655,10 +2655,11 @@
   function handleCirclePick() {
     pendingPicks.push(pickPointId(worldPoint()));
     if (tool === 'circ_cr') { // центр задан — спрашиваем радиус
-      const txt = prompt('Радиус окружности (в единицах окна):', '2');
-      const r = parseFloat((txt || '').replace(',', '.'));
-      if (isFinite(r) && r > 0) createCircle('cr', pendingPicks, { r: r });
-      pendingPicks = [];
+      const picks = pendingPicks; pendingPicks = [];
+      uiPrompt('Радиус окружности (в единицах окна):', '2').then((txt) => {
+        const r = parseFloat((txt || '').replace(',', '.'));
+        if (isFinite(r) && r > 0) createCircle('cr', picks, { r: r });
+      });
       return;
     }
     if (pendingPicks.length >= CIRCLE_PICKS[tool]) { createCircle(CIRCLE_KIND[tool], pendingPicks); pendingPicks = []; }
@@ -2729,10 +2730,11 @@
   function handleRegPolyPick() {
     pendingPicks.push(pickPointId(worldPoint()));
     if (pendingPicks.length >= 2) {
-      const txt = prompt('Число сторон правильного многоугольника:', '5');
-      const n = parseInt((txt || '').trim(), 10);
-      if (isFinite(n) && n >= 3) createRegPoly(REGPOLY_KIND[tool], pendingPicks, Math.min(200, n));
-      pendingPicks = [];
+      const picks = pendingPicks; pendingPicks = []; const kind = REGPOLY_KIND[tool];
+      uiPrompt('Число сторон правильного многоугольника:', '5').then((txt) => {
+        const n = parseInt((txt || '').trim(), 10);
+        if (isFinite(n) && n >= 3) createRegPoly(kind, picks, Math.min(200, n));
+      });
     }
   }
   // ── Производная точка со ссылками (центр масс / деление отрезка) ─────────
@@ -2769,10 +2771,11 @@
   function handleRatioPick() {
     pendingPicks.push(pickPointId(worldPoint()));
     if (pendingPicks.length >= 2) {
-      const txt = prompt('Деление отрезка A→B: отношение m:n или число t (0..1):', '1:1');
-      const t = parseRatio(txt);
-      if (t != null) createDerivedPoint({ ratio: { a: pendingPicks[0], b: pendingPicks[1], t: t } }, pendingPicks);
-      pendingPicks = [];
+      const picks = pendingPicks; pendingPicks = [];
+      uiPrompt('Деление отрезка A→B: отношение m:n или число t (0..1):', '1:1').then((txt) => {
+        const t = parseRatio(txt);
+        if (t != null) createDerivedPoint({ ratio: { a: picks[0], b: picks[1], t: t } }, picks);
+      });
     }
   }
   // ── Преобразования: образы точек и фигур (связаны с источником через on:{xform}) ──
@@ -2927,10 +2930,17 @@
     else if (tool === 'asym') xf.line = xformPicks[0];
     else if (tool === 'trans') { xf.a = xformPicks[0]; xf.b = xformPicks[1]; }
     else if (tool === 'inv') { xf.c = xformPicks[0]; xf.through = xformPicks[1]; }
-    let ok = true;
-    spec.nums.forEach((nm) => { if (!ok) return; const txt = prompt(nm[1], nm[2]); const v = parseFloat((txt || '').replace(',', '.')); if (!isFinite(v)) ok = false; else xf[nm[0]] = v; });
-    if (ok) applyTransform(xformSources, xf);
-    xformSources = []; xformPicks = []; clearSelection(); setTool('select');
+    (async () => {
+      let ok = true;
+      for (const nm of spec.nums) {
+        const txt = await uiPrompt(nm[1], nm[2]);
+        const v = parseFloat((txt || '').replace(',', '.'));
+        if (!isFinite(v)) { ok = false; break; }
+        xf[nm[0]] = v;
+      }
+      if (ok) applyTransform(xformSources, xf);
+      xformSources = []; xformPicks = []; clearSelection(); setTool('select');
+    })();
   }
   function cancelXform() { xformSources = []; xformPicks = []; clearSelection(); }
   // ── Инструмент «точка пересечения»: клик по двум фигурам → их пересечения ──
@@ -3157,6 +3167,56 @@
     hintEl.textContent = msg; hintEl.style.opacity = '1';
     clearTimeout(hintTimer); hintTimer = setTimeout(() => { hintEl.style.opacity = '0'; }, 1600);
   }
+
+  // Экранные окошки вместо системных alert/confirm/prompt. Системные («сайт
+  // сообщает…») выглядят чужеродно и пугают. Свои — в оформлении доски,
+  // промис-based: confirm → true/false, prompt → строка/null, alert → true.
+  function uiModal(opts) {
+    return new Promise((resolve) => {
+      const back = document.createElement('div'); back.className = 'ui-modal-back';
+      const card = document.createElement('div'); card.className = 'ui-modal';
+      if (opts.title) { const h = document.createElement('div'); h.className = 'ui-modal-title'; h.textContent = opts.title; card.appendChild(h); }
+      if (opts.message) { const m = document.createElement('div'); m.className = 'ui-modal-msg'; m.textContent = opts.message; card.appendChild(m); }
+      let field = null;
+      if (opts.kind === 'prompt') {
+        field = document.createElement(opts.multiline ? 'textarea' : 'input');
+        field.className = 'ui-modal-input';
+        if (!opts.multiline) field.type = 'text';
+        field.value = (opts.def != null) ? String(opts.def) : '';
+        if (opts.readonly) field.readOnly = true;
+        card.appendChild(field);
+      }
+      const row = document.createElement('div'); row.className = 'ui-modal-btns';
+      let cancelBtn = null;
+      if (opts.kind !== 'alert') {
+        cancelBtn = document.createElement('button'); cancelBtn.type = 'button';
+        cancelBtn.className = 'ui-modal-btn ui-modal-cancel'; cancelBtn.textContent = opts.cancelText || 'Отмена';
+        row.appendChild(cancelBtn);
+      }
+      const okBtn = document.createElement('button'); okBtn.type = 'button';
+      okBtn.className = 'ui-modal-btn ui-modal-ok' + (opts.danger ? ' danger' : ''); okBtn.textContent = opts.okText || 'ОК';
+      row.appendChild(okBtn);
+      card.appendChild(row);
+      back.appendChild(card); document.body.appendChild(back);
+      const okVal = () => (opts.kind === 'prompt') ? (field ? field.value : '') : true;
+      const cancelVal = () => (opts.kind === 'prompt') ? null : false;
+      const done = (v) => { document.removeEventListener('keydown', onKey, true); if (back.parentNode) back.remove(); resolve(v); };
+      okBtn.addEventListener('click', () => done(okVal()));
+      if (cancelBtn) cancelBtn.addEventListener('click', () => done(cancelVal()));
+      back.addEventListener('mousedown', (e) => { if (e.target === back) done(cancelVal()); });
+      // Клавиши ловим в фазе перехвата и гасим — иначе Enter/Esc уйдут в
+      // горячие клавиши доски. Enter в многострочном поле — обычный перенос.
+      function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(cancelVal()); }
+        else if (e.key === 'Enter' && !(opts.kind === 'prompt' && opts.multiline)) { e.preventDefault(); e.stopPropagation(); done(okVal()); }
+      }
+      document.addEventListener('keydown', onKey, true);
+      setTimeout(() => { if (field) { field.focus(); if (field.select) field.select(); } else okBtn.focus(); }, 30);
+    });
+  }
+  function uiAlert(message, title) { return uiModal({ kind: 'alert', message: message, title: title }); }
+  function uiConfirm(message, opts) { opts = opts || {}; return uiModal({ kind: 'confirm', message: message, title: opts.title, okText: opts.ok, cancelText: opts.cancel, danger: opts.danger }); }
+  function uiPrompt(message, def, opts) { opts = opts || {}; return uiModal({ kind: 'prompt', message: message, def: def, multiline: opts.multiline, readonly: opts.readonly, okText: opts.ok, cancelText: opts.cancel }); }
   let pickFrame = null;   // окно, в котором идёт текущее бесконечное построение
   let pickRefLine = null; // выбранная линия-основа (режим «линия + точка»)
   // Валидная точка внутри целевого окна pickFrame (иначе подсказка). Возвращает id или null.
@@ -3179,15 +3239,16 @@
     const aId = angleDegPicks[0], vId = angleDegPicks[1]; angleDegPicks = []; pickFrame = null;
     const A = elements.get(aId), V = elements.get(vId);
     if (!A || !V || !A.data.frame || A.data.frame !== V.data.frame) { boardHint('Обе точки — в одном окне'); return; }
-    const txt = prompt('Градусная мера угла (против часовой):', '90');
-    const deg = parseFloat(String(txt == null ? '' : txt).replace(',', '.'));
-    if (!isFinite(deg)) return;
-    // A′ — производная точка: поворот A вокруг V на deg (следит за A и V).
-    const el = { id: uuid(), type: 'point', z: 0, data: { frame: A.data.frame, on: { xform: { kind: 'rot', c: vId, angle: deg }, src: aId }, label: nextPointLabel(), color: strokeColor } };
-    applyTypeDefaults(el.data, 'point');
-    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
-    createConstruction('ray', [vId, el.id]); // вторая сторона угла
-    boardHint('Угол ' + deg + '° построен');
+    uiPrompt('Градусная мера угла (против часовой):', '90').then((txt) => {
+      const deg = parseFloat(String(txt == null ? '' : txt).replace(',', '.'));
+      if (!isFinite(deg)) return;
+      // A′ — производная точка: поворот A вокруг V на deg (следит за A и V).
+      const el = { id: uuid(), type: 'point', z: 0, data: { frame: A.data.frame, on: { xform: { kind: 'rot', c: vId, angle: deg }, src: aId }, label: nextPointLabel(), color: strokeColor } };
+      applyTypeDefaults(el.data, 'point');
+      upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
+      createConstruction('ray', [vId, el.id]); // вторая сторона угла
+      boardHint('Угол ' + deg + '° построен');
+    });
   }
   // Перпендикуляр/параллель: первый клик по существующей линии → режим «линия + точка»;
   // по пустому месту → режим «три точки» (A,B задают направление, C — через какую точку).
@@ -3362,8 +3423,9 @@
     } else if (macroMode === 'outputs') {
       if (!macroOutputs.length) { boardHint('Выберите хотя бы один итоговый объект'); return; }
       const recipe = buildMacroRecipe(macroInputs, macroOutputs);
-      const name = prompt('Название инструмента:', 'Мой инструмент');
-      if (name && name.trim()) { recipe.name = name.trim(); const list = loadMacros(); list.push(recipe); saveMacros(list); renderMacroTools(); boardHint('Инструмент «' + recipe.name + '» создан'); }
+      uiPrompt('Название инструмента:', 'Мой инструмент').then((name) => {
+        if (name && name.trim()) { recipe.name = name.trim(); const list = loadMacros(); list.push(recipe); saveMacros(list); renderMacroTools(); boardHint('Инструмент «' + recipe.name + '» создан'); }
+      });
       macroMode = null; setTool('select');
     }
   }
@@ -4268,15 +4330,15 @@
         e.stopPropagation();
         if (b.dataset.act === 'results') { d.showResults = (d.showResults === false); syncWidget(it); render(); }
         else if (b.dataset.act === 'reset') {
-          if (!confirm('Убрать все голоса?')) return;
-          d.votes = {}; syncWidget(it); render();
+          uiConfirm('Убрать все голоса?', { danger: true, ok: 'Убрать' }).then((ok) => { if (!ok) return; d.votes = {}; syncWidget(it); render(); });
         } else if (b.dataset.act === 'edit') {
-          const raw = window.prompt('Варианты — по одному в строке:', (d.options || []).join('\n'));
-          if (raw == null) return;
-          const list = raw.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 12);
-          if (!list.length) return;
-          d.options = list; d.votes = {};    // варианты сменились — прежние голоса не о том
-          syncWidget(it); render();
+          uiPrompt('Варианты — по одному в строке:', (d.options || []).join('\n'), { multiline: true }).then((raw) => {
+            if (raw == null) return;
+            const list = raw.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 12);
+            if (!list.length) return;
+            d.options = list; d.votes = {};    // варианты сменились — прежние голоса не о том
+            syncWidget(it); render();
+          });
         }
       });
     };
@@ -4654,8 +4716,7 @@
     const ta = document.getElementById('emb-input');
     const err = document.getElementById('emb-error');
     if (!dlg || !ta) {                       // подстраховка, если разметки нет
-      const v = window.prompt('Ссылка или код для вставки:', initial || 'https://');
-      if (v != null) cb(v);
+      uiPrompt('Ссылка или код для вставки:', initial || 'https://', { multiline: true }).then((v) => { if (v != null) cb(v); });
       return;
     }
     embedDlgCb = cb;
@@ -9883,7 +9944,7 @@
   function copyText(text, чтоЭто) {
     const вручную = () => {
       boardHint('Не удалось скопировать — текст показан, скопируйте вручную');
-      window.prompt(чтоЭто || 'Скопируйте:', text);
+      uiPrompt(чтоЭто || 'Скопируйте (Ctrl+C):', text, { readonly: true });
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(() => boardHint('Скопировано')).catch(вручную);
@@ -9905,7 +9966,7 @@
       // Шаг для безопасности: наружу уходим только с подтверждением и показываем,
       // куда именно. Ссылку мог положить другой участник.
       let host = href; try { host = new URL(href).host; } catch (e) {}
-      if (window.confirm('Открыть внешний сайт?\n\n' + host + '\n\n' + href)) window.open(href, '_blank', 'noopener,noreferrer');
+      uiConfirm('Открыть внешний сайт?\n\n' + host + '\n\n' + href, { ok: 'Открыть' }).then((ok) => { if (ok) window.open(href, '_blank', 'noopener,noreferrer'); });
       return true;
     }
     return false;
@@ -9913,23 +9974,24 @@
   function askLinkFor(ids) {
     const el = ids.length === 1 ? elements.get(ids[0]) : null; if (!el) { boardHint('Выберите один объект'); return; }
     const было = el.data.link ? (el.data.link.kind === 'url' ? el.data.link.href : boardLink(el.data.link.id)) : '';
-    const txt = window.prompt('Куда ведёт ссылка?\n\nВставьте адрес сайта или ссылку на объект этой доски\n(её даёт пункт «Копировать ссылку»).\nПустая строка — убрать ссылку.', было);
-    if (txt === null) return;
-    const before = clone(el);
-    const t = txt.trim();
-    if (!t) { el.data.link = undefined; boardHint('Ссылка убрана'); }
-    else {
-      // Свой же адрес доски с якорем — это переход внутри доски.
-      let свой = null;
-      try { const u = new URL(t, location.href); if (u.pathname === location.pathname && /^#o=/.test(u.hash)) свой = decodeURIComponent(u.hash.slice(3)); } catch (e) {}
-      if (свой) { el.data.link = { kind: 'obj', id: свой }; boardHint('Ссылка на объект доски'); }
+    uiPrompt('Куда ведёт ссылка?\n\nВставьте адрес сайта или ссылку на объект этой доски\n(её даёт пункт «Копировать ссылку»).\nПустая строка — убрать ссылку.', было, { multiline: true }).then((txt) => {
+      if (txt === null) return;
+      const before = clone(el);
+      const t = txt.trim();
+      if (!t) { el.data.link = undefined; boardHint('Ссылка убрана'); }
       else {
-        const href = safeLinkUrl(t);
-        if (!href) { boardHint('Не похоже на адрес. Разрешены только http и https'); return; }
-        el.data.link = { kind: 'url', href: href }; boardHint('Внешняя ссылка добавлена');
+        // Свой же адрес доски с якорем — это переход внутри доски.
+        let свой = null;
+        try { const u = new URL(t, location.href); if (u.pathname === location.pathname && /^#o=/.test(u.hash)) свой = decodeURIComponent(u.hash.slice(3)); } catch (e) {}
+        if (свой) { el.data.link = { kind: 'obj', id: свой }; boardHint('Ссылка на объект доски'); }
+        else {
+          const href = safeLinkUrl(t);
+          if (!href) { boardHint('Не похоже на адрес. Разрешены только http и https'); return; }
+          el.data.link = { kind: 'url', href: href }; boardHint('Внешняя ссылка добавлена');
+        }
       }
-    }
-    histUpd(before, el); send({ action: 'element_update', element: el });
+      histUpd(before, el); send({ action: 'element_update', element: el });
+    });
   }
   // ── Выравнивание выделенных объектов (по рамкам) ───────────────────────
   function moveItemTo(o, b, nx, ny, ops) {
@@ -11532,9 +11594,11 @@
   // действие вернут в меню — но теперь не падаем, когда кнопки нет.
   const clearBtn = document.querySelector('[data-action="clear"]');
   if (clearBtn) clearBtn.addEventListener('click', () => {
-    if (!confirm('Очистить всю доску? Это удалит все элементы у всех участников.')) return;
-    const ids = Array.from(elements.keys());
-    ids.forEach((id) => { const el = elements.get(id); if (el) histDel(el); send({ action: 'element_delete', id }); removeNode(id); });
+    uiConfirm('Очистить всю доску? Это удалит все элементы у всех участников.', { danger: true, ok: 'Очистить' }).then((ok) => {
+      if (!ok) return;
+      const ids = Array.from(elements.keys());
+      ids.forEach((id) => { const el = elements.get(id); if (el) histDel(el); send({ action: 'element_delete', id }); removeNode(id); });
+    });
   });
   const undoBtn = document.querySelector('[data-action="undo"]');
   const redoBtn = document.querySelector('[data-action="redo"]');
@@ -11837,7 +11901,7 @@
       // её можно было скопировать руками, — молча отказывать нельзя.
       const fallback = () => {
         boardHint('Не удалось скопировать — ссылка показана, скопируйте вручную');
-        window.prompt('Ссылка на доску:', link);
+        uiPrompt('Ссылка на доску (Ctrl+C):', link, { readonly: true });
         flash('вручную');
       };
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -11905,9 +11969,8 @@
       if (b.dataset.kick) {
         const строка = b.closest('.pp-row');   // имя лежит в верхней подстроке
         const name = ((строка && строка.querySelector('.pp-name')) || {}).textContent || 'участника';
-        if (confirm('Убрать ' + name + ' с доски?\n\nОн выйдет сейчас же и не сможет войти по ссылке, пока вы не вернёте доступ.')) {
-          send({ action: 'member_remove', target: b.dataset.kick });
-        }
+        uiConfirm('Убрать ' + name + ' с доски?\n\nОн выйдет сейчас же и не сможет войти по ссылке, пока вы не вернёте доступ.', { danger: true, ok: 'Убрать' })
+          .then((ok) => { if (ok) send({ action: 'member_remove', target: b.dataset.kick }); });
         return;
       }
       const seg = b.closest('.ap-seg'); if (!seg) return;
@@ -12457,12 +12520,14 @@
     if (roleViewer) { boardHint('Наблюдатель не может очищать доску'); return; }
     const ids = []; elements.forEach((el, id) => { if (el.type !== 'boardconfig') ids.push(id); });
     if (!ids.length) { boardHint('Доска уже пуста'); return; }
-    if (!window.confirm('Удалить всё с доски (' + ids.length + ' объект(ов))? Действие можно отменить (Ctrl+Z).')) return;
-    const ops = ids.map((id) => ({ kind: 'del', el: clone(elements.get(id)) }));
-    ids.forEach((id) => { send({ action: 'element_delete', id: id }); removeNode(id); });
-    histBatch(ops);
-    clearSelection(); layer.batchDraw();
-    boardHint('Доска очищена (' + ids.length + ')');
+    uiConfirm('Удалить всё с доски (' + ids.length + ' объект(ов))? Действие можно отменить (Ctrl+Z).', { danger: true, ok: 'Удалить всё' }).then((ok) => {
+      if (!ok) return;
+      const ops = ids.map((id) => ({ kind: 'del', el: clone(elements.get(id)) }));
+      ids.forEach((id) => { send({ action: 'element_delete', id: id }); removeNode(id); });
+      histBatch(ops);
+      clearSelection(); layer.batchDraw();
+      boardHint('Доска очищена (' + ids.length + ')');
+    });
   }
 
   // ── ГеоГебра: живые аплеты как DOM-оверлей в мировых координатах ───────
