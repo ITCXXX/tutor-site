@@ -227,11 +227,27 @@
   // следующее забудут. Сверка семи чисел стоит почти ничего (getClientRect
   // обходит всё поддерево, а это семь сравнений без единого выделения памяти),
   // зато верна независимо от того, кто и откуда подвинул узел.
-  function bboxActual(n) {
+  // Признаки, по которым видно, что рамка устарела. Список ОДИН: разнеси его
+  // на «собрать» и «сверить» — и при первой же правке они разъедутся.
+  //
+  // Последние три — про группы. Матокно это Konva.Group, и растягивают его за
+  // угол так, что положение группы не меняется: меняются обрезка и размер
+  // подложки внутри. Ни одно из первых семи чисел этого не замечало, и окно
+  // целиком пропадало при следующем зуме. Сверка десяти чисел на 2000 узлах —
+  // 0.2 мс (замерено), пересчёт самих рамок — 3–4 мс: сверять дешевле в
+  // пятнадцать раз.
+  function bboxKey(n) {
+    const c = n.children;
+    return [n.x(), n.y(), n.width(), n.height(),
+            n.rotation(), n.scaleX(), n.scaleY(),
+            c ? c.length : -1,
+            c ? n.clipWidth() : -1, c ? n.clipHeight() : -1];
+  }
+  function bboxActual(n, key) {
     const k = n._bboxK;
-    return !!k && k[0] === n.x() && k[1] === n.y()
-      && k[2] === n.width() && k[3] === n.height()
-      && k[4] === n.rotation() && k[5] === n.scaleX() && k[6] === n.scaleY();
+    if (!k || k.length !== key.length) return false;
+    for (let i = 0; i < key.length; i++) if (k[i] !== key[i]) return false;
+    return true;
   }
   // Кому сверка семи чисел не годится: узлы, которым мы САМИ подставили
   // getSelfRect (соединители, базовые фигуры, Венн, построения-линии). Их рамка
@@ -244,12 +260,11 @@
     return Object.prototype.hasOwnProperty.call(n, 'getSelfRect');
   }
   function nodeBBox(n) {
-    if (n._bbox && !своя_рамка(n) && bboxActual(n)) return n._bbox;
+    const key = bboxKey(n);
+    if (n._bbox && !своя_рамка(n) && bboxActual(n, key)) return n._bbox;
     try { n._bbox = n.getClientRect({ relativeTo: layer, skipShadow: true }); }
     catch (e) { return null; }
-    // Массив создаётся только при пересчёте, а не на каждой сверке.
-    n._bboxK = [n.x(), n.y(), n.width(), n.height(),
-                n.rotation(), n.scaleX(), n.scaleY()];
+    n._bboxK = key;
     return n._bbox;
   }
 
@@ -6169,18 +6184,42 @@
       })).catch(() => { boardHint('Не удалось открыть PDF'); resolve(null); });
     });
   }
+  // Предел стороны холста у браузеров — 16384 пикселя, дальше создание молча
+  // отдаёт пустоту. Держимся вдвое ниже: страницу всё равно смотрят на экране.
+  const PDF_CANVAS_MAX = 8192;
+
   function renderPdfInto(node, el) {
     const key = el.data.url + '#' + (el.data.page || 1);
-    if (node._pdfKey === key) return; node._pdfKey = key;
+    if (node._pdfKey === key) return;
+    // Ключ ставится ПОСЛЕ удачного рендера, а не до него. Раньше стоял до —
+    // и сорвавшийся рендер «залипал»: ключ уже записан, значит все следующие
+    // вызовы выходили сразу, и на месте страницы навсегда оставался пустой
+    // прямоугольник с рамкой. Ни повторное открытие доски, ни смена размера
+    // не помогали, а пустой catch не оставлял даже следа в консоли.
     node.width(el.data.width || 300); node.height(el.data.height || 400);
     getPdfDoc(el.data.url).then((doc) => {
       const pg = Math.max(1, Math.min(doc.numPages, el.data.page || 1));
       return doc.getPage(pg).then((page) => {
-        const vp0 = page.getViewport({ scale: 1 }), scale = ((el.data.width || 300) * 2) / vp0.width, vp = page.getViewport({ scale });
-        const cv = document.createElement('canvas'); cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
-        return page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise.then(() => { node.image(cv); layer.batchDraw(); });
+        const vp0 = page.getViewport({ scale: 1 });
+        // Вдвое против размера на доске — ради чёткости. Но если страницу
+        // растянули на пол-доски, удвоение выносило холст за предел браузера,
+        // и рендер падал. Поэтому потолок.
+        const хочется = ((el.data.width || 300) * 2) / vp0.width;
+        const потолок = PDF_CANVAS_MAX / Math.max(vp0.width, vp0.height);
+        const vp = page.getViewport({ scale: Math.min(хочется, потолок) });
+        const cv = document.createElement('canvas');
+        cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+        return page.render({ canvasContext: cv.getContext('2d'), viewport: vp })
+          .promise.then(() => {
+            node.image(cv); node._pdfKey = key; layer.batchDraw();
+          });
       });
-    }).catch(() => {});
+    }).catch(() => {
+      // Ключ не ставим — значит следующая попытка состоится. И говорим вслух:
+      // молчаливый пустой прямоугольник человек считает поломкой доски.
+      node._pdfKey = null;
+      boardHint('Страница PDF не отрисовалась — попробуйте открыть её ещё раз');
+    });
   }
   // Извлекает ОДНУ страницу в картинку и кладёт её в (x, y). Промис НИКОГДА
   // не отклоняется: любой сбой — на разборе документа, на рендере, на PNG,
