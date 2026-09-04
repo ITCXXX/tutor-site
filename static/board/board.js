@@ -8369,22 +8369,14 @@
     const gridOn = fr.data.gridOn !== false, dots = fr.data.gridStyle === 'dots';
     const st = { grid: gridOn && !dots, dots: gridOn && dots, axes: fr.data.axesOn !== false };
     box.querySelectorAll('button').forEach((b) => b.classList.toggle('on', !!st[b.dataset.bg]));
-    const cbox = document.getElementById('fe-bgcolor');
-    if (cbox) {
-      const cur = (fr.data.bgColor || '#ffffff').toLowerCase();
-      const presets = Array.from(cbox.querySelectorAll('.bgdot')).map((b) => b.dataset.color.toLowerCase());
-      cbox.querySelectorAll('.bgdot').forEach((b) => b.classList.toggle('on', b.dataset.color.toLowerCase() === cur));
-      const pick = document.getElementById('fe-bgcolor-custom');
-      if (pick) { if (/^#[0-9a-f]{6}$/.test(cur)) pick.value = cur; pick.classList.toggle('on', presets.indexOf(cur) < 0); }
-    }
-    const gbox = document.getElementById('fe-gridcolor');
-    if (gbox) {
-      const gcur = (fr.data.gridColor || '').toLowerCase();
-      const gdots = Array.from(gbox.querySelectorAll('.bgdot'));
-      gdots.forEach((b) => b.classList.toggle('on', b.dataset.color.toLowerCase() === gcur));
-      const gpick = document.getElementById('fe-gridcolor-custom');
-      if (gpick) { if (/^#[0-9a-f]{6}$/.test(gcur)) gpick.value = gcur; gpick.classList.toggle('on', !!gcur && gdots.every((b) => b.dataset.color.toLowerCase() !== gcur)); }
-    }
+    const csw = document.getElementById('fe-bgcolor-sw'), pick = document.getElementById('fe-bgcolor-custom');
+    if (csw) csw.style.background = fr.data.bgColor || '#ffffff';
+    const cur = (fr.data.bgColor || '#ffffff').toLowerCase();
+    if (pick && /^#[0-9a-f]{6}$/.test(cur)) pick.value = cur;
+    const gsw = document.getElementById('fe-gridcolor-sw'), gpick = document.getElementById('fe-gridcolor-custom');
+    if (gsw) gsw.style.background = fr.data.gridColor || '#e4e6ee';
+    const gcur = (fr.data.gridColor || '').toLowerCase();
+    if (gpick && /^#[0-9a-f]{6}$/.test(gcur)) gpick.value = gcur;
   }
   function setFrameBgColor(color) {
     const fr = activeFrameId && elements.get(activeFrameId); if (!fr || fr.type !== 'frame') return;
@@ -8777,12 +8769,8 @@
     document.getElementById('fe-add').addEventListener('click', feSubmit);
     const feBg = document.getElementById('fe-bg');
     if (feBg) feBg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) toggleFrameBg(b.dataset.bg); });
-    const feBgColor = document.getElementById('fe-bgcolor');
-    if (feBgColor) feBgColor.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setFrameBgColor(b.dataset.color); });
     const feBgCustom = document.getElementById('fe-bgcolor-custom');
     if (feBgCustom) feBgCustom.addEventListener('input', () => setFrameBgColor(feBgCustom.value));
-    const feGridColor = document.getElementById('fe-gridcolor');
-    if (feGridColor) feGridColor.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setFrameGridColor(b.dataset.color); });
     const feGridCustom = document.getElementById('fe-gridcolor-custom');
     if (feGridCustom) feGridCustom.addEventListener('input', () => setFrameGridColor(feGridCustom.value));
     feList.addEventListener('click', (e) => {
@@ -11876,14 +11864,17 @@
     on('board-menu-btn', () => toggleBoardMenu());
     const bgSeg = document.getElementById('bg-seg');
     if (bgSeg) bgSeg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setBoardBg(b.dataset.bg); });
-    const bgColor = document.getElementById('bg-color');
-    if (bgColor) bgColor.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setBoardBgColor(b.dataset.color); });
     const bgCustom = document.getElementById('bg-color-custom');
     if (bgCustom) bgCustom.addEventListener('input', () => setBoardBgColor(bgCustom.value));
-    const bgGrid = document.getElementById('bg-grid-color');
-    if (bgGrid) bgGrid.addEventListener('click', (e) => { const b = e.target.closest('.bgdot'); if (b) setBoardGridColor(b.dataset.color); });
     const bgGridCustom = document.getElementById('bg-grid-color-custom');
     if (bgGridCustom) bgGridCustom.addEventListener('input', () => setBoardGridColor(bgGridCustom.value));
+    // «По умолчанию» у всех плашек цвета (доска и матокно): один слушатель.
+    document.querySelectorAll('.bmc-reset[data-cr]').forEach((b) => b.addEventListener('click', () => {
+      const t = b.dataset.cr;
+      if (t === 'bg') setBoardBgColor('');
+      else if (t === 'grid') setBoardGridColor('');
+      else if (t === 'fegrid') setFrameGridColor('');
+    }));
     const curTgl = document.getElementById('cursors-toggle');
     if (curTgl) curTgl.addEventListener('change', () => setPeerCursors(curTgl.checked));
     const gdTgl = document.getElementById('guides-toggle');
@@ -12365,22 +12356,16 @@
   });
   function syncBgUI() {
     document.querySelectorAll('#bg-seg button').forEach((b) => b.classList.toggle('on', b.dataset.bg === boardBg));
-    const dots = Array.from(document.querySelectorAll('#bg-color .bgdot'));
-    dots.forEach((b) => b.classList.toggle('on', b.dataset.color === boardBgColor));
-    const pick = document.getElementById('bg-color-custom');
-    if (pick) {
-      const cur = (boardBgColor || '').toLowerCase(), isCustom = !!cur && dots.every((b) => b.dataset.color.toLowerCase() !== cur);
-      if (/^#[0-9a-f]{6}$/.test(cur)) pick.value = cur;
-      pick.classList.toggle('on', isCustom);
-    }
-    const gdots = Array.from(document.querySelectorAll('#bg-grid-color .bgdot'));
-    gdots.forEach((b) => b.classList.toggle('on', b.dataset.color === boardGridColor));
-    const gpick = document.getElementById('bg-grid-color-custom');
-    if (gpick) {
-      const gcur = (boardGridColor || '').toLowerCase(), gCustom = !!gcur && gdots.every((b) => b.dataset.color.toLowerCase() !== gcur);
-      if (/^#[0-9a-f]{6}$/.test(gcur)) gpick.value = gcur;
-      gpick.classList.toggle('on', gCustom);
-    }
+    // Плашки цвета: образец красим текущим цветом (или значением по умолчанию),
+    // системный выбор выставляем на тот же цвет.
+    const sw = document.getElementById('bg-color-sw'), pick = document.getElementById('bg-color-custom');
+    if (sw) sw.style.background = boardBgColor || '#fbfbfd';
+    const cur = (boardBgColor || '').toLowerCase();
+    if (pick && /^#[0-9a-f]{6}$/.test(cur)) pick.value = cur;
+    const gsw = document.getElementById('bg-grid-color-sw'), gpick = document.getElementById('bg-grid-color-custom');
+    if (gsw) gsw.style.background = boardGridColor || '#e2e2ea';
+    const gcur = (boardGridColor || '').toLowerCase();
+    if (gpick && /^#[0-9a-f]{6}$/.test(gcur)) gpick.value = gcur;
   }
   // ── Меню доски (три точки): вид, курсоры, выравнивание, история, очистка ──
   function hideBoardMenu() { const p = document.getElementById('board-menu'), b = document.getElementById('board-menu-btn'); if (p) p.hidden = true; if (b) b.classList.remove('on'); }

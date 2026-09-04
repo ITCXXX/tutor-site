@@ -697,6 +697,15 @@
     .bgpick::-webkit-color-swatch-wrapper { padding: 0; }
     .bgpick::-webkit-color-swatch { border: none; border-radius: 50%; opacity: 0; }
     .bgpick::-moz-color-swatch { border: none; border-radius: 50%; opacity: 0; }
+    /* Плашка цвета: подпись + «по умолчанию» + образец текущего цвета. Пришла
+       на смену пёстрым кружкам-пресетам. */
+    .bmc-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    .bmc-row .bmc-label { font-size: 13px; color: #4a4a55; flex: 1; }
+    .bmc-reset { border: none; background: none; color: #9a9aa2; font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
+    .bmc-reset:hover { background: #f0f0f4; color: #4a4a55; }
+    .bmc-sw { position: relative; width: 48px; height: 26px; border-radius: 7px; border: 1px solid #d9d9e0; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0,0,0,.05); flex: none; }
+    .bmc-sw:hover { border-color: #b7bcc9; }
+    .bmc-sw input[type=color] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: none; padding: 0; margin: 0; cursor: pointer; }
     #role-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #eef0f4; color: #55555f; }
     #role-badge.viewer { background: #fff2d6; color: #9a6b12; }
     /* 106px — ниже верхней плашки (она занимает 64..98). На 44px панель
@@ -1795,25 +1804,16 @@
         <button data-bg="dots">Точки</button>
         <button data-bg="lines">Линейка</button>
     </div>
-    <div class="bm-label">Фон — цвет полотна</div>
-    <div id="bg-color">
-        <button class="bgdot" data-color="" style="background:#fbfbfd" title="По умолчанию"></button>
-        <button class="bgdot" data-color="#fff7e6" style="background:#fff7e6" title="Кремовый"></button>
-        <button class="bgdot" data-color="#eaf3ff" style="background:#eaf3ff" title="Голубой"></button>
-        <button class="bgdot" data-color="#eafaef" style="background:#eafaef" title="Зелёный"></button>
-        <button class="bgdot" data-color="#fdeef3" style="background:#fdeef3" title="Розовый"></button>
-        <button class="bgdot" data-color="#1f2a33" style="background:#1f2a33" title="Тёмный"></button>
-        <button class="bgdot" data-color="#eff0f4" style="background:#eff0f4" title="Серый"></button>
-        <input type="color" id="bg-color-custom" class="bgpick" title="Свой цвет" value="#ffffff">
+    <div class="bm-label">Цвет доски</div>
+    <div class="bmc-row">
+        <span class="bmc-label">Полотно</span>
+        <button type="button" class="bmc-reset" data-cr="bg">Сброс</button>
+        <label class="bmc-sw" id="bg-color-sw" title="Цвет полотна"><input type="color" id="bg-color-custom" value="#ffffff"></label>
     </div>
-    <div class="bm-label">Фон — цвет рисунка</div>
-    <div id="bg-grid-color">
-        <button class="bgdot" data-color="" style="background:#e2e2ea" title="По умолчанию"></button>
-        <button class="bgdot" data-color="#c7c7d2" style="background:#c7c7d2" title="Серый"></button>
-        <button class="bgdot" data-color="#bcd3f0" style="background:#bcd3f0" title="Голубой"></button>
-        <button class="bgdot" data-color="#cbe6cf" style="background:#cbe6cf" title="Зелёный"></button>
-        <button class="bgdot" data-color="#f0cdd8" style="background:#f0cdd8" title="Розовый"></button>
-        <input type="color" id="bg-grid-color-custom" class="bgpick" title="Свой цвет" value="#c7c7d2">
+    <div class="bmc-row">
+        <span class="bmc-label">Клетки и оси</span>
+        <button type="button" class="bmc-reset" data-cr="grid">Сброс</button>
+        <label class="bmc-sw" id="bg-grid-color-sw" title="Цвет рисунка"><input type="color" id="bg-grid-color-custom" value="#c7c7d2"></label>
     </div>
     <label class="bm-toggle"><input type="checkbox" id="cursors-toggle" checked> Курсоры участников</label>
     <label class="bm-toggle"><input type="checkbox" id="guides-toggle" checked> Направляющие (выравнивание)</label>
@@ -2220,25 +2220,14 @@
         <button data-bg="axes" title="Оси и подписи делений">Оси</button>
         <button data-bg="dots" title="Точки вместо линий сетки">Точки</button>
     </div>
-    <div id="fe-bgcolor">
-        <span class="bgc-lbl">Цвет</span>
-        <button class="bgdot" data-color="#ffffff" style="background:#ffffff" title="Белый"></button>
-        <button class="bgdot" data-color="#fff7e6" style="background:#fff7e6" title="Кремовый"></button>
-        <button class="bgdot" data-color="#eaf3ff" style="background:#eaf3ff" title="Голубой"></button>
-        <button class="bgdot" data-color="#eafaef" style="background:#eafaef" title="Зелёный"></button>
-        <button class="bgdot" data-color="#fdeef3" style="background:#fdeef3" title="Розовый"></button>
-        <button class="bgdot" data-color="#fdf7e3" style="background:#fdf7e3" title="Жёлтый"></button>
-        <button class="bgdot" data-color="#eff0f4" style="background:#eff0f4" title="Серый"></button>
-        <input type="color" id="fe-bgcolor-custom" class="bgpick" title="Свой цвет" value="#ffffff">
+    <div id="fe-bgcolor" class="bmc-row">
+        <span class="bmc-label">Цвет окна</span>
+        <label class="bmc-sw" id="fe-bgcolor-sw" title="Цвет окна"><input type="color" id="fe-bgcolor-custom" value="#ffffff"></label>
     </div>
-    <div id="fe-gridcolor">
-        <span class="bgc-lbl">Рисунок</span>
-        <button class="bgdot" data-color="" style="background:#e4e6ee" title="По умолчанию"></button>
-        <button class="bgdot" data-color="#c7c7d2" style="background:#c7c7d2" title="Серый"></button>
-        <button class="bgdot" data-color="#bcd3f0" style="background:#bcd3f0" title="Голубой"></button>
-        <button class="bgdot" data-color="#cbe6cf" style="background:#cbe6cf" title="Зелёный"></button>
-        <button class="bgdot" data-color="#f0cdd8" style="background:#f0cdd8" title="Розовый"></button>
-        <input type="color" id="fe-gridcolor-custom" class="bgpick" title="Свой цвет" value="#c7c7d2">
+    <div id="fe-gridcolor" class="bmc-row">
+        <span class="bmc-label">Клетки и оси</span>
+        <button type="button" class="bmc-reset" data-cr="fegrid">Сброс</button>
+        <label class="bmc-sw" id="fe-gridcolor-sw" title="Цвет рисунка"><input type="color" id="fe-gridcolor-custom" value="#c7c7d2"></label>
     </div>
     <div id="fe-list"></div>
     <div class="fe-row">
