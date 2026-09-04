@@ -6110,6 +6110,12 @@
       node._imgFail = true; node._src = null;
       node.image(brokenImageCanvas(el.data.width, el.data.height));
       node.width(el.data.width || 200); node.height(el.data.height || 140);
+      // Окно обрезки от ПРЕЖНЕЙ картинки надо снять. Заглушка маленькая, а окно
+      // осталось от большой — и лежит целиком за её краем. Konva в таком случае
+      // не рисует ничего: замерено по пикселям, ровно ноль. Человек видел
+      // пустое место вместо честной таблички «не загрузилась» и решал, что
+      // пропала сама картинка.
+      node.cropX(0); node.cropY(0); node.cropWidth(0); node.cropHeight(0);
       layer.batchDraw();
       boardHint('Картинка не загрузилась — двойной щелчок по ней, чтобы попробовать снова');
     };
@@ -6125,6 +6131,9 @@
   // Размер исходного файла в пикселях. Нужен, чтобы обрезать «от целого», когда
   // обрезки ещё не было.
   function imageNatural(node) {
+    // На узле сейчас заглушка, а не файл: её размеры — не размеры картинки.
+    // Отдать их значит посчитать обрезку «от целого» по табличке-заглушке.
+    if (node._imgFail) return null;
     const im = node.image(); if (!im) return null;
     const w = im.naturalWidth || im.width, h = im.naturalHeight || im.height;
     return (w && h) ? { w: w, h: h } : null;
