@@ -1,4 +1,6 @@
 # users/views.py
+from decimal import Decimal, InvalidOperation
+
 from django.core.exceptions import ValidationError
 from django.db.models import Avg, Count, Q, Max, F
 from django.shortcuts import render, redirect, get_object_or_404
@@ -11,7 +13,7 @@ from .models import (
     Course, Module, Lesson, Assignment,
     Enrollment, User, StudentProfile, LessonProgress,
     StudentProgress, ManualMark, StudentSubmission, HomeworkAttempt, StudentLink,
-    HomeworkExtension, Notification,
+    HomeworkExtension, Notification, Grade,
     TestQuestion, AnswerOption, ProblemGenerator, GeneratedProblem,
 )
 from django.http import JsonResponse, HttpResponse, Http404
@@ -20,6 +22,7 @@ from django.views.decorators.http import require_POST
 from .decorators import student_required, teacher_required
 from .answer_check import check_answer
 from .progress import mark_progress, needed_for
+from .grades import course_score
 from .uploads import validate_homework_file
 from .notifications import notify_submitted, notify_reviewed
 from .homework import (homework_for, lesson_report, dates_for,
@@ -553,6 +556,10 @@ def student_course_progress(request, slug):
         'paragraphs': paragraphs,
         'total_done': total_done,
         'total_all': total_all,
+        # Итог по баллам — ОБЕ цифры сразу: сумма к сумме и среднее процентов.
+        # Они расходятся, когда номера разного веса, и выбирать за человека
+        # одну из них — значит спрятать половину правды.
+        'score': course_score(request.user, course),
         'overall_percent': round(total_done / total_all * 100) if total_all else 0,
         'is_manual': course.is_manual,
         'is_homework': course.is_homework,
@@ -1885,7 +1892,8 @@ def teacher_submissions(request):
     base_qs = (StudentSubmission.objects
                .filter(student__student_profile__teacher=request.user, is_latest=True)
                .select_related('student__student_profile',
-                               'assignment__lesson__module__course'))
+                               'assignment__lesson__module__course',
+                               'grade'))
 
     counts = {
         'pending': base_qs.filter(status=StudentSubmission.STATUS_PENDING).count(),
@@ -1926,6 +1934,25 @@ def teacher_review_submission(request, sub_id):
     )
     action = request.POST.get('action')
     comment = (request.POST.get('comment') or '').strip()
+
+    # Балл за номер. Пустое поле — оценки не ставим вовсе: «не оценено» и
+    # «оценено в ноль» — разные вещи, и путать их нельзя.
+    сырой = (request.POST.get('score') or '').strip().replace(',', '.')
+    if сырой:
+        потолок = Decimal(str(sub.assignment.points or 1))
+        try:
+            балл = Decimal(сырой)
+        except (InvalidOperation, ValueError):
+            балл = None
+        if балл is not None:
+            # Зажимаем в границы: отрицательный балл и балл выше потолка —
+            # это опечатка, а не намерение.
+            балл = max(Decimal('0'), min(балл, потолок))
+            Grade.objects.update_or_create(
+                submission=sub,
+                defaults={'value': балл, 'max_value': потолок,
+                          'graded_by': request.user},
+            )
 
     if action == 'accept':
         sub.status = StudentSubmission.STATUS_ACCEPTED

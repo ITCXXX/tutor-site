@@ -1434,3 +1434,64 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.author}: {self.text[:40]}"
+
+class Grade(models.Model):
+    """Оценка за ОДНУ попытку решения.
+
+    Главный урок журнала оценок Moodle: оценка отделена от задания. Задание
+    одно на всех, а оценок столько, сколько учеников и попыток, — класть балл
+    внутрь Assignment было бы ошибкой, которую потом дорого разбирать.
+
+    Оценка НЕ заменяет зачёт. Зачёт остаётся двоичным и считается прежним
+    правилом (mark_progress). Причина не в лени: правил зачёта три, и третье —
+    StudentProgress.update_progress для пути генератора — считает принципиально
+    иначе. Привяжи мы зачёт к баллу, у занимающихся учеников прогресс
+    пересчитался бы задним числом.
+    """
+
+    submission = models.OneToOneField(
+        'StudentSubmission', on_delete=models.CASCADE, related_name='grade',
+        verbose_name='Работа',
+    )
+    value = models.DecimalField(
+        'Балл', max_digits=6, decimal_places=2, default=0,
+        help_text='Сколько набрано за этот номер',
+    )
+    # Потолок ЗАПОМИНАЕТСЯ при выставлении. Если у задания потом поменяют вес,
+    # прежние оценки не поедут: «4 из 5» останется «4 из 5», а не станет «4 из 10».
+    max_value = models.DecimalField(
+        'Из скольких', max_digits=6, decimal_places=2, default=1,
+    )
+    # Снятое за опоздание. Отдельным полем, а не вычтенным из value: иначе не
+    # видно, за что снизили, и штраф не отменить. Пока никем не заполняется —
+    # появится вместе со штрафами за опоздание.
+    penalty = models.DecimalField(
+        'Снято за опоздание', max_digits=6, decimal_places=2, default=0,
+    )
+    graded_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='grades_given', verbose_name='Кто поставил',
+    )
+    graded_at = models.DateTimeField('Когда поставлена', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Оценка'
+        verbose_name_plural = 'Оценки'
+        indexes = [models.Index(fields=['submission'])]
+
+    def __str__(self):
+        return f"{self.value} из {self.max_value}"
+
+    @property
+    def final(self):
+        """Балл с учётом штрафа, но не ниже нуля."""
+        из_рук = self.value - self.penalty
+        return из_рук if из_рук > 0 else 0
+
+    @property
+    def percent(self):
+        """Процент за этот номер. Ноль в знаменателе — не оценка, а ошибка ввода."""
+        if not self.max_value:
+            return None
+        return float(self.final) * 100.0 / float(self.max_value)
+

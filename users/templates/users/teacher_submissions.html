@@ -140,6 +140,18 @@
     .tabs { font-size: .85rem; }
     .tabs a { padding: .45rem .7rem; }
 }
+
+/* Балл за номер. Пустое поле — работа без оценки: «не оценено» и «ноль» это
+   разные вещи, поэтому значения по умолчанию нет. */
+.score-row { display: flex; align-items: center; gap: .5rem; margin: .5rem 0 .1rem; flex-wrap: wrap; }
+.score-lbl { font-weight: 600; font-size: .9rem; }
+.score-in { width: 5rem; padding: .3rem .5rem; border: 1px solid var(--c-border);
+            border-radius: 8px; font: inherit; background: var(--c-surface); color: inherit; }
+.score-in:focus { outline: none; border-color: var(--c-primary-600); }
+.score-max { font-size: .9rem; color: var(--c-text-muted, #6b6b76); }
+.score-hint { font-size: .78rem; color: var(--c-text-muted, #9a9aa4); }
+.grade-badge { display: inline-block; padding: .1rem .5rem; border-radius: 8px;
+               background: var(--c-bg-soft); font-weight: 600; font-size: .88rem; }
 </style>
 {% endblock %}
 
@@ -202,6 +214,14 @@
                 {% csrf_token %}
                 <textarea name="comment" class="form-control" rows="2"
                           placeholder="Комментарий ученику (опционально)"></textarea>
+                <label class="score-row">
+                    <span class="score-lbl">Балл</span>
+                    <input type="number" name="score" class="score-in" min="0"
+                           max="{{ s.assignment.points }}" step="0.5"
+                           placeholder="—" inputmode="decimal">
+                    <span class="score-max">из {{ s.assignment.points }}</span>
+                    <span class="score-hint">пусто — без оценки</span>
+                </label>
                 <div class="btn-row">
                     <button type="submit" name="action" value="accept" class="btn btn-success btn-sm">Принять</button>
                     <button type="submit" name="action" value="reject" class="btn btn-outline-danger btn-sm">Вернуть на доработку</button>
@@ -210,12 +230,14 @@
             {% elif s.status == 'accepted' %}
             <div class="review-result accepted">
                 <strong>Принято</strong>
+                {% if s.grade %}<span class="grade-badge">{{ s.grade.final|floatformat:"-2" }} из {{ s.grade.max_value|floatformat:"-2" }}</span>{% endif %}
                 <span class="when">{{ s.reviewed_at|date:"d.m H:i" }}</span>
                 {% if s.teacher_comment %}<span class="comment">{{ s.teacher_comment }}</span>{% endif %}
             </div>
             {% elif s.status == 'rejected' %}
             <div class="review-result rejected">
                 <strong>Возвращено на доработку</strong>
+                {% if s.grade %}<span class="grade-badge">{{ s.grade.final|floatformat:"-2" }} из {{ s.grade.max_value|floatformat:"-2" }}</span>{% endif %}
                 <span class="when">{{ s.reviewed_at|date:"d.m H:i" }}</span>
                 {% if s.teacher_comment %}<span class="comment">{{ s.teacher_comment }}</span>{% endif %}
             </div>
