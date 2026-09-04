@@ -10,12 +10,29 @@ from django.urls import reverse
 from .models import Notification
 
 
-def notify(user, kind, text, url=''):
+def notify(user, kind, text, url='', key=''):
     """Создать уведомление. Себе не шлём — это шум, а не польза."""
     if not user or not getattr(user, 'is_authenticated', False):
         return None
     return Notification.objects.create(
-        user=user, kind=kind, text=text[:300], url=url[:500])
+        user=user, kind=kind, text=text[:300], url=url[:500], key=key[:120])
+
+
+def notify_once(user, kind, text, url='', key=''):
+    """Уведомить РОВНО ОДИН раз про это (кому, вид, ключ). Вернуть: создали ли.
+
+    Нужно напоминаниям о сроке: проход по срокам идёт каждый день и будит одни
+    и те же уроки. Уникальность стоит в базе, здесь она превращается из ошибки
+    в тихое «уже отправляли». Ключ обязателен: без него уникальности нет и
+    смысл теряется.
+    """
+    if not user or not getattr(user, 'is_authenticated', False) or not key:
+        return False
+    _, создано = Notification.objects.get_or_create(
+        user=user, kind=kind, key=key[:120],
+        defaults={'text': text[:300], 'url': url[:500]},
+    )
+    return создано
 
 
 def notify_submitted(submission):

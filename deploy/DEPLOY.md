@@ -606,6 +606,37 @@ systemctl daemon-reload && systemctl enable --now tutor-backup.timer
 systemctl start tutor-backup.service && journalctl -u tutor-backup -n 20 --no-pager
 ```
 
+## Напоминания о сроках ДЗ
+
+Раз в сутки сайт сам напоминает ученикам про сроки домашних заданий и даёт
+преподавателю сводку «кто не сдал». Ставится один раз:
+
+```bash
+cp /opt/tutor/deploy/tutor-remind.service.example /etc/systemd/system/tutor-remind.service
+cp /opt/tutor/deploy/tutor-remind.timer.example /etc/systemd/system/tutor-remind.timer
+systemctl daemon-reload && systemctl enable --now tutor-remind.timer
+```
+
+Посмотреть, что уйдёт, ничего не отправляя:
+
+```bash
+cd /opt/tutor && sudo -u tutor venv/bin/python manage.py remind_homework --dry-run
+```
+
+Проверить, что таймер встал и когда сработает:
+
+```bash
+systemctl list-timers tutor-remind --no-pager
+```
+
+Каждое событие уходит РОВНО ОДИН раз на урок: «срок подходит», потом «срок
+вышел», потом «приём закрыт». Поэтому запускать команду повторно безопасно —
+дубликатов она не создаёт. Сводка преподавателю приходит одна за день.
+
+За сколько дней предупреждать — параметр `--days` (по умолчанию за один):
+в файле службы допишите его к `ExecStart`.
+
+
 Копии складываются в `/var/backups/tutor`: база — сжатым дампом, ежедневно,
 хранится 14 последних; загруженные файлы — архивом, хранится 3 последних.
 Старые скрипт удаляет сам. Если свободного места меньше гигабайта, копия не

@@ -1,0 +1,24 @@
+# Напоминания о сроках домашних заданий. Запускается таймером, не вручную.
+# Установка:
+#   cp /opt/tutor/deploy/tutor-remind.service.example /etc/systemd/system/tutor-remind.service
+#   cp /opt/tutor/deploy/tutor-remind.timer.example   /etc/systemd/system/tutor-remind.timer
+#   systemctl daemon-reload && systemctl enable --now tutor-remind.timer
+#
+# Посмотреть, что уйдёт, ничего не отправляя:
+#   cd /opt/tutor && sudo -u tutor venv/bin/python manage.py remind_homework --dry-run
+
+[Unit]
+Description=Напоминания о сроках ДЗ (tutor_site)
+# Уведомления пишутся в базу — без неё делать нечего.
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+# От того же пользователя, что и сайт: команда пишет в ту же базу.
+User=tutor
+WorkingDirectory=/opt/tutor
+ExecStart=/opt/tutor/venv/bin/python manage.py remind_homework
+# Разбор сроков не должен мешать занятию.
+Nice=10
+IOSchedulingClass=idle

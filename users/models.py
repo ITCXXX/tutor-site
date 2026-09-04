@@ -870,10 +870,16 @@ class Notification(models.Model):
     KIND_SUBMITTED = 'submitted'   # ученик прислал работу — преподавателю
     KIND_REVIEWED = 'reviewed'     # работу проверили — ученику
     KIND_MESSAGE = 'message'       # написали в чат — тому, кого нет на сайте
+    KIND_DUE_SOON = 'due_soon'     # срок домашки подходит — ученику
+    KIND_DUE_PASSED = 'due_passed'  # срок вышел (или приём закрыт) — ученику
+    KIND_DIGEST = 'digest'         # сводка за день — преподавателю
     KIND_CHOICES = [
         (KIND_SUBMITTED, 'Прислали работу'),
         (KIND_REVIEWED, 'Работу проверили'),
         (KIND_MESSAGE, 'Новое сообщение'),
+        (KIND_DUE_SOON, 'Срок подходит'),
+        (KIND_DUE_PASSED, 'Срок вышел'),
+        (KIND_DIGEST, 'Сводка за день'),
     ]
 
     user = models.ForeignKey(
