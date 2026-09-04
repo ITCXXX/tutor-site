@@ -7676,11 +7676,28 @@
     const b = n.getClientRect({ relativeTo: layer });
     return (b.width || b.height) ? b : null;
   }
+  // Точка ПРИВЯЗКИ — ровно на границе: стрелка должна упираться в край объекта,
+  // а не висеть рядом с ним. Это геометрия, её трогать нельзя.
   function anchorPoint(box, side) {
     if (side === 'top') return { x: box.x + box.width / 2, y: box.y };
     if (side === 'bottom') return { x: box.x + box.width / 2, y: box.y + box.height };
     if (side === 'left') return { x: box.x, y: box.y + box.height / 2 };
     return { x: box.x + box.width, y: box.y + box.height / 2 };
+  }
+
+  // А вот КРУЖОК, за который берутся рукой, сдвинут наружу. Раньше он сидел
+  // верхом на границе, половиной поверх содержимого: у картинки это закрывает
+  // край рисунка, и попасть в него рядом с углом мешала квадратная ручка
+  // размера. Сдвиг чисто зрительный — привязка по-прежнему считается по
+  // anchorPoint, то есть по краю.
+  const ANCHOR_OUT = 11;   // экранных пикселей от границы
+  function anchorDotPoint(box, side, s) {
+    const p = anchorPoint(box, side);
+    const прочь = ANCHOR_OUT / (s || 1);
+    if (side === 'top') return { x: p.x, y: p.y - прочь };
+    if (side === 'bottom') return { x: p.x, y: p.y + прочь };
+    if (side === 'left') return { x: p.x - прочь, y: p.y };
+    return { x: p.x + прочь, y: p.y };
   }
 
   // ── Пересчёт привязанных стрелок ───────────────────────────────────────
@@ -7728,6 +7745,9 @@
   // ── Точки на объекте ───────────────────────────────────────────────────
   const anchorLayerEl = document.getElementById('anchor-layer');
   let anchorEls = null, anchorForId = null, anchorDrag = null;
+  // Чей якорь показывать вместо выделенного: заполняется, пока тянут конец
+  // стрелки, и снова пустеет, когда отпустили.
+  let anchorShowFor = null;
 
   function ensureAnchorEls() {
     if (anchorEls || !anchorLayerEl) return anchorEls;
@@ -7754,8 +7774,11 @@
     if (!anchorLayerEl) return;
     // Признак — само выделение, а не активный инструмент: по объекту можно
     // щёлкнуть и с карандашом в руках, и якоря должны появиться.
-    if (viewOnly || panMode || selected.size !== 1) { hideAnchors(); return; }
-    const id = Array.from(selected)[0];
+    // Пока ведут конец стрелки, якоря показываем у ОБЪЕКТА ПОД КУРСОРОМ, а не
+    // у выделенного: выделена в этот момент сама стрелка, и её якоря человеку
+    // не нужны — ему нужно видеть, куда стрелка сейчас прицепится.
+    if (viewOnly || panMode || (!anchorShowFor && selected.size !== 1)) { hideAnchors(); return; }
+    const id = anchorShowFor || Array.from(selected)[0];
     const el = elements.get(id);
     if (!hasAnchors(el) || (el.data && el.data.locked)) { hideAnchors(); return; }
     const box = objBox(id);
@@ -7764,7 +7787,7 @@
     anchorForId = id;
     const s = stage.scaleX();
     ANCHOR_SIDES.forEach((side) => {
-      const p = anchorPoint(box, side);
+      const p = anchorDotPoint(box, side, s);
       const a = anchorEls[side];
       a.style.display = 'block';
       a.style.left = (p.x * s + stage.x()) + 'px';
@@ -7780,13 +7803,19 @@
   function positionHandles() { positionHandlesCore(); renderAnchors(); }
 
   // Куда целимся: объект под курсором и его ближайшая сторона.
-  function anchorTargetAt(wx, wy, excludeId) {
+  // Допуск нужен, когда конец стрелки ВЕДУТ к объекту: попасть точно внутрь
+  // рамки рукой (а тем более пальцем) трудно, и без допуска стрелка не
+  // цеплялась именно тогда, когда её подводят вплотную — то есть ровно в тот
+  // момент, ради которого привязка и нужна.
+  function anchorTargetAt(wx, wy, excludeId, допуск) {
+    const доп = допуск || 0;
     let best = null;
     elements.forEach((el) => {
       if (el.id === excludeId || !hasAnchors(el)) return;
       const box = objBox(el.id);
       if (!box) return;
-      if (wx < box.x || wx > box.x + box.width || wy < box.y || wy > box.y + box.height) return;
+      if (wx < box.x - доп || wx > box.x + box.width + доп
+          || wy < box.y - доп || wy > box.y + box.height + доп) return;
       // Ближайшая сторона — по наименьшему расстоянию до края.
       const dl = wx - box.x, dr = box.x + box.width - wx;
       const dt = wy - box.y, db = box.y + box.height - wy;
@@ -8140,11 +8169,37 @@
     h.on('mouseenter', () => { stageEl.style.cursor = 'pointer'; });
     h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
     let cBefore = null;
-    h.on('dragstart', (e) => { e.cancelBubble = true; const el = connSelectedEl(); cBefore = el ? clone(el) : null; });
+    // Куда конец стрелки прицепится, если отпустить прямо сейчас.
+    let connTarget = null;
+    h.on('dragstart', (e) => { e.cancelBubble = true; const el = connSelectedEl(); cBefore = el ? clone(el) : null; connTarget = null; });
     h.on('dragmove', (e) => {
       e.cancelBubble = true;
       const el = connSelectedEl(); if (!el) return;
-      const d = el.data, P = { x: h.x() - (d.x || 0), y: h.y() - (d.y || 0) };
+      const d = el.data;
+      let P = { x: h.x() - (d.x || 0), y: h.y() - (d.y || 0) };
+
+      // Тянут КОНЕЦ стрелки — ищем, к чему прицепиться. Раньше здесь не было
+      // ничего: конец писал сырые координаты, привязка не заводилась, якорей
+      // не показывалось. Прицепить стрелку можно было ровно одним способом —
+      // родив её протяжкой от кружка, — а поправить уже нарисованную нельзя.
+      if (isEnd) {
+        const допуск = 14 / stage.scaleX();
+        connTarget = anchorTargetAt(h.x(), h.y(), el.id, допуск);
+        // Показываем якоря того объекта, к которому ведём: выделена сейчас сама
+        // стрелка, и её собственные якоря человеку не нужны.
+        anchorShowFor = connTarget ? connTarget.id : null;
+        renderAnchors();
+        highlightAnchorTarget(connTarget);
+        if (connTarget) {
+          const tb = objBox(connTarget.id);
+          if (tb) {
+            const A = anchorPoint(tb, connTarget.side);
+            P = { x: A.x - (d.x || 0), y: A.y - (d.y || 0) };
+            h.position({ x: A.x, y: A.y });   // ручка тоже липнет, иначе она отстаёт от линии
+          }
+        }
+      }
+
       if (k === 'a') { const p = (d.points || [0, 0, 0, 0]).slice(); p[0] = P.x; p[1] = P.y; if (d.divider === 'h') p[1] = p[3]; else if (d.divider === 'v') p[0] = p[2]; d.points = p; }
       else if (k === 'b') { const p = (d.points || [0, 0, 0, 0]).slice(); p[2] = P.x; p[3] = P.y; if (d.divider === 'h') p[3] = p[1]; else if (d.divider === 'v') p[2] = p[0]; d.points = p; }
       else if (k === 'm' && d.elbow) { // сдвиг излома уступа вдоль главной оси
@@ -8154,7 +8209,23 @@
       const node = nodes.get(el.id); if (node) node.draw();
       positionConnHandles(el, k); layer.batchDraw(); repositionConnPanel();
     });
-    h.on('dragend', (e) => { e.cancelBubble = true; const el = connSelectedEl(); if (el && cBefore) { histUpd(cBefore, el); send({ action: 'element_update', element: el }); } cBefore = null; positionHandles(); });
+    h.on('dragend', (e) => {
+      e.cancelBubble = true;
+      const el = connSelectedEl();
+      if (el && isEnd) {
+        const d = el.data, слот = (k === 'a') ? 'from' : 'to';
+        // Отвели конец в пустоту — привязку СНИМАЕМ. Иначе стрелка, которую
+        // сознательно отцепили, продолжала бы бегать за прежним объектом.
+        if (connTarget) d[слот] = { id: connTarget.id, side: connTarget.side };
+        else delete d[слот];
+        recomputeConnectors();
+      }
+      anchorShowFor = null;
+      highlightAnchorTarget(null);
+      connTarget = null;
+      if (el && cBefore) { histUpd(cBefore, el); send({ action: 'element_update', element: el }); }
+      cBefore = null; positionHandles();
+    });
     connHandles.add(h); connHandleEls[k] = h;
   });
 
@@ -8349,14 +8420,18 @@
     const isText = el.type === 'text';
     const pts = boxCorners(b);
     const edgePts = { ml: { x: b.x, y: b.y + b.height / 2 }, mr: { x: b.x + b.width, y: b.y + b.height / 2 } };
-    // Ручки выносим ЗА рамку объекта. Раньше они стояли центром на углу, и
-    // половина ручки лежала поверх содержимого: у картинки и формулы это
-    // закрывает угол рисунка, а при точной подгонке размера мешает видеть тот
-    // самый край, который подгоняешь.
+    // Ручки размера уходят ВНУТРЬ рамки, а кружки-якоря — наружу. Так они не
+    // спорят за одни и те же пиксели у углов: раньше и те и другие тянулись
+    // прочь от объекта, и у маленькой картинки квадрат накрывал кружок, отчего
+    // стрелку от угла было не вытянуть.
     //
-    // На попадание в размер это не влияет: doResize считает от координат
-    // указателя, а не от положения ручки.
-    const зазор = 4 / stage.scaleX();
+    // Цена известна и принята владельцем: квадрат снова наезжает на угол
+    // содержимого, то есть при точной подгонке чуть закрывает тот самый край,
+    // который подгоняешь. Прежде их вынесли наружу именно из-за этого.
+    //
+    // На попадание в размер это по-прежнему не влияет: doResize считает от
+    // координат указателя, а не от положения ручки.
+    const зазор = 4 / stage.scaleX();   // боковые ручки текста по-прежнему наружу
     handlesGroup.getChildren().forEach((h) => {
       const name = h.name(), isEdge = (name === 'ml' || name === 'mr');
       h.visible(isText ? isEdge : !isEdge); // текст — боковые ручки, остальное — угловые
@@ -8368,10 +8443,11 @@
         h.position({ x: p.x - ew / 2 + наружу, y: p.y - eh / 2 });
       } else {
         const p = pts[name];
-        // Угловая ручка уходит по диагонали от центра объекта — то есть
-        // строго наружу, в какой бы угол она ни ставилась.
-        const зх = (p.x <= b.x + b.width / 2 ? -1 : 1) * (sz / 2 + зазор);
-        const зy = (p.y <= b.y + b.height / 2 ? -1 : 1) * (sz / 2 + зазор);
+        // Угловая ручка уходит по диагонали К ЦЕНТРУ объекта: смещение ровно в
+        // половину её размера, значит ручка целиком внутри рамки, а её внешний
+        // край приходится вровень с границей.
+        const зх = (p.x <= b.x + b.width / 2 ? 1 : -1) * (sz / 2);
+        const зy = (p.y <= b.y + b.height / 2 ? 1 : -1) * (sz / 2);
         h.size({ width: sz, height: sz }); h.strokeWidth(1.5 / stage.scaleX());
         h.position({ x: p.x - sz / 2 + зх, y: p.y - sz / 2 + зy });
       }
