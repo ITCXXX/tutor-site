@@ -6989,6 +6989,19 @@
   // ВНУТРИ матокна: у такого объекта координаты локальные, относительно окна, и
   // сдвиг на мировые dx/dy оторвал бы его от окна.
   const CARRY_SKIP = { image: 1, pdf: 1, frame: 1 };
+  // Лежит ли объект ВЫШЕ картинки, то есть нарисован ли он поверх неё.
+  // Порядок отрисовки — то, что человек видит глазами, поэтому сравниваем
+  // именно его; поле z берём запасным вариантом, когда узла нет (текст,
+  // стикеры и таблицы живут в DOM, а не на холсте).
+  function рисуетсяВыше(eid, carrierEl) {
+    const a = nodes.get(eid), b = nodes.get(carrierEl.id);
+    if (a && b && a.getParent() && a.getParent() === b.getParent()) {
+      return a.zIndex() > b.zIndex();
+    }
+    const el = elements.get(eid);
+    return ((el && el.z) || 0) > (carrierEl.z || 0);
+  }
+
   function objectsOnCarrier(imgEl) {
     const d = imgEl.data, ib = { x: d.x || 0, y: d.y || 0, w: d.width || 0, h: d.height || 0 };
     if (ib.w <= 0 || ib.h <= 0) return [];
@@ -6996,6 +7009,12 @@
     const res = [];
     elements.forEach((el, eid) => {
       if (eid === imgEl.id || CARRY_SKIP[el.type]) return;
+      // Только то, что НАД картинкой. Разбор, написанный поверх неё, к ней и
+      // относится — он обязан ехать следом. А записи, сделанные раньше и
+      // лежащие ПОД картинкой, к ней отношения не имеют: картинку на них
+      // просто положили сверху. Раньше уезжало и то и другое, потому что
+      // смотрели только на попадание центра в рамку.
+      if (!рисуетсяВыше(eid, imgEl)) return;
       if (el.data && el.data.frame) return;          // геометрия внутри матокна
       if (isPointBound(el)) return;                  // следует за своими точками
       const w = widgetItems.get(eid);

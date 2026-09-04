@@ -814,7 +814,14 @@
     #eraser-panel .er-lbl { color: #6b6b76; }
     #eraser-panel input[type=range] { width: 120px; accent-color: #4d7cfe; }
     #eraser-size-val { min-width: 22px; text-align: right; color: #2b2b33; font-variant-numeric: tabular-nums; }
-    .eraser-ring { position: absolute; border: 1.5px solid #ff5a5a; background: rgba(255,90,90,.10); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 27; }
+    /* Не красный: красный на доске означает ошибку, а ластик — обычный
+       инструмент. Тёмно-серый контур с белой подложкой виден и на белом фоне,
+       и поверх тёмного рисунка, и не спорит с цветом самих записей.
+       box-sizing: рамка рисуется ВНУТРЬ заданного диаметра, иначе кольцо на
+       3 пикселя шире зоны стирания. */
+    .eraser-ring { position: absolute; box-sizing: border-box; border: 1.5px solid #3a3a44;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.85); background: rgba(120,120,132,.12);
+      border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 27; }
     /* Настройка карандаша/маркера/ластика: вертикальные кружки-пресеты в меню рисования, под лассо;
        по клику на кружок справа всплывает панель #dp-pop (толщина/цвет/прозрачность или радиус). */
     #draw-cfg { display: flex; flex-direction: column; gap: 6px; align-items: center; }
@@ -1231,7 +1238,12 @@
     .wh-opts { width: 100%; margin-top: 6px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 4px 6px; font-size: 12px; resize: vertical; }
 
     /* Слой аплетов ГеоГебры (DOM поверх холста). */
-    #ggb-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 22; overflow: hidden; }
+    /* top: 0, а не 56. Пятьдесят шесть — высота ВЕРХНЕЙ ПЛАШКИ, которой больше
+       нет: холст прибит к нулю (#board-stage), и в скрипте та же величина уже
+       сведена к нулю (STAGE_TOP). Осталось это только здесь и у слоя курсоров —
+       и всё, что в них лежит, рисовалось ровно на 56 пикселей ниже, чем нужно:
+       кольцо ластика, курсоры собеседников, окно GeoGebra. */
+    #ggb-layer { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 22; overflow: hidden; }
     .ggb-item {
         position: absolute; top: 0; left: 0; transform-origin: top left;
         pointer-events: auto; background: #fff; border-radius: 8px; overflow: hidden;
@@ -1250,7 +1262,7 @@
     .ggb-del:hover { background: #ececf1; color: #e7505a; }
 
     /* Слой для чужих курсоров. */
-    #cursor-layer { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 25; overflow: hidden; }
+    #cursor-layer { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 25; overflow: hidden; }
     .remote-cursor {
         position: absolute; transform: translate(-2px, -2px);
         font-size: 12px; white-space: nowrap;
