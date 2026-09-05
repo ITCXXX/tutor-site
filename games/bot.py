@@ -223,8 +223,24 @@ def _line_score(values, me, foe, two, one):
     return total
 
 
-def evaluate(pos, me):
+# Числа оценки. Раньше стояли прямо в формулах круглыми, проставленными на
+# глаз; вынесены сюда, чтобы их можно было подбирать турниром (games/arena.py).
+# Значения — те же, что были, поэтому игра не изменилась.
+ВЕСА = {
+    'поле': 120,             # выигранное малое поле — главный капитал
+    'поле_центр': 20,        # и оно дороже, если поле ближе к центру большого
+    'большая_пара': 200,     # две в ряд в большом поле — уже угроза выиграть
+    'большая_одна': 30,
+    'малая_пара': 6,         # то же внутри малого поля, но много дешевле
+    'малая_одна': 1,
+    'малый_центр': 2,
+    'свободный_выбор': 25,   # право ходить куда угодно
+}
+
+
+def evaluate(pos, me, веса=None):
     """Оценка позиции глазами игрока `me`. Больше — лучше."""
+    в = веса or ВЕСА
     foe = O if me == X else X
 
     if pos.winner == me:
@@ -240,13 +256,15 @@ def evaluate(pos, me):
     # Выигранные малые поля — главный капитал, центр большого поля дороже.
     for i in range(9):
         v = boards[i]
+        цена = в['поле'] + в['поле_центр'] * BOARD_WEIGHT[i]
         if v == me:
-            total += 120 + 20 * BOARD_WEIGHT[i]
+            total += цена
         elif v == foe:
-            total -= 120 + 20 * BOARD_WEIGHT[i]
+            total -= цена
 
     # Пары в большом поле стоят дорого: это уже угроза выиграть партию.
-    total += _line_score(boards, me, foe, two=200, one=30)
+    total += _line_score(boards, me, foe,
+                         two=в['большая_пара'], one=в['большая_одна'])
 
     # Внутри незакрытых полей считаем то же, но дешевле, и добавляем центр.
     cells = pos.cells
@@ -256,17 +274,18 @@ def evaluate(pos, me):
         base = i * 9
         small = cells[base:base + 9]
         weight = BOARD_WEIGHT[i]
-        total += _line_score(small, me, foe, two=6, one=1) * weight
+        total += _line_score(small, me, foe,
+                             two=в['малая_пара'], one=в['малая_одна']) * weight
         centre = small[4]
         if centre == me:
-            total += 2 * weight
+            total += в['малый_центр'] * weight
         elif centre == foe:
-            total -= 2 * weight
+            total -= в['малый_центр'] * weight
 
     # Свободный выбор поля — заметное преимущество: соперник, которого послали
     # в закрытое поле, ходит куда хочет и обычно тут же занимает центр.
     if pos.next_local is None or boards[pos.next_local] != EMPTY:
-        total += 25 if pos.turn == me else -25
+        total += в['свободный_выбор'] if pos.turn == me else -в['свободный_выбор']
 
     return total
 
@@ -277,7 +296,7 @@ class _Timeout(Exception):
     """Бюджет времени кончился — недосчитанный уровень выбрасывается целиком."""
 
 
-def _search(pos, depth, alpha, beta, deadline, counter):
+def _search(pos, depth, alpha, beta, deadline, counter, веса=None):
     """Оценка позиции глазами того, чья сейчас очередь."""
     if pos.winner != EMPTY:
         if pos.winner == DRAW:
@@ -287,7 +306,7 @@ def _search(pos, depth, alpha, beta, deadline, counter):
         return (WIN_SCORE + depth) if pos.winner == pos.turn else -(WIN_SCORE + depth)
 
     if depth <= 0:
-        return evaluate(pos, pos.turn)
+        return evaluate(pos, pos.turn, веса)
 
     counter[0] += 1
     if counter[0] % 256 == 0 and time.monotonic() > deadline:
@@ -297,7 +316,7 @@ def _search(pos, depth, alpha, beta, deadline, counter):
     for big, small in pos.moves():
         won_before = pos.boards[big]
         rec = pos.play(big, small)
-        score = -_search(pos, depth - 1, -beta, -alpha, deadline, counter)
+        score = -_search(pos, depth - 1, -beta, -alpha, deadline, counter, веса)
         pos.undo(rec, won_before)
 
         if score > best:
@@ -309,7 +328,8 @@ def _search(pos, depth, alpha, beta, deadline, counter):
     return best
 
 
-def choose_move(state, variant=VARIANT_CLASSIC, level=DEFAULT_LEVEL, rng=None):
+def choose_move(state, variant=VARIANT_CLASSIC, level=DEFAULT_LEVEL, rng=None,
+                веса=None):
     """
     Выбрать ход за того, чья сейчас очередь.
 
@@ -341,7 +361,7 @@ def choose_move(state, variant=VARIANT_CLASSIC, level=DEFAULT_LEVEL, rng=None):
                 won_before = pos.boards[big]
                 rec = pos.play(big, small)
                 score = -_search(pos, depth - 1, -WIN_SCORE * 2, -alpha,
-                                 deadline, counter)
+                                 deadline, counter, веса)
                 pos.undo(rec, won_before)
                 round_scores.append(((big, small), score))
                 if score > alpha:

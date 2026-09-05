@@ -70,3 +70,7 @@ fipi_cache/
 # Дамп для деплоя (локально создаётся командой dumpdata_for_deploy)
 deploy_data.json
 *.dump.json
+
+# Результаты ночного отбора весов — локальные, в репозиторий не едут:
+# их место в games/tuned_weights.json после проверки на сильном уровне.
+games/tuned_weights.log

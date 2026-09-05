@@ -20,7 +20,8 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from games import bot, engine
+from games import arena, bot, engine
+from games.engine import VARIANT_CLASSIC
 from games.models import Game, SiteSetting
 
 User = get_user_model()
@@ -310,3 +311,106 @@ class BotGameTests(TestCase):
         self.client.force_login(self.user)
         res = self.client.get(reverse('games:detail', kwargs={'code': game.code}))
         self.assertContains(res, 'Компьютер (сильный)')
+
+
+class ТурнирныйСтенд(TestCase):
+    """Стенд нужен, чтобы «стало сильнее» было измеримым.
+
+    Отдельное внимание статистике: она единственная часть, которая может врать
+    незаметно. Матч, объявляющий победителем того, кто выиграл на две партии из
+    двухсот, увёл бы весь отбор за случайностью.
+    """
+
+    def test_доля_очков_считается_как_в_шахматах(self):
+        итог = arena.Итог(победы=6, ничьи=2, поражения=2)
+        self.assertEqual(итог.партий, 10)
+        self.assertEqual(итог.очки, 7.0)          # ничья — половина очка
+        self.assertAlmostEqual(итог.доля, 0.7)
+
+    def test_ровный_счёт_объявляется_незначимым(self):
+        итог = arena.Итог(победы=52, ничьи=0, поражения=48)
+        self.assertFalse(итог.значимо)
+        self.assertIn('неотличима от случайности', итог.словами('A', 'B'))
+
+    def test_разгром_объявляется_значимым(self):
+        итог = arena.Итог(победы=90, ничьи=0, поражения=10)
+        self.assertTrue(итог.значимо)
+        self.assertIn('от равной игры', итог.словами('A', 'B'))
+
+    def test_погрешность_падает_с_числом_партий(self):
+        мало = arena.Итог(победы=14, ничьи=0, поражения=6)
+        много = arena.Итог(победы=140, ничьи=0, поражения=60)
+        self.assertAlmostEqual(мало.доля, много.доля)
+        self.assertLess(много.погрешность, мало.погрешность)
+        # Вчетверо больше партий — вдвое уже интервал.
+        self.assertAlmostEqual(много.погрешность, мало.погрешность / (10 ** 0.5),
+                               places=2)
+
+    def test_ничьи_сужают_интервал(self):
+        """Разброс считается по результатам, а не по формуле для монетки."""
+        поровну = arena.Итог(победы=50, ничьи=0, поражения=50)
+        все_ничьи = arena.Итог(победы=0, ничьи=100, поражения=0)
+        self.assertAlmostEqual(поровну.доля, все_ничьи.доля)
+        self.assertLess(все_ничьи.погрешность, поровну.погрешность)
+
+    def test_дебют_случайный_но_воспроизводимый(self):
+        первый = arena._случайный_дебют(7)
+        второй = arena._случайный_дебют(7)
+        другой = arena._случайный_дебют(8)
+        self.assertEqual(первый, второй)
+        self.assertNotEqual(первый, другой)
+        self.assertFalse(первый.get('winner'))     # движок пишет '' , а не None
+
+    def test_партия_доигрывается_до_конца(self):
+        слабый = arena.Игрок('слабый', 'easy')
+        итог = arena.сыграть(слабый, слабый, arena._случайный_дебют(1), seed=1)
+        self.assertIn(итог, ('X', 'O', 'D'))
+
+    def test_матч_идёт_парами_туда_и_обратно(self):
+        """Первый ход стоит дорого: без смены цветов измеришь не силу, а выступку."""
+        слабый = arena.Игрок('слабый', 'easy')
+        итог = arena.матч(слабый, слабый, партий=6, ядер=1, seed=3)
+        self.assertEqual(итог.партий, 6)
+        self.assertEqual(итог.партий % 2, 0)
+
+    def test_сильный_обыгрывает_слабого_значимо(self):
+        итог = arena.матч(arena.Игрок('средний', 'medium'),
+                          arena.Игрок('слабый', 'easy'),
+                          партий=30, ядер=1, seed=5)
+        self.assertGreater(итог.доля, 0.5)
+        self.assertTrue(итог.значимо)
+
+    def test_свои_веса_доезжают_до_оценки(self):
+        """Иначе отбор шёл бы, а играли бы всё время одни и те же веса."""
+        обычные = dict(bot.ВЕСА)
+        странные = dict(bot.ВЕСА)
+        # Цена одиночного знака в малом поле: она участвует в любой позиции,
+        # где сделан хоть один ход, — в отличие от цены выигранного поля или
+        # свободного выбора, которых в дебюте может не быть вовсе.
+        странные['малая_одна'] = 5000
+
+        позиция = arena._случайный_дебют(11)
+        поз = bot.Position(позиция, VARIANT_CLASSIC)
+        сторона = поз.turn
+        self.assertNotEqual(bot.evaluate(поз, сторона, обычные),
+                            bot.evaluate(поз, сторона, странные))
+
+        игрок = arena.игрок_из_весов('свои', странные, 'easy')
+        self.assertEqual(игрок.как_словарь()['малая_одна'], 5000)
+
+    def test_веса_по_умолчанию_не_меняют_игру(self):
+        """Вынос чисел в набор не должен был ничего сдвинуть."""
+        позиция = arena._случайный_дебют(13)
+        поз = bot.Position(позиция, VARIANT_CLASSIC)
+        self.assertEqual(bot.evaluate(поз, поз.turn),
+                         bot.evaluate(поз, поз.turn, dict(bot.ВЕСА)))
+
+    def test_перчатка_считает_общую_долю(self):
+        итоги, общая = arena.перчатка(
+            arena.Игрок('средний', 'medium'),
+            [arena.Игрок('слабый', 'easy')],
+            партий=10, ядер=1, seed=2,
+        )
+        self.assertEqual(len(итоги), 1)
+        self.assertGreater(общая, 0.5)
+
