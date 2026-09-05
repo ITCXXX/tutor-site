@@ -1132,3 +1132,139 @@ class ПростойРедактор(TestCase):
         простой = self.client.get(reverse('cards:create'))
         self.assertEqual(list(простой.context['форма'].fields), ['title', 'description'])
 
+
+
+class РазборБезКолоды(TestCase):
+    """Вставить список хочется ещё до того, как колода создана."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('автор', 'пароль')
+        self.client.force_login(self.user)
+
+    def _разобрать(self, текст):
+        return self.client.post(
+            reverse('cards:parse'), data={'текст': текст},
+            content_type='application/json',
+        )
+
+    def test_возвращает_карточки_и_ничего_не_создаёт(self):
+        ответ = self._разобрать(
+            'Столица Франции | Париж | !Лион | !Марсель | город на Сене\n'
+            'Столица Японии | Токио'
+        )
+        данные = ответ.json()
+        self.assertEqual(len(данные['карточки']), 2)
+        self.assertEqual(данные['карточки'][0]['distractors'], 'Лион\nМарсель')
+        self.assertEqual(данные['карточки'][0]['hint'], 'город на Сене')
+        self.assertEqual(Card.objects.count(), 0)
+        self.assertEqual(Deck.objects.count(), 0)
+
+    def test_замечания_доезжают(self):
+        данные = self._разобрать('Конечно! Вот список:\nСинус | отношение').json()
+        self.assertEqual(len(данные['карточки']), 1)
+        self.assertTrue(данные['замечания'])
+
+    def test_разметка_чистится_и_здесь(self):
+        данные = self._разобрать('<script>alert(1)</script>Вопрос | <b>Ответ</b>').json()
+        self.assertNotIn('script', данные['карточки'][0]['front'].lower())
+        self.assertEqual(данные['карточки'][0]['back'], '<b>Ответ</b>')
+
+    def test_гостю_разбор_недоступен(self):
+        self.client.logout()
+        ответ = self._разобрать('Вопрос | Ответ')
+        self.assertIn(ответ.status_code, (302, 403, 404))
+
+    def test_огромный_кусок_отвергается(self):
+        ответ = self._разобрать('а | б\n' * 40000)
+        self.assertEqual(ответ.status_code, 400)
+
+
+class НеверныеВариантыВРедакторе(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user('автор', 'пароль')
+        self.client.force_login(self.user)
+
+    def test_сохраняются_из_редактора(self):
+        self.client.post(reverse('cards:create'), {
+            'title': 'Столицы',
+            'карточки': json.dumps([{
+                'id': None, 'front': 'Столица Франции', 'back': 'Париж',
+                'hint': '', 'distractors': 'Лион\nМарсель\nБордо',
+            }]),
+        })
+        карточка = Deck.objects.get(title='Столицы').cards.get()
+        self.assertEqual(карточка.неверные(), ['Лион', 'Марсель', 'Бордо'])
+
+    def test_возвращаются_в_редактор_при_правке(self):
+        колода = Deck.objects.create(title='Столицы', owner=self.user)
+        Card.objects.create(deck=колода, front='а', back='б', distractors='в\nг')
+        ответ = self.client.get(reverse('cards:edit_cards', args=[колода.pk]))
+        self.assertEqual(ответ.context['карточки_json'][0]['distractors'], 'в\nг')
+
+    def test_поле_есть_в_разметке_редактора(self):
+        ответ = self.client.get(reverse('cards:create'))
+        разметка = ответ.content.decode('utf-8')
+        self.assertIn('data-поле="distractors"', разметка)
+        # И кнопка вставки списком — её не было, а список вставить хочется сразу.
+        self.assertIn('кнопка-вставить', разметка)
+        self.assertIn(reverse('cards:parse'), разметка)
+
+
+class ПодсказкаДоОтвета(TestCase):
+    """Подсказка, которую видно только после ответа, — не подсказка."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('ученик', 'пароль')
+        self.колода = Deck.objects.create(title='Столицы', owner=self.user)
+        Card.objects.create(deck=self.колода, front='Столица Франции',
+                            back='Париж', hint='город на Сене')
+        Card.objects.create(deck=self.колода, front='Столица Японии', back='Токио')
+        self.client.force_login(self.user)
+
+    def test_подсказка_приходит_с_заданием(self):
+        ответ = self.client.get(reverse('cards:study', args=[self.колода.pk]))
+        задания = ответ.context['задания']
+        с_подсказкой = [з for з in задания if з['подсказка']]
+        self.assertEqual(len(с_подсказкой), 1)
+        self.assertEqual(с_подсказкой[0]['подсказка'], 'город на Сене')
+
+    def test_кнопка_подсказки_есть_на_обоих_экранах(self):
+        for имя in ('study', 'learn'):
+            разметка = self.client.get(
+                reverse('cards:%s' % имя, args=[self.колода.pk])
+            ).content.decode('utf-8')
+            self.assertIn('id="кнопка-подсказки"', разметка, имя)
+
+
+class СвоиОкнаВместоСистемных(TestCase):
+    """Системное окно браузера подписано «Сайт сообщает…» и пугает ученика."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('автор', 'пароль')
+        self.колода = Deck.objects.create(title='Колода', owner=self.user)
+        Card.objects.create(deck=self.колода, front='а', back='б')
+        self.client.force_login(self.user)
+
+    def test_в_разделе_не_осталось_системных_окон(self):
+        адреса = [
+            reverse('cards:deck', args=[self.колода.pk]),
+            reverse('cards:edit', args=[self.колода.pk]),
+            reverse('cards:edit_cards', args=[self.колода.pk]),
+            reverse('cards:create'),
+        ]
+        for адрес in адреса:
+            разметка = self.client.get(адрес).content.decode('utf-8')
+            self.assertNotIn('confirm(', разметка, адрес)
+            self.assertNotIn('alert(', разметка, адрес)
+
+    def test_удаление_подтверждается_своим_окном(self):
+        разметка = self.client.get(
+            reverse('cards:deck', args=[self.колода.pk])).content.decode('utf-8')
+        self.assertIn('data-спросить=', разметка)
+        self.assertIn('data-опасно', разметка)
+
+    def test_компонент_окон_подключён_на_всех_страницах(self):
+        разметка = self.client.get(reverse('cards:list')).content.decode('utf-8')
+        self.assertIn('js/ui_dialog.js', разметка)
+

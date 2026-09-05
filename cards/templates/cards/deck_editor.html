@@ -80,7 +80,7 @@
         color: var(--c-text-muted);
         pointer-events: none;
     }
-    .поле-подсказки {
+    .поле-подсказки, .поле-неверных {
         grid-column: 2 / 4;
         min-height: 32px;
         font-size: .85rem;
@@ -88,6 +88,7 @@
         border-style: dashed;
         color: var(--c-text-soft);
     }
+    .поле-неверных:not(:empty) { border-color: var(--c-danger); }
     .удалить-строку {
         width: 32px; height: 32px; margin-top: .3rem;
         border: 1px solid var(--c-border); border-radius: var(--r-md);
@@ -178,6 +179,9 @@
             <button type="button" class="btn btn-outline-primary" id="кнопка-добавить">
                 + Карточка
             </button>
+            <button type="button" class="btn btn-outline-primary" id="кнопка-вставить">
+                Вставить списком
+            </button>
             <button type="submit" class="btn btn-primary">
                 {% if колода %}Сохранить{% else %}Создать колоду{% endif %}
             </button>
@@ -197,6 +201,9 @@
     </form>
 
     <p class="text-muted small mt-2">
+        Неверные варианты нужны, только если карточку будут спрашивать выбором
+        ответа; без них варианты соберутся из ответов соседних карточек.
+        <br>
         Enter — следующее поле, Shift+Enter — перенос строки внутри карточки.
         Формулы пишите в долларах: <code>$S = \pi R^2$</code> — на карточке они
         станут формулами.
@@ -215,11 +222,18 @@
         <button type="button" class="удалить-строку" title="Удалить карточку">×</button>
         <div class="поле-текста поле-подсказки" data-поле="hint" contenteditable="true"
              data-подсказка="подсказка (необязательно)" spellcheck="false"></div>
+        <div class="поле-текста поле-неверных" data-поле="distractors" contenteditable="true"
+             data-подсказка="неверные варианты — каждый с новой строки, Shift+Enter"
+             spellcheck="false"></div>
     </div>
 </template>
 {% endblock %}
 
 {% block extra_js %}
 {{ карточки_json|json_script:"начальные" }}
+<script>
+    window.АДРЕС_РАЗБОРА = '{% url "cards:parse" %}';
+    window.CSRF_РАЗБОРА = '{{ csrf_token }}';
+</script>
 <script src="{% static 'js/cards_editor.js' %}"></script>
 {% endblock %}

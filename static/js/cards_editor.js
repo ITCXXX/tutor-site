@@ -30,6 +30,7 @@
         строка.querySelector('[data-поле="front"]').innerHTML = данные.front || '';
         строка.querySelector('[data-поле="back"]').innerHTML = данные.back || '';
         строка.querySelector('[data-поле="hint"]').innerHTML = данные.hint || '';
+        строка.querySelector('[data-поле="distractors"]').innerHTML = данные.distractors || '';
         список.appendChild(строка);
         обновитьНомера();
         запомнить();
@@ -56,10 +57,11 @@
             var лицо = строка.querySelector('[data-поле="front"]').innerHTML.trim();
             var оборот = строка.querySelector('[data-поле="back"]').innerHTML.trim();
             var подсказка = строка.querySelector('[data-поле="hint"]').innerHTML.trim();
+            var неверные = строка.querySelector('[data-поле="distractors"]').innerHTML.trim();
             if (!голый(лицо) && !голый(оборот)) { continue; }
             итог.push({
                 id: строка.dataset.id ? parseInt(строка.dataset.id, 10) : null,
-                front: лицо, back: оборот, hint: подсказка
+                front: лицо, back: оборот, hint: подсказка, distractors: неверные
             });
         }
         return итог;
@@ -109,19 +111,74 @@
         var удалить = e.target.closest('.удалить-строку');
         if (удалить) {
             var строка = удалить.closest('.карточка-строка');
-            if (голый(строка.querySelector('[data-поле="front"]').innerHTML) ||
-                голый(строка.querySelector('[data-поле="back"]').innerHTML)) {
-                if (!confirm('Удалить карточку?')) { return; }
+            var есть = голый(строка.querySelector('[data-поле="front"]').innerHTML)
+                    || голый(строка.querySelector('[data-поле="back"]').innerHTML);
+            if (!есть) {
+                строка.remove();
+                обновитьНомера();
+                запомнить();
+                return;
             }
-            строка.remove();
-            обновитьНомера();
-            запомнить();
+            // Спрашиваем только про заполненную строку: подтверждать удаление
+            // пустой — раздражать на ровном месте.
+            window.Диалог.подтвердить('Удалить эту карточку?', {опасно: true, ок: 'Удалить'})
+                .then(function (да) {
+                    if (!да) { return; }
+                    строка.remove();
+                    обновитьНомера();
+                    запомнить();
+                });
         }
     });
 
     document.getElementById('кнопка-добавить').addEventListener('click', function () {
         добавить({}, true);
     });
+
+    /*
+     * Вставка списком прямо в редакторе. Разбирает тот же сервер, что и на
+     * странице «Добавить списком»: парсер один, и колода для него не нужна —
+     * поэтому вставлять можно ещё до того, как колода создана.
+     */
+    document.getElementById('кнопка-вставить').addEventListener('click', function () {
+        window.Диалог.спросить(
+            'Вставьте список: по карточке в строке, стороны через вертикальную черту. '
+            + 'Столбцы с восклицательным знаком станут неверными вариантами.',
+            '', {многострочно: true, заголовок: 'Вставить списком', ок: 'Разобрать',
+                 подпись: 'Столица Франции | Париж | !Лион | !Марсель'}
+        ).then(function (текст) {
+            if (!текст || !текст.trim()) { return; }
+            return fetch(window.АДРЕС_РАЗБОРА, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json',
+                          'X-CSRFToken': window.CSRF_РАЗБОРА},
+                body: JSON.stringify({текст: текст}),
+            }).then(function (r) { return r.json(); }).then(function (данные) {
+                (данные.карточки || []).forEach(function (к) { добавить(к, false); });
+                убратьПустые();
+                var хвост = (данные.замечания || []).length
+                    ? '\n\nРазобрано не всё:\n' + данные.замечания.join('\n') : '';
+                window.Диалог.сообщить(
+                    'Добавлено карточек: ' + (данные.карточки || []).length + '.' + хвост);
+            });
+        }).catch(function () {
+            window.Диалог.сообщить('Не получилось разобрать список. Попробуйте ещё раз.');
+        });
+    });
+
+    // После вставки пустые заготовки только мешают считать.
+    function убратьПустые() {
+        var строки = список.querySelectorAll('.карточка-строка');
+        for (var i = строки.length - 1; i >= 0; i--) {
+            var лицо = строки[i].querySelector('[data-поле="front"]').innerHTML;
+            var оборот = строки[i].querySelector('[data-поле="back"]').innerHTML;
+            if (!голый(лицо) && !голый(оборот) && строки.length > 1) {
+                строки[i].remove();
+            }
+        }
+        обновитьНомера();
+        запомнить();
+    }
 
     // Enter в поле — не перевод строки, а переход к следующему полю: карточка
     // почти всегда однострочная, а многострочную можно набрать через Shift+Enter.

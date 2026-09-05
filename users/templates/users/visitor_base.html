@@ -255,5 +255,7 @@
     {# Глобальный лайтбокс — открывает любой элемент с data-lightbox-src #}
     {% include "users/_lightbox.html" %}
     <script src="{% static 'js/lightbox.js' %}"></script>
+    <!-- Экранные окна вместо системных alert/confirm: см. static/js/ui_dialog.js -->
+    <script src="{% static 'js/ui_dialog.js' %}"></script>
 </body>
 </html>

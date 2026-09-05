@@ -107,11 +107,11 @@
         {% endif %}
         <a href="{% url 'cards:learn' колода.pk %}" class="mode-tile">
             <b>Заучивание</b>
-            <span>раунды до полного знания</span>
+            <span>прогоны до полного знания</span>
         </a>
         <a href="{% url 'cards:test' колода.pk %}" class="mode-tile">
             <b>Тест</b>
-            <span>вопросы и оценка в конце</span>
+            <span>стопки по семь вопросов</span>
         </a>
         <a href="{% url 'cards:match' колода.pk %}" class="mode-tile">
             <b>Подбор</b>
@@ -165,7 +165,7 @@
                     <a href="{% url 'cards:card_edit' карточка.pk %}"
                        class="btn btn-sm btn-outline-secondary">Править</a>
                     <form method="post" action="{% url 'cards:card_delete' карточка.pk %}"
-                          onsubmit="return confirm('Удалить карточку?');">
+                          data-спросить="Удалить эту карточку? Вместе с ней пропадёт история её повторений." data-опасно>
                         {% csrf_token %}
                         <button class="btn btn-sm btn-outline-danger">×</button>
                     </form>

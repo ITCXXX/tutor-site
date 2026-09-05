@@ -88,3 +88,62 @@
     .app-section-card { padding: 1rem 1.1rem; }
     .app-form-card { padding: 1.1rem; }
 }
+
+/* ── Экранные окна вместо системных alert / confirm / prompt ──────────────
+   Разметку строит static/js/ui_dialog.js. Системное окно браузера подписано
+   «Сайт сообщает…», выглядит чужеродно и на телефоне занимает пол-экрана;
+   ученик читает предупреждение браузера, а не текст.                        */
+
+.ui-dialog-back {
+    position: fixed;
+    inset: 0;
+    z-index: 4000;
+    background: rgba(28, 23, 49, .38);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.ui-dialog {
+    background: var(--c-surface);
+    color: var(--c-text);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-lg);
+    padding: 1.35rem 1.5rem;
+    width: 100%;
+    max-width: 440px;
+}
+
+.ui-dialog-title { font-weight: 600; font-size: 1.05rem; margin-bottom: .45rem; }
+.ui-dialog-msg { white-space: pre-wrap; line-height: 1.5; color: var(--c-text-soft); }
+
+.ui-dialog-input {
+    width: 100%;
+    margin-top: .9rem;
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--r-md);
+    padding: .55rem .7rem;
+    font: inherit;
+    color: var(--c-text);
+    background: var(--c-surface);
+}
+textarea.ui-dialog-input { min-height: 160px; resize: vertical; font-family: var(--font-mono); font-size: .85rem; }
+.ui-dialog-input:focus { outline: none; border-color: var(--c-primary-600); box-shadow: 0 0 0 3px var(--c-primary-100); }
+
+.ui-dialog-btns { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1.15rem; }
+.ui-dialog-btn {
+    border: 1px solid var(--c-border-strong);
+    background: var(--c-surface);
+    color: var(--c-text);
+    border-radius: var(--r-md);
+    padding: .5rem 1rem;
+    font: inherit;
+    cursor: pointer;
+    min-height: 40px;
+}
+.ui-dialog-btn:hover { background: var(--c-bg-soft); }
+.ui-dialog-btn.primary { background: var(--c-primary-600); border-color: var(--c-primary-600); color: #fff; }
+.ui-dialog-btn.primary:hover { background: var(--c-primary-700); border-color: var(--c-primary-700); }
+.ui-dialog-btn.primary.danger { background: var(--c-danger); border-color: var(--c-danger); }
+.ui-dialog-btn.primary.danger:hover { filter: brightness(.93); }

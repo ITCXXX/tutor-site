@@ -12,6 +12,7 @@ urlpatterns = [
     path('new/', views.создать, name='create'),
     path('new/full/', views.создать_подробно, name='create_full'),
     path('prompt/', views.инструкция, name='prompt'),
+    path('parse/', views.разобрать_список, name='parse'),
 
     path('<int:pk>/', views.колода, name='deck'),
     path('<int:pk>/edit/', views.править, name='edit'),

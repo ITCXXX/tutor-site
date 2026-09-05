@@ -48,7 +48,7 @@
 
     {% if колода %}
     <form method="post" action="{% url 'cards:delete' колода.pk %}" class="mt-4"
-          onsubmit="return confirm('Удалить колоду «{{ колода.title|escapejs }}» вместе со всеми карточками и историей повторений?');">
+          data-спросить="Удалить колоду «{{ колода.title }}» вместе со всеми карточками и историей повторений?" data-опасно>
         {% csrf_token %}
         <button type="submit" class="btn btn-outline-danger btn-sm">Удалить колоду</button>
     </form>
