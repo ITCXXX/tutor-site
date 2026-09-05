@@ -125,7 +125,8 @@
         <a href="{% url 'cards:stats' колода.pk %}" class="btn btn-outline-secondary btn-sm">Статистика</a>
         {% endif %}
         {% if можно_править %}
-        <a href="{% url 'cards:import' колода.pk %}" class="btn btn-outline-primary btn-sm">Добавить карточки</a>
+        <a href="{% url 'cards:edit_cards' колода.pk %}" class="btn btn-outline-primary btn-sm">Править карточки</a>
+        <a href="{% url 'cards:import' колода.pk %}" class="btn btn-outline-primary btn-sm">Добавить списком</a>
         <a href="{% url 'cards:edit' колода.pk %}" class="btn btn-outline-secondary btn-sm">Настройки</a>
         {% endif %}
     </div>
@@ -136,10 +137,10 @@
         {% if карточки %}
             {% for карточка in карточки %}
             <div class="card-row">
-                <div class="side">{{ карточка.front }}</div>
+                <div class="side">{{ карточка.front|safe }}</div>
                 <div class="side">
-                    {{ карточка.back }}
-                    {% if карточка.hint %}<div class="hint">{{ карточка.hint }}</div>{% endif %}
+                    {{ карточка.back|safe }}
+                    {% if карточка.hint %}<div class="hint">{{ карточка.hint|safe }}</div>{% endif %}
                     {% if карточка.distractors %}
                     <div class="hint">неверные: {{ карточка.distractors|linebreaksbr }}</div>
                     {% endif %}
@@ -161,7 +162,8 @@
             <div class="app-empty-state compact">
                 <p class="mb-3">Карточек пока нет.</p>
                 {% if можно_править %}
-                <a href="{% url 'cards:import' колода.pk %}" class="btn btn-primary">Добавить списком</a>
+                <a href="{% url 'cards:edit_cards' колода.pk %}" class="btn btn-primary">Добавить карточки</a>
+                <a href="{% url 'cards:import' колода.pk %}" class="btn btn-outline-primary">Вставить списком</a>
                 {% endif %}
             </div>
         {% endif %}

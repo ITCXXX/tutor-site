@@ -201,7 +201,7 @@
         э['знал-не-знал'].hidden = true;
         э['кнопка-показать'].hidden = false;
 
-        К.написать(э['вопрос'], текущая.вопрос);
+        К.разметка(э['вопрос'], текущая.вопрос);
         э['вопрос'].lang = текущая.язык_вопроса || '';
 
         // Первый показ — узнавание: выбрать из вариантов легче, чем вспомнить
@@ -231,7 +231,7 @@
             кнопка.className = 'option';
             кнопка.type = 'button';
             кнопка.lang = текущая.язык_ответа || '';
-            К.написать(кнопка, текст);
+            К.разметка(кнопка, текст);
             кнопка.addEventListener('click', function () {
                 if (занято) { return; }
                 занято = true;
@@ -289,7 +289,7 @@
         э['реакция'].className = 'reaction ok';
         э['реакция'].innerHTML = 'Верный ответ: <span class="right-answer"></span>';
         var где = э['реакция'].querySelector('.right-answer');
-        К.написать(где, текущая.ответ);
+        К.разметка(где, текущая.ответ);
         где.lang = текущая.язык_ответа || '';
         э['реакция'].hidden = false;
         э['блок-самопроверки'].hidden = false;
@@ -311,12 +311,12 @@
             раунд.push(текущая);
             э['реакция'].className = 'reaction no';
             э['реакция'].innerHTML = 'Правильный ответ: <span class="right-answer"></span>';
-            К.написать(э['реакция'].querySelector('.right-answer'), текущая.ответ);
+            К.разметка(э['реакция'].querySelector('.right-answer'), текущая.ответ);
         }
         if (текущая.подсказка) {
             var подсказка = document.createElement('div');
             подсказка.className = 'small mt-1';
-            К.написать(подсказка, текущая.подсказка);
+            К.разметка(подсказка, текущая.подсказка);
             э['реакция'].appendChild(подсказка);
         }
         э['реакция'].hidden = false;
@@ -351,7 +351,7 @@
         э['знал-не-знал'].hidden = false;
         э['реакция'].className = 'reaction ok';
         э['реакция'].innerHTML = '<span class="right-answer"></span>';
-        К.написать(э['реакция'].querySelector('.right-answer'), текущая.ответ);
+        К.разметка(э['реакция'].querySelector('.right-answer'), текущая.ответ);
         э['реакция'].hidden = false;
     });
     э['знал'].addEventListener('click', function () {

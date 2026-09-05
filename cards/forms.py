@@ -70,6 +70,30 @@ class DeckForm(forms.ModelForm):
         return значение
 
 
+class ПростаяКолодаForm(forms.ModelForm):
+    """Только название и описание — остальное берётся по умолчанию.
+
+    Простой путь существует ровно для того, чтобы человек, у которого есть
+    список слов, дошёл до карточек за один экран. Дюжина настроек планировщика
+    на этом экране не помогает выбрать — она отпугивает; кому они нужны,
+    открывает подробный путь или заходит в настройки готовой колоды.
+    """
+
+    class Meta:
+        model = Deck
+        fields = ['title', 'description']
+        widgets = {
+            'title': forms.TextInput(attrs={
+                'class': 'form-control form-control-lg', 'autofocus': True,
+                'placeholder': 'Название колоды',
+            }),
+            'description': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 2,
+                'placeholder': 'Описание (необязательно)',
+            }),
+        }
+
+
 class CardForm(forms.ModelForm):
     """Правка одной карточки."""
 

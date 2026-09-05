@@ -17,9 +17,10 @@ from django.views.decorators.http import require_POST
 from users.answer_check import check_answer
 
 from . import ai_prompt, srs
-from .forms import CardForm, DeckForm, ImportForm
+from .forms import CardForm, DeckForm, ImportForm, ПростаяКолодаForm
 from .models import Card, CardReview, CardState, Deck
 from .parsing import разобрать
+from .richtext import очистить, пусто
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -95,9 +96,45 @@ def _проставить_очередь(user, колоды):
         колода.ждёт = строка.get('созрело', 0) + min(не_начато, место)
 
 
+ПРЕДЕЛ_КАРТОЧЕК = 500
+
+# Палитра редактора. Немного и с запасом контраста: пёстрая карточка читается
+# хуже простой, а два десятка оттенков превращают выбор в занятие само по себе.
+ЦВЕТА_ТЕКСТА = ['#dc2626', '#ea580c', '#16a34a', '#2563eb', '#7c3aed']
+ЦВЕТА_ФОНА = ['#fef08a', '#bbf7d0', '#bfdbfe', '#fecaca', '#e9d5ff']
+
+
 @login_required
 def создать(request):
-    """Новая колода. Создавать может любой, кто вошёл: и ученик, и преподаватель."""
+    """Простой путь: название, описание и сразу карточки на одном экране."""
+    ошибка = ''
+    if request.method == 'POST':
+        форма = ПростаяКолодаForm(request.POST)
+        карточки, ошибка = _карточки_из_запроса(request)
+        if форма.is_valid() and not ошибка:
+            if not карточки:
+                ошибка = 'Добавьте хотя бы одну карточку.'
+            else:
+                with transaction.atomic():
+                    колода = форма.save(commit=False)
+                    колода.owner = request.user
+                    колода.save()
+                    _записать_карточки(колода, карточки)
+                messages.success(request, 'Колода создана.')
+                return redirect('cards:deck', pk=колода.pk)
+    else:
+        форма = ПростаяКолодаForm()
+        карточки = []
+
+    return render(request, 'cards/deck_editor.html', {
+        'форма': форма, 'колода': None, 'карточки_json': карточки,
+        'ошибка': ошибка, 'цвета': ЦВЕТА_ТЕКСТА, 'фоны': ЦВЕТА_ФОНА,
+    })
+
+
+@login_required
+def создать_подробно(request):
+    """Подробный путь: все настройки колоды сразу, карточки — списком потом."""
     if request.method == 'POST':
         форма = DeckForm(request.POST)
         if форма.is_valid():
@@ -109,6 +146,97 @@ def создать(request):
     else:
         форма = DeckForm()
     return render(request, 'cards/deck_form.html', {'форма': форма, 'колода': None})
+
+
+@login_required
+def править_карточки(request, pk):
+    """Тот же редактор, но для готовой колоды."""
+    объект = _колода_для_правки(request, pk)
+    ошибка = ''
+
+    if request.method == 'POST':
+        форма = ПростаяКолодаForm(request.POST, instance=объект)
+        карточки, ошибка = _карточки_из_запроса(request)
+        if форма.is_valid() and not ошибка:
+            with transaction.atomic():
+                форма.save()
+                убрано = _записать_карточки(объект, карточки)
+            messages.success(
+                request,
+                'Сохранено: карточек %d%s.'
+                % (len(карточки), ', удалено %d' % убрано if убрано else ''),
+            )
+            return redirect('cards:deck', pk=объект.pk)
+    else:
+        форма = ПростаяКолодаForm(instance=объект)
+        карточки = [
+            {'id': к.pk, 'front': к.front, 'back': к.back, 'hint': к.hint}
+            for к in объект.cards.all()
+        ]
+
+    return render(request, 'cards/deck_editor.html', {
+        'форма': форма, 'колода': объект, 'карточки_json': карточки,
+        'ошибка': ошибка, 'цвета': ЦВЕТА_ТЕКСТА, 'фоны': ЦВЕТА_ФОНА,
+    })
+
+
+def _карточки_из_запроса(request):
+    """Разобрать список карточек, присланный редактором. → (список, ошибка)."""
+    сырое = request.POST.get('карточки') or '[]'
+    try:
+        данные = json.loads(сырое)
+    except ValueError:
+        return [], 'Не удалось прочитать карточки. Обновите страницу и повторите.'
+    if not isinstance(данные, list):
+        return [], 'Не удалось прочитать карточки.'
+    if len(данные) > ПРЕДЕЛ_КАРТОЧЕК:
+        return [], 'За раз можно сохранить не больше %d карточек.' % ПРЕДЕЛ_КАРТОЧЕК
+
+    готовые = []
+    for пункт in данные:
+        if not isinstance(пункт, dict):
+            continue
+        лицо = очистить(пункт.get('front'))
+        оборот = очистить(пункт.get('back'))
+        # Пустые строки редактора — это не карточки, а место, где человек
+        # передумал. Молча их выбрасываем.
+        if пусто(лицо) and пусто(оборот):
+            continue
+        готовые.append({
+            'id': пункт.get('id'),
+            'front': лицо,
+            'back': оборот,
+            'hint': очистить(пункт.get('hint')),
+        })
+    return готовые, ''
+
+
+def _записать_карточки(колода, карточки):
+    """Записать список редактора в колоду. Возвращает число удалённых.
+
+    Карточки обновляются по номеру, а не пересоздаются. Это не мелочь:
+    вместе с карточкой удалилось бы всё, что помнит про неё планировщик, —
+    прочность, сроки, история повторений у каждого ученика.
+    """
+    было = {к.pk: к for к in колода.cards.all()}
+    оставлены = set()
+
+    for порядок, пункт in enumerate(карточки):
+        номер = пункт.get('id')
+        карточка = было.get(номер) if isinstance(номер, int) else None
+        if карточка is None:
+            карточка = Card(deck=колода)
+        карточка.front = пункт['front']
+        карточка.back = пункт['back']
+        карточка.hint = пункт['hint']
+        карточка.order = порядок
+        карточка.save()
+        оставлены.add(карточка.pk)
+
+    лишние = [номер for номер in было if номер not in оставлены]
+    if лишние:
+        Card.objects.filter(pk__in=лишние).delete()
+    return len(лишние)
 
 
 @login_required
@@ -176,8 +304,15 @@ def импорт(request, pk):
             if 'сохранить' in request.POST and разобранные:
                 начало = объект.cards.count()
                 with transaction.atomic():
+                    # bulk_create не зовёт save(), поэтому чистим здесь сами.
+                    # Вставленный список — тот же недоверенный ввод.
                     Card.objects.bulk_create([
-                        Card(deck=объект, order=начало + i, **к)
+                        Card(deck=объект, order=начало + i,
+                             front=очистить(к['front']), back=очистить(к['back']),
+                             hint=очистить(к['hint']),
+                             distractors='\n'.join(
+                                 очистить(с) for с in к['distractors'].splitlines()
+                                 if с.strip()))
                         for i, к in enumerate(разобранные)
                     ])
                 messages.success(

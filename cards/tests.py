@@ -6,6 +6,7 @@
 назначит повторение не туда, и заметить это по внешнему виду нельзя.
 """
 
+import json
 from datetime import timedelta
 
 from django.test import TestCase
@@ -18,6 +19,7 @@ from . import srs, views
 from .ai_prompt import собрать
 from .models import Card, CardReview, CardState, Deck, SchedulerWeights
 from .parsing import разобрать
+from .richtext import очистить, текстом
 from .templatetags.cards_extras import колоды_урока, слово
 
 
@@ -883,4 +885,252 @@ class ОчередьБезСети(TestCase):
         for задание in ответ.context['задания']:
             self.assertEqual(задание['ключ'],
                              '%d-%d' % (задание['card'], задание['direction']))
+
+
+
+class ЧисткаРазметки(TestCase):
+    """Форматирование в карточках — это та же дверь, через которую заходит скрипт.
+
+    Содержимое пишут ученики, колоды бывают общими, а показывается оно теперь
+    как разметка. Поэтому чистка на входе — не украшение, а условие.
+    """
+
+    def test_начертания_остаются(self):
+        self.assertEqual(очистить('<b>Париж</b>'), '<b>Париж</b>')
+        self.assertEqual(очистить('<strong>Париж</strong>'), '<b>Париж</b>')
+        self.assertEqual(очистить('<em>Париж</em>'), '<i>Париж</i>')
+        self.assertEqual(очистить('<u>Париж</u>'), '<u>Париж</u>')
+
+    def test_скрипт_и_обработчики_не_проходят(self):
+        for опасное in (
+            '<script>alert(1)</script>Париж',
+            '<img src=x onerror=alert(1)>Париж',
+            '<b onclick="alert(1)">Париж</b>',
+            '<a href="javascript:alert(1)">Париж</a>',
+            '<iframe src="//зло"></iframe>Париж',
+            '<svg/onload=alert(1)>Париж',
+        ):
+            вышло = очистить(опасное)
+            self.assertNotIn('script', вышло.lower(), опасное)
+            self.assertNotIn('onerror', вышло.lower(), опасное)
+            self.assertNotIn('onclick', вышло.lower(), опасное)
+            self.assertNotIn('javascript', вышло.lower(), опасное)
+            self.assertIn('Париж', вышло, опасное)
+
+    def test_цвет_только_настоящий(self):
+        вышло = очистить('<span style="color: #ff0000">красный</span>')
+        self.assertEqual(вышло, '<span style="color: #ff0000">красный</span>')
+
+        # Оформление — известный способ вернуть выполнение кода.
+        for мусор in ('expression(alert(1))', 'url(//зло)'):
+            вышло = очистить('<span style="color: %s">текст</span>' % мусор)
+            self.assertEqual(вышло, 'текст', мусор)
+
+        # Годное свойство рядом с негодным: style собирается заново из
+        # разрешённого, поэтому цвет остаётся, а лишнее не проходит.
+        вышло = очистить('<span style="color: red; behavior: url(#)">текст</span>')
+        self.assertEqual(вышло, '<span style="color: red">текст</span>')
+
+    def test_чужие_свойства_оформления_выбрасываются(self):
+        вышло = очистить('<span style="color: red; position: fixed; width: 9999px">x</span>')
+        self.assertIn('color: red', вышло)
+        self.assertNotIn('position', вышло)
+        self.assertNotIn('width', вышло)
+
+    def test_старый_тег_font_превращается_в_span(self):
+        self.assertEqual(очистить('<font color="red">текст</font>'),
+                         '<span style="color: red">текст</span>')
+
+    def test_переносы_приводятся_к_обычным(self):
+        """Один вид хранения на все браузеры: contenteditable выдаёт то br, то div."""
+        self.assertEqual(очистить('первая<br>вторая'), 'первая\nвторая')
+        self.assertEqual(очистить('первая<div>вторая</div>'), 'первая\nвторая')
+        self.assertEqual(очистить('<p>первая</p><p>вторая</p>'), 'первая\nвторая')
+
+    def test_угловые_скобки_в_тексте_остаются_видимыми(self):
+        self.assertEqual(очистить('a < b и 5 > 3'), 'a &lt; b и 5 &gt; 3')
+
+    def test_пустые_теги_убираются(self):
+        self.assertEqual(очистить('<b></b><span style="color: red"></span>'), '')
+
+    def test_текстом_снимает_разметку(self):
+        self.assertEqual(текстом('<b>Па</b><i>риж</i>'), 'Париж')
+        self.assertEqual(текстом('a &lt; b'), 'a < b')
+
+    def test_чистка_срабатывает_при_записи(self):
+        """Забыть про чистку в шаблоне легко, в save() — нет."""
+        ученик = User.objects.create_user('ученик', 'пароль')
+        колода = Deck.objects.create(title='К', owner=ученик)
+        карточка = Card.objects.create(
+            deck=колода,
+            front='<script>alert(1)</script><b>Столица</b>',
+            back='<img src=x onerror=alert(1)>Париж',
+            hint='<b onclick="alert(1)">на Сене</b>',
+            distractors='<script>x</script>Лион\n<b>Марсель</b>',
+        )
+        карточка.refresh_from_db()
+        self.assertEqual(карточка.front, '<b>Столица</b>')
+        self.assertEqual(карточка.back, 'Париж')
+        self.assertEqual(карточка.hint, '<b>на Сене</b>')
+        self.assertEqual(карточка.неверные(), ['Лион', '<b>Марсель</b>'])
+
+    def test_массовое_добавление_тоже_чистится(self):
+        """bulk_create идёт мимо save() — самая вероятная дыра."""
+        автор = User.objects.create_user('автор', 'пароль')
+        колода = Deck.objects.create(title='К', owner=автор)
+        self.client.force_login(автор)
+        self.client.post(
+            reverse('cards:import', args=[колода.pk]),
+            {'текст': '<script>alert(1)</script>Вопрос | <b>Ответ</b> | !<script>x</script>Мимо',
+             'сохранить': '1'},
+        )
+        карточка = колода.cards.get()
+        self.assertNotIn('script', карточка.front.lower())
+        self.assertEqual(карточка.back, '<b>Ответ</b>')
+        self.assertEqual(карточка.неверные(), ['Мимо'])
+
+    def test_проверка_ответа_не_видит_разметки(self):
+        """Ученик набирает «Париж», а в базе может лежать «<b>Париж</b>»."""
+        автор = User.objects.create_user('автор', 'пароль')
+        колода = Deck.objects.create(title='К', owner=автор, kind=Deck.ТЕКСТ)
+        карточка = Card.objects.create(deck=колода, front='Столица',
+                                       back='<b>Париж</b>')
+        self.client.force_login(автор)
+        ответ = self.client.post(
+            reverse('cards:check', args=[колода.pk]),
+            data={'card': карточка.pk, 'direction': 0, 'typed': 'Париж'},
+            content_type='application/json',
+        )
+        self.assertTrue(ответ.json()['верно'])
+        self.assertEqual(ответ.json()['эталон'], 'Париж')
+
+
+class ПростойРедактор(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user('автор', 'пароль')
+        self.client.force_login(self.user)
+
+    def _карточки(self, *пары):
+        return json.dumps([
+            {'id': п[0], 'front': п[1], 'back': п[2], 'hint': п[3] if len(п) > 3 else ''}
+            for п in пары
+        ])
+
+    def test_создание_колоды_вместе_с_карточками(self):
+        ответ = self.client.post(reverse('cards:create'), {
+            'title': 'Столицы', 'description': 'проба',
+            'карточки': self._карточки(
+                (None, '<b>Франция</b>', 'Париж', 'на Сене'),
+                (None, 'Япония', 'Токио'),
+            ),
+        })
+        self.assertEqual(ответ.status_code, 302)
+        колода = Deck.objects.get(title='Столицы')
+        self.assertEqual(колода.owner, self.user)
+        self.assertEqual(колода.cards.count(), 2)
+        первая = колода.cards.first()
+        self.assertEqual(первая.front, '<b>Франция</b>')
+        self.assertEqual(первая.hint, 'на Сене')
+
+    def test_пустые_строки_не_становятся_карточками(self):
+        self.client.post(reverse('cards:create'), {
+            'title': 'Колода', 'карточки': self._карточки(
+                (None, 'Вопрос', 'Ответ'),
+                (None, '', ''),
+                (None, '<b></b>', '   '),
+            ),
+        })
+        self.assertEqual(Deck.objects.get(title='Колода').cards.count(), 1)
+
+    def test_колода_без_карточек_не_создаётся(self):
+        ответ = self.client.post(reverse('cards:create'), {
+            'title': 'Пустая', 'карточки': '[]',
+        })
+        self.assertEqual(ответ.status_code, 200)
+        self.assertFalse(Deck.objects.filter(title='Пустая').exists())
+        self.assertIn('хотя бы одну', ответ.context['ошибка'])
+
+    def test_битые_данные_не_роняют_страницу(self):
+        ответ = self.client.post(reverse('cards:create'), {
+            'title': 'Колода', 'карточки': 'не json',
+        })
+        self.assertEqual(ответ.status_code, 200)
+        self.assertTrue(ответ.context['ошибка'])
+        self.assertFalse(Deck.objects.exists())
+
+    def test_правка_сохраняет_прогресс_ученика(self):
+        """Карточки обновляются по номеру, а не пересоздаются.
+
+        Пересоздание удалило бы вместе с карточкой всё, что помнит планировщик:
+        прочность, сроки и историю повторений у каждого ученика.
+        """
+        колода = Deck.objects.create(title='Слова', owner=self.user)
+        карточка = Card.objects.create(deck=колода, front='старое', back='ответ')
+        состояние = srs.состояние_для(self.user, карточка, CardState.ПРЯМОЕ)
+        srs.оценить(состояние, 3)
+        срок = CardState.objects.get(pk=состояние.pk).due
+
+        self.client.post(reverse('cards:edit_cards', args=[колода.pk]), {
+            'title': 'Слова', 'description': '',
+            'карточки': self._карточки((карточка.pk, 'новое', 'ответ')),
+        })
+
+        карточка.refresh_from_db()
+        self.assertEqual(карточка.front, 'новое')
+        self.assertEqual(CardState.objects.filter(card=карточка).count(), 1)
+        self.assertEqual(CardState.objects.get(card=карточка).due, срок)
+
+    def test_убранная_из_редактора_карточка_удаляется(self):
+        колода = Deck.objects.create(title='Слова', owner=self.user)
+        первая = Card.objects.create(deck=колода, front='а', back='1', order=0)
+        вторая = Card.objects.create(deck=колода, front='б', back='2', order=1)
+
+        self.client.post(reverse('cards:edit_cards', args=[колода.pk]), {
+            'title': 'Слова', 'description': '',
+            'карточки': self._карточки((вторая.pk, 'б', '2')),
+        })
+        self.assertEqual(list(колода.cards.values_list('pk', flat=True)), [вторая.pk])
+        self.assertFalse(Card.objects.filter(pk=первая.pk).exists())
+
+    def test_порядок_берётся_из_редактора(self):
+        колода = Deck.objects.create(title='Слова', owner=self.user)
+        первая = Card.objects.create(deck=колода, front='а', back='1', order=0)
+        вторая = Card.objects.create(deck=колода, front='б', back='2', order=1)
+
+        self.client.post(reverse('cards:edit_cards', args=[колода.pk]), {
+            'title': 'Слова', 'description': '',
+            'карточки': self._карточки((вторая.pk, 'б', '2'), (первая.pk, 'а', '1')),
+        })
+        self.assertEqual(list(колода.cards.values_list('front', flat=True)), ['б', 'а'])
+
+    def test_чужой_номер_карточки_не_утаскивает_чужую(self):
+        чужак = User.objects.create_user('чужак', 'пароль')
+        чужая_колода = Deck.objects.create(title='Чужая', owner=чужак)
+        чужая = Card.objects.create(deck=чужая_колода, front='секрет', back='ответ')
+
+        своя = Deck.objects.create(title='Своя', owner=self.user)
+        self.client.post(reverse('cards:edit_cards', args=[своя.pk]), {
+            'title': 'Своя', 'description': '',
+            'карточки': self._карточки((чужая.pk, 'подмена', 'подмена')),
+        })
+        чужая.refresh_from_db()
+        self.assertEqual(чужая.front, 'секрет')
+        self.assertEqual(чужая.deck, чужая_колода)
+        self.assertEqual(своя.cards.count(), 1)
+
+    def test_чужую_колоду_править_нельзя(self):
+        чужак = User.objects.create_user('чужак', 'пароль')
+        колода = Deck.objects.create(title='Чужая', owner=чужак,
+                                     visibility=Deck.ОБЩАЯ)
+        ответ = self.client.get(reverse('cards:edit_cards', args=[колода.pk]))
+        self.assertEqual(ответ.status_code, 404)
+
+    def test_подробный_путь_остался_отдельно(self):
+        ответ = self.client.get(reverse('cards:create_full'))
+        self.assertEqual(ответ.status_code, 200)
+        self.assertIn('ask_mode', ответ.context['форма'].fields)
+        # А простой — без настроек: в этом весь смысл.
+        простой = self.client.get(reverse('cards:create'))
+        self.assertEqual(list(простой.context['форма'].fields), ['title', 'description'])
 

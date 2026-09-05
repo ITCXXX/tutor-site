@@ -21,6 +21,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from .richtext import очистить, текстом
+
 
 class Deck(models.Model):
     """Колода — набор карточек по одной теме."""
@@ -224,17 +226,38 @@ class Card(models.Model):
         verbose_name_plural = 'Карточки'
         ordering = ['order', 'id']
 
+    def save(self, *args, **kwargs):
+        """Единственная точка, где разметка карточки становится безопасной.
+
+        Чистить при показе было бы легче забыть: шаблонов много, а save() один.
+        Массовое добавление идёт мимо save() (bulk_create), поэтому там чистка
+        вызывается явно — см. cards/views.py.
+        """
+        self.front = очистить(self.front)
+        self.back = очистить(self.back)
+        self.hint = очистить(self.hint)
+        self.distractors = '\n'.join(
+            очистить(с) for с in (self.distractors or '').splitlines() if с.strip()
+        )
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        коротко = self.front.replace('\n', ' ')
+        коротко = текстом(self.front).replace('\n', ' ')
         return коротко[:60] + ('…' if len(коротко) > 60 else '')
 
     def варианты_ответа(self, направление):
-        """Все написания, которые засчитываются при данном направлении."""
+        """Все написания, которые засчитываются при данном направлении.
+
+        Возвращается голый текст: проверка ответа не должна знать, что слово
+        было выделено жирным. Ученик набирает «Париж», а в базе может лежать
+        «<b>Париж</b>».
+        """
         эталон = self.back if направление == CardState.ПРЯМОЕ else self.front
         ещё = [с.strip() for с in self.accepted.splitlines() if с.strip()]
         # Дополнительные написания относятся к обороту: в обратную сторону
         # спрашивают лицевую, и они там ни при чём.
-        return [эталон] + (ещё if направление == CardState.ПРЯМОЕ else [])
+        всё = [эталон] + (ещё if направление == CardState.ПРЯМОЕ else [])
+        return [текстом(в) for в in всё]
 
     def неверные(self):
         """Заведомо неверные ответы, заданные автором карточки."""

@@ -1,0 +1,225 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{% if колода %}{{ колода.title }} — правка карточек{% else %}Новая колода{% endif %}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .editor-wrap { max-width: 980px; margin: 0 auto; }
+
+    .панель {
+        position: sticky;
+        top: 62px;
+        z-index: 20;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: .35rem;
+        padding: .5rem .6rem;
+        margin-bottom: .75rem;
+        background: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-sm);
+    }
+    .панель .разделитель {
+        width: 1px; height: 22px; background: var(--c-border); margin: 0 .35rem;
+    }
+    .панель button {
+        min-width: 36px; height: 34px; padding: 0 .5rem;
+        border: 1px solid transparent; border-radius: var(--r-md);
+        background: transparent; cursor: pointer;
+        font-size: .95rem; line-height: 1; color: var(--c-text);
+    }
+    .панель button:hover { background: var(--c-primary-100); }
+    .панель .подпись { font-size: .75rem; color: var(--c-text-muted); padding: 0 .25rem; }
+    .кружок {
+        width: 22px; height: 22px; border-radius: 50%;
+        border: 1px solid var(--c-border-strong); padding: 0;
+        min-width: 22px;
+    }
+    .кружок:hover { transform: scale(1.12); }
+    .кружок.сброс {
+        background: var(--c-surface);
+        display: flex; align-items: center; justify-content: center;
+        font-size: .8rem; color: var(--c-text-muted);
+    }
+
+    .карточка-строка {
+        display: grid;
+        grid-template-columns: 2rem 1fr 1fr 2.2rem;
+        gap: .6rem;
+        align-items: start;
+        padding: .6rem 0;
+        border-bottom: 1px solid var(--c-border);
+    }
+    .карточка-строка .номер {
+        font-size: .8rem; color: var(--c-text-muted);
+        padding-top: .55rem; text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+    .поле-текста {
+        min-height: 44px;
+        padding: .5rem .7rem;
+        border: 1px solid var(--c-border);
+        border-radius: var(--r-md);
+        background: var(--c-surface);
+        font-size: .98rem;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+    .поле-текста:focus {
+        outline: none;
+        border-color: var(--c-primary-600);
+        box-shadow: 0 0 0 3px var(--c-primary-100);
+    }
+    .поле-текста:empty::before {
+        content: attr(data-подсказка);
+        color: var(--c-text-muted);
+        pointer-events: none;
+    }
+    .поле-подсказки {
+        grid-column: 2 / 4;
+        min-height: 32px;
+        font-size: .85rem;
+        padding: .3rem .7rem;
+        border-style: dashed;
+        color: var(--c-text-soft);
+    }
+    .удалить-строку {
+        width: 32px; height: 32px; margin-top: .3rem;
+        border: 1px solid var(--c-border); border-radius: var(--r-md);
+        background: var(--c-surface); color: var(--c-text-muted);
+        cursor: pointer; font-size: 1.05rem; line-height: 1;
+    }
+    .удалить-строку:hover { border-color: var(--c-danger); color: var(--c-danger); }
+
+    @media (max-width: 700px) {
+        .карточка-строка { grid-template-columns: 1.6rem 1fr 2.2rem; }
+        .карточка-строка .поле-текста[data-поле="back"] { grid-column: 2 / 4; }
+        .поле-подсказки { grid-column: 2 / 4; }
+        .панель { top: 56px; }
+    }
+
+    .низ {
+        position: sticky; bottom: 0;
+        display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
+        padding: .85rem 0;
+        background: linear-gradient(to top, var(--c-bg) 70%, transparent);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 1rem;">
+<div class="editor-wrap" id="редактор">
+
+    <a class="btn-back-link" href="{% if колода %}{% url 'cards:deck' колода.pk %}{% else %}{% url 'cards:list' %}{% endif %}">
+        ← {% if колода %}к колоде{% else %}ко всем колодам{% endif %}
+    </a>
+
+    <div class="app-hero compact my-3">
+        <h1>{% if колода %}Правка карточек{% else %}Новая колода{% endif %}</h1>
+        <div class="meta">
+            Заполните карточки прямо здесь. Настройки — как спрашивать, в обе ли
+            стороны, когда экзамен — можно задать
+            {% if колода %}<a href="{% url 'cards:edit' колода.pk %}" style="color:inherit;text-decoration:underline">в настройках колоды</a>{% else %}позже, они не срочные{% endif %}.
+        </div>
+    </div>
+
+    {% if ошибка %}
+    <div class="alert alert-danger">{{ ошибка }}</div>
+    {% endif %}
+
+    <form method="post" id="форма-колоды" class="app-form-card">
+        {% csrf_token %}
+        <input type="hidden" name="карточки" id="поле-карточек">
+
+        <div class="mb-3">
+            {{ форма.title }}
+            {% if форма.title.errors %}
+            <div class="text-danger small mt-1">{{ форма.title.errors|striptags }}</div>
+            {% endif %}
+        </div>
+        <div class="mb-4">{{ форма.description }}</div>
+
+        <div class="панель">
+            <button type="button" data-команда="bold" title="Жирный (Ctrl+B)"><b>Ж</b></button>
+            <button type="button" data-команда="italic" title="Курсив (Ctrl+I)"><i>К</i></button>
+            <button type="button" data-команда="underline" title="Подчёркнутый (Ctrl+U)"><u>Ч</u></button>
+
+            <span class="разделитель"></span>
+            <span class="подпись">цвет</span>
+            {% for цвет in цвета %}
+            <button type="button" class="кружок" data-команда="foreColor" data-значение="{{ цвет }}"
+                    style="background: {{ цвет }}" title="Цвет текста {{ цвет }}"></button>
+            {% endfor %}
+            <button type="button" class="кружок сброс" data-команда="foreColor"
+                    data-значение="#1c1731" title="Обычный цвет">A</button>
+
+            <span class="разделитель"></span>
+            <span class="подпись">фон</span>
+            {% for цвет in фоны %}
+            <button type="button" class="кружок" data-команда="hiliteColor" data-значение="{{ цвет }}"
+                    style="background: {{ цвет }}" title="Заливка {{ цвет }}"></button>
+            {% endfor %}
+            <button type="button" class="кружок сброс" data-команда="hiliteColor"
+                    data-значение="transparent" title="Без заливки">×</button>
+
+            <span class="разделитель"></span>
+            <button type="button" data-команда="removeFormat" title="Убрать оформление">⌫</button>
+        </div>
+
+        <div id="карточки"></div>
+
+        <div class="низ">
+            <button type="button" class="btn btn-outline-primary" id="кнопка-добавить">
+                + Карточка
+            </button>
+            <button type="submit" class="btn btn-primary">
+                {% if колода %}Сохранить{% else %}Создать колоду{% endif %}
+            </button>
+            <span class="text-muted small">
+                карточек: <span id="счётчик-карточек">0</span>
+            </span>
+            {% if колода %}
+            <a href="{% url 'cards:import' колода.pk %}" class="btn btn-link btn-sm text-muted">
+                Добавить списком
+            </a>
+            {% else %}
+            <a href="{% url 'cards:create_full' %}" class="btn btn-link btn-sm text-muted">
+                Подробный путь: все настройки сразу
+            </a>
+            {% endif %}
+        </div>
+    </form>
+
+    <p class="text-muted small mt-2">
+        Enter — следующее поле, Shift+Enter — перенос строки внутри карточки.
+        Формулы пишите в долларах: <code>$S = \pi R^2$</code> — на карточке они
+        станут формулами.
+    </p>
+
+</div>
+</div>
+
+<template id="шаблон-строки">
+    <div class="карточка-строка">
+        <div class="номер">1</div>
+        <div class="поле-текста" data-поле="front" contenteditable="true"
+             data-подсказка="лицевая сторона" spellcheck="false"></div>
+        <div class="поле-текста" data-поле="back" contenteditable="true"
+             data-подсказка="оборот" spellcheck="false"></div>
+        <button type="button" class="удалить-строку" title="Удалить карточку">×</button>
+        <div class="поле-текста поле-подсказки" data-поле="hint" contenteditable="true"
+             data-подсказка="подсказка (необязательно)" spellcheck="false"></div>
+    </div>
+</template>
+{% endblock %}
+
+{% block extra_js %}
+{{ карточки_json|json_script:"начальные" }}
+<script src="{% static 'js/cards_editor.js' %}"></script>
+{% endblock %}

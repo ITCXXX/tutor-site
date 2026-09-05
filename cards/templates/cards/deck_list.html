@@ -53,6 +53,7 @@
     <div class="d-flex flex-wrap gap-2 mb-4">
         {% if user.is_authenticated %}
         <a href="{% url 'cards:create' %}" class="btn btn-primary">Новая колода</a>
+        <a href="{% url 'cards:create_full' %}" class="btn btn-outline-secondary">Со всеми настройками</a>
         {% endif %}
         <a href="{% url 'cards:prompt' %}" class="btn btn-outline-primary">
             Инструкция для нейросети
