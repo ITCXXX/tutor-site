@@ -178,6 +178,26 @@
                            value="{{ cutoff_value|default:'' }}">
                     <div class="form-text">после — не принять</div>
                 </div>
+                {% comment %}
+                Второй способ задать те же сроки — не в календаре, а «через
+                столько-то дней после записи ученика». Он и делает курс
+                многоразовым: «через неделю» не устаревает, а «до 5 мая»
+                устаревает в тот же день. Заполненное смещение старше даты.
+                {% endcomment %}
+                <div class="col-md-2">
+                    <label class="form-label" for="due_offset_days">…или дней от записи</label>
+                    <input type="number" min="0" max="3650" name="due_offset_days"
+                           id="due_offset_days" class="form-control"
+                           value="{{ form_data.due_offset_days|default:lesson.due_offset_days|default:'' }}">
+                    <div class="form-text">срок у каждого свой</div>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="cutoff_offset_days">…приём, дней</label>
+                    <input type="number" min="0" max="3650" name="cutoff_offset_days"
+                           id="cutoff_offset_days" class="form-control"
+                           value="{{ form_data.cutoff_offset_days|default:lesson.cutoff_offset_days|default:'' }}">
+                    <div class="form-text">от того же дня</div>
+                </div>
             </div>
 
             <div class="mb-3">

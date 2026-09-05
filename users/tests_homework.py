@@ -21,7 +21,7 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from .homework import accepts_from, dates_for, homework_for, is_late_for
-from .models import HomeworkExtension, Notification
+from .models import Enrollment, HomeworkExtension, Notification
 from .tests_base import КабинетTestCase, записать, сделать_ученика, сделать_урок, сделать_задачу
 
 
@@ -334,3 +334,84 @@ class ЗапросыПачкамиTests(КабинетTestCase):
             len(про_продления), 2,
             'за продлениями сходили %d раз — вернулся запрос на каждый урок'
             % len(про_продления))
+
+
+class СрокиОтЗаписиTests(КабинетTestCase):
+    """Срок «через N дней после записи» — то, что делает курс многоразовым.
+
+    Пока сроки были календарными, курс годился ровно одному ученику: второму
+    пришлось бы переписывать каждую дату руками. Если эти проверки покраснеют —
+    вернулись к одноразовым курсам.
+    """
+
+    def записан_дней_назад(self, сколько):
+        зап = Enrollment.objects.get(student=self.ученик, course=self.курс)
+        Enrollment.objects.filter(pk=зап.pk).update(
+            enrolled_at=timezone.now() - datetime.timedelta(days=сколько))
+        return Enrollment.objects.get(pk=зап.pk).enrolled_at
+
+    def test_срок_считается_от_дня_записи(self):
+        self.записан_дней_назад(3)
+        self.урок.due_offset_days = 7
+        self.урок.save(update_fields=['due_offset_days'])
+        срок, _ = dates_for(self.урок, self.ученик)
+        self.assertEqual(срок, timezone.localdate() + datetime.timedelta(days=4))
+
+    def test_у_второго_ученика_свой_срок(self):
+        """Тот же урок, разные дни записи — разные сроки. В этом весь смысл."""
+        второй = сделать_ученика(username='vtoroy', display='Ваня',
+                                 teacher=self.преподаватель)
+        записать(второй, self.курс)
+        self.записан_дней_назад(10)
+        self.урок.due_offset_days = 14
+        self.урок.save(update_fields=['due_offset_days'])
+
+        мой, _ = dates_for(self.урок, self.ученик)
+        его, _ = dates_for(self.урок, второй)
+        self.assertNotEqual(мой, его)
+        self.assertEqual(мой, timezone.localdate() + datetime.timedelta(days=4))
+        self.assertEqual(его, timezone.localdate() + datetime.timedelta(days=14))
+
+    def test_смещение_старше_календарной_даты(self):
+        self.записан_дней_назад(0)
+        self.урок.due_date = timezone.localdate() - datetime.timedelta(days=30)
+        self.урок.due_offset_days = 5
+        self.урок.save(update_fields=['due_date', 'due_offset_days'])
+        срок, _ = dates_for(self.урок, self.ученик)
+        self.assertEqual(срок, timezone.localdate() + datetime.timedelta(days=5))
+
+    def test_личное_продление_старше_смещения(self):
+        """Решение преподавателя про конкретного человека старше расписания."""
+        self.записан_дней_назад(0)
+        self.урок.due_offset_days = 5
+        self.урок.save(update_fields=['due_offset_days'])
+        личный = timezone.localdate() + datetime.timedelta(days=40)
+        ext = HomeworkExtension.objects.create(
+            lesson=self.урок, student=self.ученик, due_date=личный,
+            reason='болел', granted_by=self.преподаватель)
+        срок, _ = dates_for(self.урок, self.ученик, ext)
+        self.assertEqual(срок, личный)
+
+    def test_без_смещения_работает_календарная_дата(self):
+        дата = timezone.localdate() + datetime.timedelta(days=9)
+        self.урок.due_date = дата
+        self.урок.save(update_fields=['due_date'])
+        срок, _ = dates_for(self.урок, self.ученик)
+        self.assertEqual(срок, дата)
+
+    def test_смещения_не_возвращают_запрос_на_каждый_урок(self):
+        """Тот же сторож, что и для продлений: пачка, а не урок за уроком."""
+        for i in range(6):
+            урок = сделать_урок(self.курс, 'Урок %d' % (i + 2), order=i + 2)
+            урок.due_offset_days = 7 + i
+            урок.save(update_fields=['due_offset_days'])
+            сделать_задачу(урок, 'Задача %d' % i)
+
+        with CaptureQueriesContext(connection) as запросы:
+            homework_for(self.ученик)
+
+        про_записи = [q for q in запросы.captured_queries
+                      if 'users_enrollment' in q['sql'].lower()]
+        self.assertLessEqual(
+            len(про_записи), 2,
+            'за днём записи сходили %d раз — вернулась N+1' % len(про_записи))

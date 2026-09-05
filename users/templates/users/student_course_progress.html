@@ -372,7 +372,7 @@
                             {% if t.submission and t.submission.status == 'accepted' %}
                             <div class="hw-task-answer-row solved">
                                 <span class="hw-status-text"><span class="hw-status-icon">✓</span> Принято</span>
-                                {% if t.submission.grade %}<span class="sub-grade">{{ t.submission.grade.final|floatformat:"-2" }} из {{ t.submission.grade.max_value|floatformat:"-2" }}</span>{% endif %}
+                                {% if t.оценка %}<span class="sub-grade">{{ t.оценка.final|floatformat:"-2" }} из {{ t.оценка.max_value|floatformat:"-2" }}</span>{% endif %}
                                 {% if t.submission.teacher_comment %}
                                 <span class="sub-comment">— {{ t.submission.teacher_comment }}</span>
                                 {% endif %}

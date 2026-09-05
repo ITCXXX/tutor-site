@@ -57,10 +57,12 @@ def записать(student, course):
     return Enrollment.objects.create(student=student, course=course, is_active=True)
 
 
-def сдать(student, assignment, text='решение', status=None):
+def сдать(student, assignment, text='решение', status=None, attempt=1):
+    """Одна сдача. attempt нужен доработкам: у сдач уникальна тройка
+    «ученик — задача — попытка», и вторая сдача с тем же номером не заведётся."""
     return StudentSubmission.objects.create(
         student=student, assignment=assignment, text=text, is_latest=True,
-        status=status or StudentSubmission.STATUS_PENDING)
+        attempt=attempt, status=status or StudentSubmission.STATUS_PENDING)
 
 
 class КабинетTestCase(TestCase):

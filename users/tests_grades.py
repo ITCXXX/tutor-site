@@ -8,14 +8,22 @@
 
 from .grades import course_score, grades_for_lesson, lesson_score
 from .models import Grade
+from django.db import IntegrityError, transaction
+
 from .tests_base import (КабинетTestCase, сделать_задачу, сделать_ученика,
                          сделать_урок, сдать)
 
 
-def оценить(ученик, задача, балл, из_скольких, штраф=0):
-    """Сдача + оценка за неё: как это происходит в жизни, сначала работа."""
-    сдача = сдать(ученик, задача)
-    return Grade.objects.create(submission=сдача, value=балл,
+def оценить(ученик, задача, балл, из_скольких, штраф=0, со_сдачей=True):
+    """Оценка за задачу. По умолчанию — со сдачей, как чаще всего в жизни.
+
+    со_сдачей=False — это контрольная на бумаге, устный ответ, разбор у доски:
+    работы в системе нет, а оценка есть. Ради этого случая оценка и переехала
+    со сдачи на пару «ученик — задача».
+    """
+    сдача = сдать(ученик, задача) if со_сдачей else None
+    return Grade.objects.create(student=ученик, assignment=задача,
+                                submission=сдача, value=балл,
                                 max_value=из_скольких, penalty=штраф)
 
 
@@ -98,16 +106,24 @@ class LessonScoreTests(КабинетTestCase):
         self.assertEqual(свод['graded'], 0)
         self.assertEqual(свод['total'], 2)
 
-    def test_оценка_за_старую_попытку_не_считается(self):
-        """Если сломается — после доработки в итоге останется балл за
-        прежнюю, забракованную попытку."""
+    def test_оценка_переживает_доработку(self):
+        """Ученик прислал доработку — оценка за задачу остаётся, а не пропадает.
+
+        Прежде оценка висела на сдаче, и любая доработка обнуляла итог: балл
+        уезжал вместе со старой попыткой. Теперь оценка про ЗАДАЧУ, и она живёт,
+        пока преподаватель её не изменит. Если этот тест покраснеет — ученик
+        после доработки увидит, что его оценка исчезла.
+        """
         оценка = оценить(self.ученик, self.задача1, 5, 10)
-        сдача = оценка.submission
-        сдача.is_latest = False
-        сдача.save(update_fields=['is_latest'])
+        старая_сдача = оценка.submission
+        старая_сдача.is_latest = False
+        старая_сдача.save(update_fields=['is_latest'])
+        сдать(self.ученик, self.задача1, text='доработка', attempt=2)
+
         свод = lesson_score(self.ученик, self.урок)
-        self.assertEqual(свод['graded'], 0)
-        self.assertFalse(свод['has_any'])
+        self.assertTrue(свод['has_any'])
+        self.assertEqual(свод['graded'], 1)
+        self.assertEqual(свод['earned'], 5.0)
 
     def test_чужие_оценки_не_попадают_в_итог(self):
         """Если сломается — ученик увидит в своём итоге чужие баллы."""
@@ -193,3 +209,31 @@ class GradesForLessonTests(КабинетTestCase):
         оценить(self.ученик2, self.задача1, 10, 10)
         свод = grades_for_lesson(self.урок, [self.ученик])
         self.assertEqual(list(свод.keys()), [self.ученик.id])
+
+
+class ОценкаБезСдачиTests(КабинетTestCase):
+    """Контрольная на бумаге: работы в системе нет, а балл есть.
+
+    Ради этого случая оценка и переехала со сдачи на пару «ученик — задача».
+    Если этот тест покраснеет — значит вернулись к тому, что оценить можно
+    только присланное, и половина занятий останется без отметок.
+    """
+
+    def test_оценка_без_сдачи_попадает_в_итог(self):
+        оценить(self.ученик, self.задача1, 7, 10, со_сдачей=False)
+        свод = lesson_score(self.ученик, self.урок)
+        self.assertTrue(свод['has_any'])
+        self.assertEqual(свод['graded'], 1)
+        self.assertEqual(свод['earned'], 7.0)
+        self.assertEqual(свод['by_sum'], 70.0)
+
+    def test_у_оценки_без_сдачи_ссылка_пуста(self):
+        оценка = оценить(self.ученик, self.задача1, 7, 10, со_сдачей=False)
+        self.assertIsNone(оценка.submission)
+
+    def test_одна_оценка_на_задачу(self):
+        """Вторая оценка за тот же номер невозможна: это два разных балла."""
+        оценить(self.ученик, self.задача1, 7, 10, со_сдачей=False)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                оценить(self.ученик, self.задача1, 3, 10, со_сдачей=False)

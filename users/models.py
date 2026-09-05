@@ -301,6 +301,15 @@ class Lesson(models.Model):
         'Приём закрыт после', null=True, blank=True,
         help_text='После этой даты работу уже не принять. Пусто — принимаем и с опозданием.',
     )
+    # Срок ОТ ЗАПИСИ УЧЕНИКА, а не по календарю. Без этого курс одноразовый:
+    # даты в нём проставлены под первого ученика, и второму тот же курс не
+    # выдать, не переписав руками каждый срок. Заполнено — считается от дня,
+    # когда ученика записали; пусто — работает обычная календарная дата выше.
+    due_offset_days = models.PositiveSmallIntegerField(
+        'Срок: дней от записи', null=True, blank=True,
+        help_text='Например 7 — сдать в течение недели после записи на курс')
+    cutoff_offset_days = models.PositiveSmallIntegerField(
+        'Приём: дней от записи', null=True, blank=True)
 
     def accepts_submissions(self, today=None):
         """Можно ли ещё сдавать. Отсечка включительно: указан день — до
@@ -1520,11 +1529,21 @@ class Message(models.Model):
         return f"{self.author}: {self.text[:40]}"
 
 class Grade(models.Model):
-    """Оценка за ОДНУ попытку решения.
+    """Оценка ученика за ЗАДАЧУ.
 
     Главный урок журнала оценок Moodle: оценка отделена от задания. Задание
-    одно на всех, а оценок столько, сколько учеников и попыток, — класть балл
-    внутрь Assignment было бы ошибкой, которую потом дорого разбирать.
+    одно на всех, а оценок столько, сколько учеников, — класть балл внутрь
+    Assignment было бы ошибкой, которую потом дорого разбирать.
+
+    ОЦЕНКА ВИСИТ НА ПАРЕ «УЧЕНИК — ЗАДАЧА», А НЕ НА СДАЧЕ. Сначала я привязал её
+    к сдаче, и это было ошибкой: контрольную, написанную на бумаге, оценить было
+    нечем — сдачи не существует. То же самое с устным ответом и с задачей,
+    разобранной у доски. Оценка — суждение преподавателя о том, как ученик
+    справился с номером, и сдача для неё лишь возможный повод.
+
+    Ссылка на сдачу осталась, но НЕобязательной: она отвечает на вопрос «за
+    какую именно работу поставлено», когда работа была. Удалили сдачу —
+    оценка остаётся: стирать суждение вместе с черновиком неправильно.
 
     Оценка НЕ заменяет зачёт. Зачёт остаётся двоичным и считается прежним
     правилом (mark_progress). Причина не в лени: правил зачёта три, и третье —
@@ -1533,9 +1552,19 @@ class Grade(models.Model):
     пересчитался бы задним числом.
     """
 
-    submission = models.OneToOneField(
-        'StudentSubmission', on_delete=models.CASCADE, related_name='grade',
-        verbose_name='Работа',
+    student = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='grades',
+        limit_choices_to={'role': 'student'}, verbose_name='Ученик',
+    )
+    assignment = models.ForeignKey(
+        'Assignment', on_delete=models.CASCADE, related_name='grades',
+        verbose_name='Задача',
+    )
+    # Необязательная: оценка бывает и без сданной работы — за контрольную на
+    # бумаге, за устный ответ, за разбор у доски.
+    submission = models.ForeignKey(
+        'StudentSubmission', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='grades', verbose_name='За какую работу',
     )
     value = models.DecimalField(
         'Балл', max_digits=6, decimal_places=2, default=0,
@@ -1556,15 +1585,28 @@ class Grade(models.Model):
         User, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='grades_given', verbose_name='Кто поставил',
     )
-    graded_at = models.DateTimeField('Когда поставлена', auto_now=True)
+    # Два времени, а не одно. graded_at обновляется при каждой правке, поэтому
+    # сам по себе он не отвечает на вопрос «когда оценку поставили впервые» —
+    # а это ровно то, что спрашивают, когда разбираются в спорной отметке.
+    created_at = models.DateTimeField('Когда поставлена впервые', auto_now_add=True)
+    graded_at = models.DateTimeField('Когда правлена', auto_now=True)
 
     class Meta:
         verbose_name = 'Оценка'
         verbose_name_plural = 'Оценки'
-        indexes = [models.Index(fields=['submission'])]
+        constraints = [
+            # Одна оценка на пару. Вторая означала бы, что у ученика за один
+            # номер два разных балла, и ни один экран не смог бы выбрать между
+            # ними честно.
+            models.UniqueConstraint(fields=['student', 'assignment'],
+                                    name='uniq_grade_per_task'),
+        ]
+        indexes = [
+            models.Index(fields=['assignment', 'student']),
+        ]
 
     def __str__(self):
-        return f"{self.value} из {self.max_value}"
+        return f'{self.student}: {self.value} из {self.max_value}'
 
     @property
     def final(self):

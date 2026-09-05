@@ -9,6 +9,7 @@
 курсов сотни запросов и заметно тормозила бы кабинет.
 """
 from collections import Counter, defaultdict
+from datetime import timedelta
 
 from django.utils import timezone
 
@@ -65,6 +66,11 @@ def homework_for(student, limit=None):
     сегодня = timezone.localdate()
     # Личные продления — одним запросом на весь список.
     продления = extensions_map(lesson_ids, [student.id])
+    # Дни записи — тоже одним. Без этого сроки «от записи» вернули бы запрос на
+    # каждый урок, и мы бы заново получили ту самую N+1, от которой уходили.
+    записи = dict(Enrollment.objects
+                  .filter(student=student, course_id__in=course_ids)
+                  .values_list('course_id', 'enrolled_at'))
     строки = []
     for l in lessons:
         n = всего.get(l.id, 0)
@@ -74,7 +80,8 @@ def homework_for(student, limit=None):
         if осталось <= 0:
             continue                       # всё сдано, показывать незачем
         ext = продления.get((l.id, student.id))
-        срок, приём_до = dates_for(l, student, ext)
+        зап = записи.get(l.module.course_id)
+        срок, приём_до = dates_for(l, student, ext, зап)
         строки.append({
             'lesson': l,
             'course': l.module.course,
@@ -86,7 +93,7 @@ def homework_for(student, limit=None):
             'days_left': (срок - сегодня).days if срок else None,
             # Приём закрыт — работу уже не сдать. Из списка такое НЕ убираем:
             # ученик должен видеть, что упустил, а не гадать, куда делось.
-            'closed': not accepts_from(l, student, сегодня, ext),
+            'closed': not accepts_from(l, student, сегодня, ext, зап),
             'cutoff': приём_до,
             # Ученику важно знать, что срок у него личный, — иначе он решит,
             # что видит чужую дату или ошибку.
@@ -222,18 +229,52 @@ def lesson_report(lesson, students):
 НЕ_ПЕРЕДАНО = object()
 
 
-def dates_for(lesson, student, ext=НЕ_ПЕРЕДАНО):
-    """(срок, приём до) для конкретного ученика с учётом личного продления.
+def _от_записи(lesson, student, enrolled_at):
+    """(срок, приём до), посчитанные от дня записи ученика на курс.
 
-    ext можно передать заранее — тогда запроса не будет (нужно для списков).
-    Передать можно и None: это значит «продления у него нет, я проверил».
+    Возвращает (None, None), если у урока нет смещений или неизвестен день
+    записи. Смещения — это то, что делает курс пригодным для второго ученика:
+    «сдать через неделю после начала» не устаревает, а «сдать до 5 мая» —
+    устаревает в тот же день.
+    """
+    if lesson.due_offset_days is None and lesson.cutoff_offset_days is None:
+        return None, None
+    if enrolled_at is НЕ_ПЕРЕДАНО:
+        зап = (Enrollment.objects
+               .filter(student=student, course_id=lesson.module.course_id)
+               .values_list('enrolled_at', flat=True).first())
+        enrolled_at = зап
+    if not enrolled_at:
+        return None, None
+    начало = enrolled_at.date() if hasattr(enrolled_at, 'date') else enrolled_at
+    due = (начало + timedelta(days=lesson.due_offset_days)
+           if lesson.due_offset_days is not None else None)
+    cut = (начало + timedelta(days=lesson.cutoff_offset_days)
+           if lesson.cutoff_offset_days is not None else None)
+    return due, cut
+
+
+def dates_for(lesson, student, ext=НЕ_ПЕРЕДАНО, enrolled_at=НЕ_ПЕРЕДАНО):
+    """(срок, приём до) для конкретного ученика.
+
+    Порядок старшинства, и он не случаен:
+      1. личное продление — преподаватель решил про этого человека вручную,
+         и его решение старше любого расписания;
+      2. срок от дня записи — если у урока задано смещение;
+      3. календарная дата урока — общая для всех.
+
+    ext и enrolled_at можно передать заранее — тогда запросов не будет (нужно
+    для списков). Передать можно и None: это значит «я проверил, этого нет».
     Пустое поле в самом продлении означает «как у всех».
     """
     if ext is НЕ_ПЕРЕДАНО:
         ext = (HomeworkExtension.objects
                .filter(lesson=lesson, student=student).first())
-    due = (ext.due_date if ext and ext.due_date else lesson.due_date)
-    cut = (ext.cutoff_date if ext and ext.cutoff_date else lesson.cutoff_date)
+    от_записи_due, от_записи_cut = _от_записи(lesson, student, enrolled_at)
+    базовый_due = от_записи_due if от_записи_due is not None else lesson.due_date
+    базовый_cut = от_записи_cut if от_записи_cut is not None else lesson.cutoff_date
+    due = (ext.due_date if ext and ext.due_date else базовый_due)
+    cut = (ext.cutoff_date if ext and ext.cutoff_date else базовый_cut)
     # Если продлили только срок, общая отсечка могла остаться РАНЬШЕ него —
     # тогда продление было бы пустым обещанием. Держим тот же порядок, что и
     # при вводе: приём не может закрыться раньше срока.
@@ -242,9 +283,10 @@ def dates_for(lesson, student, ext=НЕ_ПЕРЕДАНО):
     return due, cut
 
 
-def accepts_from(lesson, student, today=None, ext=НЕ_ПЕРЕДАНО):
+def accepts_from(lesson, student, today=None, ext=НЕ_ПЕРЕДАНО,
+                 enrolled_at=НЕ_ПЕРЕДАНО):
     """Принимаем ли ещё работу ИМЕННО от этого ученика."""
-    _, cut = dates_for(lesson, student, ext)
+    _, cut = dates_for(lesson, student, ext, enrolled_at)
     if not cut:
         return True
     return (today or timezone.localdate()) <= cut

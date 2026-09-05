@@ -21,9 +21,7 @@
 шаблонам, в этом проекте уже случался — с правилом зачёта.
 """
 
-from django.db.models import Prefetch
-
-from .models import Assignment, Grade, StudentSubmission
+from .models import Assignment, Grade
 
 
 def _пусто(total=0):
@@ -54,43 +52,46 @@ def _свод(оценки, total):
     }
 
 
+# Оценки берутся НАПРЯМУЮ, а не через сдачи. Раньше ходили через них — и это
+# было не просто длиннее, а неверно: оценка за контрольную на бумаге или за
+# устный ответ сдачи не имеет, и такой проход её терял. Теперь оценка висит на
+# паре «ученик — задача», и запрос стал и проще, и полнее.
+
+
 def lesson_score(student, lesson):
     """Итог ученика по одному уроку (домашке)."""
     total = Assignment.objects.filter(lesson=lesson).count()
-    оценки = [
-        s.grade for s in StudentSubmission.objects
-        .filter(student=student, assignment__lesson=lesson, is_latest=True)
-        .select_related('grade')
-        if getattr(s, 'grade', None) is not None
-    ]
+    оценки = list(Grade.objects.filter(student=student, assignment__lesson=lesson))
     return _свод(оценки, total)
 
 
 def course_score(student, course):
     """Итог ученика по всему курсу — «отношение всего ко всему»."""
     total = Assignment.objects.filter(lesson__module__course=course).count()
-    оценки = [
-        s.grade for s in StudentSubmission.objects
-        .filter(student=student, assignment__lesson__module__course=course,
-                is_latest=True)
-        .select_related('grade')
-        if getattr(s, 'grade', None) is not None
-    ]
+    оценки = list(Grade.objects.filter(
+        student=student, assignment__lesson__module__course=course))
     return _свод(оценки, total)
 
 
 def grades_for_lesson(lesson, students):
     """Итоги всех учеников по уроку — для сводки преподавателя.
 
-    Одним проходом, а не запросом на ученика: в классе их бывает десятки.
+    Одним запросом на весь класс, а не запросом на ученика: их бывает десятки.
     """
     total = Assignment.objects.filter(lesson=lesson).count()
     по_ученикам = {s.id: [] for s in students}
-    subs = (StudentSubmission.objects
-            .filter(student__in=students, assignment__lesson=lesson, is_latest=True)
-            .select_related('grade'))
-    for s in subs:
-        g = getattr(s, 'grade', None)
-        if g is not None and s.student_id in по_ученикам:
-            по_ученикам[s.student_id].append(g)
+    for g in Grade.objects.filter(student__in=students, assignment__lesson=lesson):
+        if g.student_id in по_ученикам:
+            по_ученикам[g.student_id].append(g)
     return {sid: _свод(gs, total) for sid, gs in по_ученикам.items()}
+
+
+def grades_by_task(student, assignments):
+    """{id задачи: оценка} для списка задач — одним запросом.
+
+    Нужен экранам, которые показывают балл рядом с каждым номером: без этого
+    там был бы запрос на строку.
+    """
+    ids = [a.id if hasattr(a, 'id') else a for a in assignments]
+    return {g.assignment_id: g
+            for g in Grade.objects.filter(student=student, assignment_id__in=ids)}

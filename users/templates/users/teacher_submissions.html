@@ -259,14 +259,14 @@
             {% elif s.status == 'accepted' %}
             <div class="review-result accepted">
                 <strong>Принято</strong>
-                {% if s.grade %}<span class="grade-badge">{{ s.grade.final|floatformat:"-2" }} из {{ s.grade.max_value|floatformat:"-2" }}</span>{% endif %}
+                {% if s.оценка %}<span class="grade-badge">{{ s.оценка.final|floatformat:"-2" }} из {{ s.оценка.max_value|floatformat:"-2" }}</span>{% endif %}
                 <span class="when">{{ s.reviewed_at|date:"d.m H:i" }}</span>
                 {% if s.teacher_comment %}<span class="comment">{{ s.teacher_comment }}</span>{% endif %}
             </div>
             {% elif s.status == 'rejected' %}
             <div class="review-result rejected">
                 <strong>Возвращено на доработку</strong>
-                {% if s.grade %}<span class="grade-badge">{{ s.grade.final|floatformat:"-2" }} из {{ s.grade.max_value|floatformat:"-2" }}</span>{% endif %}
+                {% if s.оценка %}<span class="grade-badge">{{ s.оценка.final|floatformat:"-2" }} из {{ s.оценка.max_value|floatformat:"-2" }}</span>{% endif %}
                 <span class="when">{{ s.reviewed_at|date:"d.m H:i" }}</span>
                 {% if s.teacher_comment %}<span class="comment">{{ s.teacher_comment }}</span>{% endif %}
             </div>

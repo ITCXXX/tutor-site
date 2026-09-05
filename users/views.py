@@ -464,6 +464,12 @@ def _build_paragraphs(course, student):
             is_latest=True,
         )
     }
+    # Оценки — одной пачкой по всем задачам курса. Оценка висит на паре
+    # «ученик — задача», а не на сдаче, поэтому она есть и там, где сдачи нет
+    # вовсе: за контрольную на бумаге, за устный ответ.
+    from .grades import grades_by_task
+    grades_map = grades_by_task(student, course_assignment_ids)
+
     # Сколько всего попыток было по каждой задаче — чтобы показать ученику,
     # что прежние никуда не делись.
     attempts_map = {}
@@ -481,6 +487,7 @@ def _build_paragraphs(course, student):
             t.is_done = t.id in done_set
             t.percent = percent_map.get(t.id, 0)
             t.submission = submissions_map.get(t.id)
+            t.оценка = grades_map.get(t.id)
             t.attempts = attempts_map.get(t.id, 0)
             # Если title — короткое число (как в задачнике Поповой), показать его
             # в квадратике вместо forloop.counter → получится сквозная нумерация.
@@ -1346,6 +1353,15 @@ def teacher_course_enroll(request, slug):
     })
 
 
+def _parse_offset(raw):
+    """Смещение срока в днях. Пусто или мусор — значит смещения нет."""
+    try:
+        n = int((raw or '').strip())
+    except (TypeError, ValueError):
+        return None
+    return n if 0 <= n <= 3650 else None
+
+
 def _parse_due(raw):
     """Дата из поля формы. Пустое или мусор — без срока, а не ошибка:
     срок необязателен, и ронять из-за него сохранение домашки незачем."""
@@ -1451,6 +1467,8 @@ def teacher_hw_lesson_new(request, slug):
             due_date=_parse_due(request.POST.get('due_date')),
             cutoff_date=_parse_cutoff(request.POST.get('cutoff_date'),
                                       request.POST.get('due_date')),
+            due_offset_days=_parse_offset(request.POST.get('due_offset_days')),
+            cutoff_offset_days=_parse_offset(request.POST.get('cutoff_offset_days')),
         )
         for i, t in enumerate(tasks, 1):
             Assignment.objects.create(
@@ -1512,7 +1530,10 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
         lesson.due_date = _parse_due(request.POST.get('due_date'))
         lesson.cutoff_date = _parse_cutoff(request.POST.get('cutoff_date'),
                                            request.POST.get('due_date'))
-        lesson.save(update_fields=['title', 'content', 'due_date', 'cutoff_date'])
+        lesson.due_offset_days = _parse_offset(request.POST.get('due_offset_days'))
+        lesson.cutoff_offset_days = _parse_offset(request.POST.get('cutoff_offset_days'))
+        lesson.save(update_fields=['title', 'content', 'due_date', 'cutoff_date',
+                                   'due_offset_days', 'cutoff_offset_days'])
 
         # Diff по стабильному id: задачу с тем же Assignment.id обновляем,
         # новые (без id) создаём, отсутствующие в форме — удаляем. Так прогресс
@@ -1892,8 +1913,7 @@ def teacher_submissions(request):
     base_qs = (StudentSubmission.objects
                .filter(student__student_profile__teacher=request.user, is_latest=True)
                .select_related('student__student_profile',
-                               'assignment__lesson__module__course',
-                               'grade'))
+                               'assignment__lesson__module__course'))
 
     counts = {
         'pending': base_qs.filter(status=StudentSubmission.STATUS_PENDING).count(),
@@ -1914,12 +1934,25 @@ def teacher_submissions(request):
     else:
         submissions_qs = submissions_qs.order_by('-reviewed_at', '-submitted_at')
 
+    # Оценки цепляем ОДНИМ запросом и кладём на строку. Оценка больше не висит
+    # на сдаче (она про пару «ученик — задача»), поэтому select_related её не
+    # достанет, а обращение из шаблона дало бы запрос на каждую строку.
+    строки = list(submissions_qs)
+    if строки:
+        from .models import Grade
+        пары = {(s.student_id, s.assignment_id) for s in строки}
+        оценки = {(g.student_id, g.assignment_id): g for g in Grade.objects.filter(
+            student_id__in={p[0] for p in пары},
+            assignment_id__in={p[1] for p in пары})}
+        for s in строки:
+            s.оценка = оценки.get((s.student_id, s.assignment_id))
+
     # Вопросы — ОТДЕЛЬНОЙ полкой, а не колонкой в списке сдач. Причина простая:
     # спрашивают обычно про задачу, которую ещё НЕ сдали, — в списке сдач её
     # нет вовсе, и колонка про неё промолчала бы.
     from .chat import open_questions_for
     return render(request, 'users/teacher_submissions.html', {
-        'submissions': submissions_qs,
+        'submissions': строки,
         'status': status,
         'counts': counts,
         'вопросы': open_questions_for(request.user),
@@ -1953,10 +1986,12 @@ def teacher_review_submission(request, sub_id):
             # Зажимаем в границы: отрицательный балл и балл выше потолка —
             # это опечатка, а не намерение.
             балл = max(Decimal('0'), min(балл, потолок))
+            # Ключ — ученик и задача, а не сдача: у одной задачи бывает
+            # несколько попыток, а оценка за номер одна.
             Grade.objects.update_or_create(
-                submission=sub,
+                student=sub.student, assignment=sub.assignment,
                 defaults={'value': балл, 'max_value': потолок,
-                          'graded_by': request.user},
+                          'graded_by': request.user, 'submission': sub},
             )
 
     if action == 'accept':
@@ -2267,7 +2302,17 @@ def unenroll_from_course(request, enrollment_id):
         is_active=True
     )
     
-    enrollment.delete()
+    # НЕ удаляем, а выключаем. Раньше здесь было enrollment.delete(), и это
+    # выглядело безобидно: на запись никто не ссылается, решения и оценки висят
+    # на паре «ученик — задача» и переживают удаление.
+    #
+    # Безобидным это перестало быть в тот день, когда сроки стали считаться ОТ
+    # ДНЯ ЗАПИСИ. Теперь enrolled_at — точка отсчёта всех дедлайнов ученика:
+    # отписался и записался снова — и все сроки уехали вперёд. Плюс исчезает
+    # ответ на вопрос «а он вообще у нас учился и когда», который спрашивают
+    # родители через год.
+    enrollment.is_active = False
+    enrollment.save(update_fields=['is_active'])
     return redirect('student_courses')
 
 # ──────────────────────────────────────────────────────────────────────────────
