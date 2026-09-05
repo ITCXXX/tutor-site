@@ -4,7 +4,7 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 
-from .models import Card, CardReview, CardState, Deck
+from .models import Card, CardReview, CardState, Deck, DeckShare
 
 
 class CardInline(TabularInline):
@@ -15,8 +15,7 @@ class CardInline(TabularInline):
 
 @admin.register(Deck)
 class DeckAdmin(ModelAdmin):
-    list_display = ('title', 'owner', 'kind', 'visibility', 'карточек', 'updated_at')
-    list_filter = ('kind', 'visibility')
+    list_display = ('title', 'owner', 'карточек', 'updated_at')
     search_fields = ('title', 'description')
     inlines = [CardInline]
 

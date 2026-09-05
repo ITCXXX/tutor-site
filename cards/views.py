@@ -3,6 +3,8 @@
 
 import json
 import random
+import re
+import secrets
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.contrib import messages
@@ -11,6 +13,7 @@ from django.db import transaction
 from django.db.models import Count, Q
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
@@ -18,7 +21,7 @@ from users.answer_check import check_answer
 
 from . import ai_prompt, srs
 from .forms import CardForm, DeckForm, ImportForm, ПростаяКолодаForm
-from .models import Card, CardReview, CardState, Deck
+from .models import Card, CardReview, CardState, Deck, DeckShare
 from .parsing import разобрать
 from .richtext import очистить, пусто
 
@@ -27,11 +30,40 @@ from .richtext import очистить, пусто
 #  Доступ
 # ─────────────────────────────────────────────────────────────────────
 
+КЛЮЧ_В_АДРЕСЕ = 'k'
+СЕССИЯ_ОТКРЫТЫЕ = 'открытые_колоды'
+
+
 def _колода_для_просмотра(request, pk):
+    """Своя колода, открытая раньше по ссылке — или ссылка с ключом в адресе.
+
+    Ключ сверяется compare_digest, а не «==»: обычное сравнение строк
+    заканчивается на первом несовпавшем символе, и по времени ответа ключ
+    подбирается посимвольно.
+    """
     колода = get_object_or_404(Deck.objects.select_related('owner'), pk=pk)
-    if not колода.виден(request.user):
-        raise Http404
-    return колода
+    if колода.виден(request.user):
+        return колода
+
+    открытые = list(request.session.get(СЕССИЯ_ОТКРЫТЫЕ) or [])
+    ключ = request.GET.get(КЛЮЧ_В_АДРЕСЕ) or ''
+    # Сравниваем байты, а не строки: compare_digest отказывается работать со
+    # строками вне ASCII и роняет запрос пятисоткой — а ключ приходит из
+    # адреса, где может быть что угодно.
+    if ключ and колода.share_token and secrets.compare_digest(
+            str(ключ).encode('utf-8'), str(колода.share_token).encode('utf-8')):
+        if request.user.is_authenticated:
+            # Вошедшему колода остаётся в разделе навсегда: иначе ссылку
+            # пришлось бы хранить в закладках и доставать перед каждым занятием.
+            DeckShare.objects.get_or_create(deck=колода, user=request.user)
+        elif колода.pk not in открытые:
+            открытые.append(колода.pk)
+            request.session[СЕССИЯ_ОТКРЫТЫЕ] = открытые
+        return колода
+
+    if колода.pk in открытые:
+        return колода
+    raise Http404
 
 
 def _колода_для_правки(request, pk):
@@ -46,17 +78,15 @@ def _колода_для_правки(request, pk):
 # ─────────────────────────────────────────────────────────────────────
 
 def список(request):
-    """Витрина раздела: свои колоды и чужие открытые."""
+    """Свои колоды и те, что открыли по ссылке."""
     все = Deck.objects.select_related('owner').annotate(карточек=Count('cards'))
     if request.user.is_authenticated:
         мои = list(все.filter(owner=request.user))
-        чужие = list(
-            все.filter(Q(visibility=Deck.ОБЩАЯ) | Q(visibility=Deck.ОТКРЫТАЯ))
-            .exclude(owner=request.user)
-        )
+        чужие = list(все.filter(shares__user=request.user).exclude(owner=request.user))
     else:
         мои = []
-        чужие = list(все.filter(visibility=Deck.ОТКРЫТАЯ))
+        открытые = request.session.get(СЕССИЯ_ОТКРЫТЫЕ) or []
+        чужие = list(все.filter(pk__in=открытые))
 
     if request.user.is_authenticated:
         _проставить_очередь(request.user, мои + чужие)
@@ -275,6 +305,9 @@ def колода(request, pk):
     return render(request, 'cards/deck_detail.html', {
         'колода': объект, 'карточки': карточки, 'счёт': счёт,
         'можно_править': объект.правит(request.user),
+        'ссылка': request.build_absolute_uri(
+            '%s?%s=%s' % (reverse('cards:deck', args=[объект.pk]),
+                          КЛЮЧ_В_АДРЕСЕ, объект.share_token)),
     })
 
 
@@ -323,7 +356,7 @@ def импорт(request, pk):
     return render(request, 'cards/import.html', {
         'колода': объект, 'форма': форма,
         'разобранные': разобранные, 'замечания': замечания,
-        'подсказка': ai_prompt.собрать(объект.kind),
+        'подсказка': ai_prompt.собрать(),
     })
 
 
@@ -414,15 +447,10 @@ def учить(request, pk):
 def _задание(колода, карточка, направление, все_карточки):
     """Одна карточка в том виде, в каком её показывает страница.
 
-    Способ вопроса берётся у колоды, но карточка может его не потянуть: чтобы
-    спрашивать выбором, нужно хотя бы два варианта. Тогда молча спрашиваем
-    переворотом — лучше более лёгкий вопрос, чем сломанный экран.
+    Способ вопроса здесь не решается: варианты кладутся в задание всегда, а
+    переворотом спросить или выбором — решает человек за экраном и меняет
+    посреди захода.
     """
-    варианты = варианты_выбора(колода, карточка, направление, все_карточки)
-    вид = колода.ask_mode
-    if вид == Deck.ВЫБОР and len(варианты) < 2:
-        вид = Deck.ПЕРЕВОРОТ
-
     return {
         'card': карточка.pk,
         'direction': направление,
@@ -432,10 +460,8 @@ def _задание(колода, карточка, направление, вс
         'вопрос': _сторона(карточка, направление, 'вопрос'),
         'ответ': _сторона(карточка, направление, 'ответ'),
         'подсказка': карточка.hint,
-        'вид': вид,
-        'варианты': варианты,
-        'язык_вопроса': колода.язык_вопроса(направление),
-        'язык_ответа': колода.язык_ответа(направление),
+        'варианты': варианты_выбора(колода, карточка, направление, все_карточки),
+        'свои_неверные': bool(карточка.неверные()) if направление == CardState.ПРЯМОЕ else False,
     }
 
 
@@ -543,16 +569,42 @@ def проверить(request, pk):
     })
 
 
+# Похоже ли на число или формулу: цифры и знаки без единой буквы слова.
+# Делить колоды на «математические» и «текстовые» оказалось незачем — вид
+# ответа виден по самому ответу, и в одной колоде спокойно уживаются
+# «Париж» и «2,5».
+_БУКВЫ = re.compile(r'[а-яёa-z]{2,}', re.I)
+_ЦИФРА = re.compile(r'\d')
+_МАТЕМАТИКА = re.compile(r'[√π∞\\/^]')
+
+
+def _числовой(строка):
+    строка = (строка or '').strip()
+    if not строка:
+        return False
+    if _БУКВЫ.search(строка):
+        return False
+    return bool(_ЦИФРА.search(строка) or _МАТЕМАТИКА.search(строка))
+
+
 def _ответ_подходит(колода, карточка, направление, набрано):
-    """Засчитывать ли набранное. Математику проверяет answer_check, текст —
-    сравнение с прощением опечатки."""
+    """Засчитывать ли набранное.
+
+    Сначала обычное сравнение с прощением опечатки — оно годится и для слов, и
+    для коротких чисел. Если не сошлось, а ответ похож на число или формулу,
+    спрашиваем users/answer_check.py: он знает, что «2,5», «2.5» и «5/2» — одно
+    и то же, а «биссектриса» ему сказать нечего.
+    """
     for эталон in карточка.варианты_ответа(направление):
-        if колода.kind == Deck.МАТЕМАТИКА:
-            попал, _сообщение = check_answer(набрано, эталон)
-        else:
-            попал = _похоже(набрано, эталон)
-        if попал:
+        if _похоже(набрано, эталон):
             return True
+        if _числовой(эталон) or _числовой(набрано):
+            try:
+                попал, _сообщение = check_answer(набрано, эталон)
+            except Exception:
+                попал = False
+            if попал:
+                return True
     return False
 
 
@@ -641,19 +693,13 @@ def тест(request, pk):
     """Режим «Тест»: список вопросов, ответы, потом оценка."""
     колода = _колода_для_просмотра(request, pk)
     набор = _набор(колода)
-    try:
-        вопросов = int(request.GET.get('вопросов') or 20)
-    except (TypeError, ValueError):
-        вопросов = 20
-    вопросов = max(1, min(вопросов, len(набор) or 1))
     return render(request, 'cards/test.html', {
-        'колода': колода, 'набор': набор, 'вопросов': вопросов,
+        'колода': колода, 'набор': набор,
         'хватает': len(набор) >= 2,
         'есть_выбор': len(набор) >= МИНИМУМ_ДЛЯ_ВЫБОРА,
-        # Ввод годится для теста, только когда вердикт выносит сайт: два
-        # десятка вопросов с самопроверкой по каждому — это не тест.
-        'просить_ввод': (колода.ask_mode == Deck.ВВОД
-                         and колода.check_mode == Deck.АВТОМАТ),
+        # Ввод годится для теста, только когда вердикт выносит сайт:
+        # самопроверка по каждому из семи вопросов — это не тест.
+        'просить_ввод': колода.check_mode == Deck.АВТОМАТ,
     })
 
 

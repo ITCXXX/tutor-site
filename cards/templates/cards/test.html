@@ -40,7 +40,7 @@
 
     <div class="d-flex justify-content-between align-items-center mb-3">
         <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
-        <span class="text-muted small">{{ вопросов }} {{ вопросов|слово:"вопрос,вопроса,вопросов" }}</span>
+        <span class="text-muted small" id="полоса-стопки"></span>
     </div>
 
     {% if not хватает %}
@@ -54,7 +54,8 @@
         <div class="n" id="итог-число"></div>
         <p class="text-muted mb-3" id="итог-текст"></p>
         <div class="d-flex gap-2 justify-content-center flex-wrap">
-            <button class="btn btn-primary" id="кнопка-заново">Новый тест</button>
+            <button class="btn btn-primary" id="кнопка-дальше" hidden>Следующая стопка</button>
+            <button class="btn btn-outline-primary" id="кнопка-заново">Начать заново</button>
             <a href="{% url 'cards:learn' колода.pk %}" class="btn btn-outline-primary">Доучить слабые</a>
         </div>
     </div>
@@ -77,7 +78,9 @@
     var набор = JSON.parse(document.getElementById('набор').textContent);
     if (!набор.length) { return; }
 
-    var СКОЛЬКО = {{ вопросов }};
+    // Стопка из семи: столько помещается на экран и столько человек держит в
+    // голове, пока идёт разбор ошибок.
+    var В_СТОПКЕ = 7;
     // Ввод годится для теста, только если вердикт выносит сайт: два десятка
     // вопросов с самопроверкой по каждому — это не тест, а мучение.
     var ПРОСИТЬ_ВВОД = {{ просить_ввод|yesno:"true,false" }};
@@ -87,7 +90,14 @@
     var где = document.getElementById('вопросы');
     var кнопка = document.getElementById('кнопка-проверить');
     var итог = document.getElementById('итог');
-    var вопросы = [];
+    var дальше = document.getElementById('кнопка-дальше');
+    var полоса = document.getElementById('полоса-стопки');
+    var вопросы = [];        // текущая стопка
+    var очередь = [];        // что осталось спросить
+    var ошиблись = [];       // вернутся в начало следующей стопки
+    var номерСтопки = 0;
+    var верноВсего = 0;
+    var всегоЗадано = 0;
 
     /*
      * Виды вопросов подбираются под колоду. Ввод предлагаем, только если автор
@@ -103,17 +113,70 @@
         return виды[номер % виды.length];
     }
 
-    function собрать() {
+    function начать() {
+        очередь = К.перемешать(набор);
+        ошиблись = [];
+        номерСтопки = 0;
+        верноВсего = 0;
+        всегоЗадано = 0;
+        стопка();
+    }
+
+    /*
+     * Следующая стопка: сначала карточки, на которых ошиблись, потом новые.
+     * Ошибка возвращается как можно раньше — пока ученик ещё помнит, что
+     * именно перепутал.
+     */
+    function стопка() {
+        var берём = ошиблись.concat(очередь).slice(0, В_СТОПКЕ);
+        var взятые = {};
+        берём.forEach(function (к) { взятые[к.ключ] = true; });
+        ошиблись = ошиблись.filter(function (к) { return !взятые[к.ключ]; });
+        очередь = очередь.filter(function (к) { return !взятые[к.ключ]; });
+
+        if (!берём.length) { финал(); return; }
+
+        номерСтопки += 1;
         где.innerHTML = '';
         итог.hidden = true;
         кнопка.hidden = false;
         кнопка.disabled = false;
-        вопросы = К.перемешать(набор).slice(0, СКОЛЬКО).map(function (карточка, i) {
+        дальше.hidden = true;
+        вопросы = берём.map(function (карточка, i) {
             var вопрос = {карточка: карточка, вид: видВопроса(i, карточка), узел: null};
             вопрос.узел = нарисовать(вопрос, i);
             где.appendChild(вопрос.узел);
             return вопрос;
         });
+        обновитьПолосу();
+        window.scrollTo({top: 0, behavior: 'smooth'});
+    }
+
+    function обновитьПолосу() {
+        var осталось = очередь.length + ошиблись.length;
+        полоса.textContent = 'Стопка ' + номерСтопки + ' · '
+            + вопросы.length + ' ' + слово(вопросы.length)
+            + (осталось ? ' · впереди ещё ' + осталось : ' · последняя');
+    }
+
+    function слово(n) {
+        var сотня = n % 100, десяток = n % 10;
+        if (сотня > 10 && сотня < 20) { return 'вопросов'; }
+        if (десяток === 1) { return 'вопрос'; }
+        if (десяток >= 2 && десяток <= 4) { return 'вопроса'; }
+        return 'вопросов';
+    }
+
+    function финал() {
+        где.innerHTML = '';
+        кнопка.hidden = true;
+        дальше.hidden = true;
+        итог.hidden = false;
+        document.getElementById('итог-число').textContent =
+            верноВсего + ' / ' + всегоЗадано;
+        document.getElementById('итог-текст').textContent =
+            'Тест пройден: все карточки отвечены верно.';
+        полоса.textContent = '';
     }
 
     function нарисовать(вопрос, i) {
@@ -129,7 +192,6 @@
         текст.className = 'q';
         блок.appendChild(текст);
 
-        текст.lang = вопрос.карточка.язык_вопроса || '';
 
         if (вопрос.вид === 'выбор') {
             К.разметка(текст, вопрос.карточка.вопрос);
@@ -143,7 +205,6 @@
                 кружок.value = j;
                 подпись.appendChild(кружок);
                 var текстВарианта = document.createElement('span');
-                текстВарианта.lang = вопрос.карточка.язык_ответа || '';
                 К.разметка(текстВарианта, к);
                 подпись.appendChild(текстВарианта);
                 блок.appendChild(подпись);
@@ -159,7 +220,6 @@
             поле.setAttribute('autocapitalize', 'off');
             поле.setAttribute('autocorrect', 'off');
             поле.spellcheck = false;
-            поле.lang = вопрос.карточка.язык_ответа || '';
             блок.appendChild(поле);
             вопрос.поле = поле;
 
@@ -230,8 +290,11 @@
                     верно = ответ !== null && (ответ === 'да') === в.правда;
                 }
                 if (верно) { верных += 1; }
+                else { ошиблись.push(в.карточка); }
                 отметить(в, верно);
             });
+            верноВсего += верных;
+            всегоЗадано += вопросы.length;
             показатьИтог(верных);
         }).catch(function () {
             кнопка.disabled = false;
@@ -268,18 +331,26 @@
     }
 
     function показатьИтог(верных) {
-        var доля = Math.round(100 * верных / вопросы.length);
+        var осталось = очередь.length + ошиблись.length;
         document.getElementById('итог-число').textContent = верных + ' / ' + вопросы.length;
-        document.getElementById('итог-текст').textContent =
-            доля === 100 ? 'Всё верно.' : 'Верно ' + доля + '%. Разбор ошибок ниже.';
+        document.getElementById('итог-текст').textContent = верных === вопросы.length
+            ? (осталось ? 'Стопка без ошибок.' : 'Всё верно.')
+            : 'Ошибки разобраны ниже; они вернутся в следующей стопке.';
         итог.hidden = false;
         кнопка.hidden = true;
+        дальше.hidden = !осталось;
+        if (!осталось) {
+            document.getElementById('итог-число').textContent =
+                верноВсего + ' / ' + всегоЗадано;
+            document.getElementById('итог-текст').textContent = 'Тест пройден.';
+        }
         итог.scrollIntoView({behavior: 'smooth', block: 'nearest'});
     }
 
     кнопка.addEventListener('click', проверить);
-    document.getElementById('кнопка-заново').addEventListener('click', собрать);
-    собрать();
+    дальше.addEventListener('click', стопка);
+    document.getElementById('кнопка-заново').addEventListener('click', начать);
+    начать();
 })();
 </script>
 {% endblock %}

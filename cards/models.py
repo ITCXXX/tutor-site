@@ -17,6 +17,8 @@ Card — это «заметка»: лицевая и оборотная сто�
 обратные карточки не удваивают таблицу карточек и правятся в одном месте.
 """
 
+import secrets
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -27,47 +29,18 @@ from .richtext import очистить, текстом
 class Deck(models.Model):
     """Колода — набор карточек по одной теме."""
 
-    # Кто видит колоду. Пользователей на сайте немного, поэтому промежуточных
-    # степеней («по ссылке», «моей группе») не завожу: они потребовали бы
-    # токенов и таблицы доступов ради шести человек.
-    ЛИЧНАЯ = 'private'
-    ОБЩАЯ = 'shared'
-    ОТКРЫТАЯ = 'public'
-    VISIBILITY_CHOICES = [
-        (ЛИЧНАЯ, 'Личная — вижу только я'),
-        (ОБЩАЯ, 'Общая — видят все, кто вошёл на сайт'),
-        (ОТКРЫТАЯ, 'Открытая — видна и гостям'),
-    ]
-
-    # Вид материала решает две вещи: какой клавиатурой набирать ответ и как его
-    # проверять. Математику проверяет users/answer_check.py (понимает дроби,
-    # корни, промежутки), остальное — сравнение строк с прощением опечаток.
-    МАТЕМАТИКА = 'math'
-    ТЕКСТ = 'text'
-    KIND_CHOICES = [
-        (МАТЕМАТИКА, 'Математика — ответ проверяется как формула'),
-        (ТЕКСТ, 'Обычный текст — слова, определения, перевод'),
-    ]
-
     title = models.CharField('Название', max_length=200)
     description = models.TextField('Описание', blank=True)
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
         related_name='decks', verbose_name='Автор',
     )
-    visibility = models.CharField(
-        'Кому видна', max_length=10, choices=VISIBILITY_CHOICES, default=ЛИЧНАЯ,
-    )
-    kind = models.CharField(
-        'Вид материала', max_length=10, choices=KIND_CHOICES, default=ТЕКСТ,
-    )
-
-    # Колода может жить сама по себе, а может быть частью урока: тогда она
-    # показывается на странице урока и попадает в список ученика вместе с ним.
-    lesson = models.ForeignKey(
-        'users.Lesson', on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='decks', verbose_name='Урок',
-        help_text='Пусто — колода живёт в разделе карточек сама по себе.',
+    # Доступ по ссылке вместо степеней видимости. Ссылку дают тому, кому надо,
+    # и это покрывает всё, ради чего заводили «личная / общая / открытая»:
+    # своё видно автору, чужое — тому, кому дали ссылку.
+    share_token = models.CharField(
+        'Ключ ссылки', max_length=22, unique=True, blank=True,
+        help_text='Часть адреса, по которому колоду открывают другие.',
     )
 
     reverse_enabled = models.BooleanField(
@@ -76,20 +49,9 @@ class Deck(models.Model):
                   'Полезно для слов и переводов, вредно для определений.',
     )
 
-    # Как задаётся вопрос. Три способа, потому что они тренируют разное:
-    # переворот — узнавание, выбор — различение похожих, ввод — припоминание
-    # с нуля. Для формул ввод почти всегда мучение, для слов — самое ценное.
-    ПЕРЕВОРОТ = 'flip'
-    ВЫБОР = 'choice'
-    ВВОД = 'typed'
-    ASK_CHOICES = [
-        (ПЕРЕВОРОТ, 'Переворот — вспомнил и оценил себя'),
-        (ВЫБОР, 'Выбор из вариантов'),
-        (ВВОД, 'Ввод ответа'),
-    ]
-    ask_mode = models.CharField(
-        'Как спрашивать', max_length=10, choices=ASK_CHOICES, default=ПЕРЕВОРОТ,
-    )
+    # Способ вопроса — переворот, выбор или ввод — колода не назначает: его
+    # выбирает тот, кто садится заниматься, и меняет посреди захода. Значения
+    # живут в cards/views.py рядом с экраном, которому они нужны.
 
     # Кто выносит вердикт по набранному ответу. Автоматическая проверка строга
     # и не знает синонимов; на определениях и переводах она чаще мешает, чем
@@ -103,26 +65,6 @@ class Deck(models.Model):
     check_mode = models.CharField(
         'Кто проверяет ввод', max_length=10, choices=CHECK_CHOICES, default=АВТОМАТ,
         help_text='Имеет значение только при вводе ответа.',
-    )
-
-    # Язык сторон. Нужен не для красоты: браузер по нему выбирает шрифт
-    # (без этого китайские иероглифы рисуются японскими начертаниями),
-    # отключает подстановку слов и правильно читает текст вслух.
-    ЯЗЫКИ = [
-        ('', 'Не указан'),
-        ('ru', 'Русский'),
-        ('en', 'Английский'),
-        ('zh', 'Китайский'),
-        ('de', 'Немецкий'),
-        ('fr', 'Французский'),
-        ('es', 'Испанский'),
-        ('la', 'Латынь'),
-    ]
-    front_lang = models.CharField(
-        'Язык лицевой стороны', max_length=8, choices=ЯЗЫКИ, blank=True, default='',
-    )
-    back_lang = models.CharField(
-        'Язык оборота', max_length=8, choices=ЯЗЫКИ, blank=True, default='',
     )
 
     # Две настройки планировщика, которые действительно нужны репетитору.
@@ -161,15 +103,24 @@ class Deck(models.Model):
     def __str__(self):
         return self.title
 
+    def save(self, *args, **kwargs):
+        if not self.share_token:
+            # 22 символа base64 — это 128 бит случайности. Ссылку нельзя
+            # подобрать перебором, а длина такая же, как у обычного адреса.
+            self.share_token = secrets.token_urlsafe(16)
+        super().save(*args, **kwargs)
+
     def виден(self, user):
-        """Может ли пользователь открыть колоду."""
-        if self.visibility == self.ОТКРЫТАЯ:
-            return True
+        """Может ли пользователь открыть колоду без ключа из ссылки.
+
+        Ключ проверяется отдельно, в самой вьюхе: он приходит из адреса, а не
+        из пользователя.
+        """
         if not (user and user.is_authenticated):
             return False
-        if self.visibility == self.ОБЩАЯ:
+        if self.owner_id == user.id:
             return True
-        return self.owner_id == user.id
+        return DeckShare.objects.filter(deck=self, user=user).exists()
 
     def правит(self, user):
         """Может ли пользователь менять колоду и её карточки."""
@@ -183,11 +134,34 @@ class Deck(models.Model):
         return (CardState.ПРЯМОЕ, CardState.ОБРАТНОЕ) if self.reverse_enabled \
             else (CardState.ПРЯМОЕ,)
 
-    def язык_вопроса(self, направление):
-        return self.front_lang if направление == CardState.ПРЯМОЕ else self.back_lang
 
-    def язык_ответа(self, направление):
-        return self.back_lang if направление == CardState.ПРЯМОЕ else self.front_lang
+class DeckShare(models.Model):
+    """Кому колода открылась по ссылке.
+
+    Без этой записи ссылка работала бы ровно один раз: ученик открыл, позанимался,
+    закрыл вкладку — и колода снова недоступна, потому что в списке она у него не
+    появляется. Запись заводится в тот момент, когда человек впервые открыл
+    правильную ссылку, и дальше колода просто лежит у него в разделе.
+    """
+
+    deck = models.ForeignKey(
+        Deck, on_delete=models.CASCADE, related_name='shares', verbose_name='Колода',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='deck_shares', verbose_name='Кому открыта',
+    )
+    opened_at = models.DateTimeField('Открыта', auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Доступ по ссылке'
+        verbose_name_plural = 'Доступы по ссылке'
+        constraints = [
+            models.UniqueConstraint(fields=['deck', 'user'], name='cards_share_unique'),
+        ]
+
+    def __str__(self):
+        return '%s → %s' % (self.deck, self.user)
 
 
 class Card(models.Model):

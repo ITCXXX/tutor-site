@@ -1,4 +1,5 @@
 {% extends "users/visitor_base.html" %}
+{% load cards_extras %}
 
 {% block title %}{{ колода.title }} — карточки{% endblock %}
 
@@ -69,8 +70,7 @@
     <div class="app-hero large my-3">
         <h1>{{ колода.title }}</h1>
         <div class="meta">
-            {{ колода.get_kind_display }} · {{ колода.get_ask_mode_display }}{% if колода.reverse_enabled %} · в обе стороны{% endif %} · {{ колода.get_visibility_display }}
-            {% if колода.lesson %} · урок «{{ колода.lesson.title }}»{% endif %}
+            {{ карточки|length }} карточ{{ карточки|length|слово:"ка,ки,ек" }}{% if колода.reverse_enabled %} · спрашиваются в обе стороны{% endif %}
             {% if колода.exam_date %} · экзамен {{ колода.exam_date|date:"d.m.Y" }}{% endif %}
         </div>
         {% if колода.description %}<div class="meta mt-2">{{ колода.description }}</div>{% endif %}
@@ -117,6 +117,21 @@
             <b>Подбор</b>
             <span>игра на время</span>
         </a>
+    </div>
+    {% endif %}
+
+    {% if можно_править %}
+    <div class="app-section-card mb-3" style="padding: .9rem 1.1rem;">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+            <span class="text-muted small" style="white-space: nowrap;">Ссылка для ученика</span>
+            <input class="form-control form-control-sm font-monospace" id="ссылка"
+                   readonly value="{{ ссылка }}" style="flex: 1 1 260px; min-width: 0;">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="копировать">Скопировать</button>
+            <span class="small text-success" id="скопировано"></span>
+        </div>
+        <div class="form-text mt-1">
+            Кто откроет эту ссылку — сможет заниматься по колоде. Править её сможете только вы.
+        </div>
     </div>
     {% endif %}
 
@@ -170,4 +185,23 @@
     </div>
 
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if можно_править %}
+<script>
+document.getElementById('копировать').addEventListener('click', function () {
+    var поле = document.getElementById('ссылка');
+    var метка = document.getElementById('скопировано');
+    поле.select();
+    navigator.clipboard.writeText(поле.value).then(function () {
+        метка.textContent = 'Скопировано';
+        setTimeout(function () { метка.textContent = ''; }, 2000);
+    }, function () {
+        // Буфер обмена недоступен без защищённого соединения — текст уже выделен.
+        метка.textContent = 'Выделено — Ctrl+C';
+    });
+});
+</script>
+{% endif %}
 {% endblock %}

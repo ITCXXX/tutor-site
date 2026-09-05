@@ -7,7 +7,6 @@ Django-фильтр pluralize умеет только две формы («шт�
 """
 
 from django import template
-from django.db.models import Count
 
 register = template.Library()
 
@@ -38,21 +37,3 @@ def слово(число, формы):
         return две
     return пять
 
-
-@register.inclusion_tag('cards/_lesson_decks.html', takes_context=True)
-def колоды_урока(context, урок):
-    """Колоды, привязанные к этому уроку и видимые текущему пользователю.
-
-    Сделано тегом, а не полем в контексте урока: страница урока принадлежит
-    приложению users, и тащить в его вьюху знание про карточки значило бы
-    связать два раздела там, где достаточно одной строки в шаблоне.
-    """
-    from cards.models import Deck
-
-    пользователь = context.get('user')
-    колоды = list(
-        Deck.objects.filter(lesson=урок)
-        .annotate(карточек=Count('cards'))
-        .order_by('title')
-    )
-    return {'колоды': [к for к in колоды if к.виден(пользователь)]}

@@ -70,6 +70,22 @@
     .grade[data-rating="4"] .name { color: var(--c-success); }
     .grade.suggest { border-color: var(--c-primary-600); box-shadow: 0 0 0 3px var(--c-primary-100); }
 
+    .способы { display: flex; gap: .3rem; margin-bottom: .9rem; flex-wrap: wrap; }
+    .способы button {
+        padding: .35rem .8rem; font-size: .85rem;
+        border: 1px solid var(--c-border-strong); border-radius: var(--r-pill);
+        background: var(--c-surface); color: var(--c-text-soft); cursor: pointer;
+    }
+    .способы button[aria-pressed="true"] {
+        background: var(--c-primary-100); border-color: var(--c-primary-600);
+        color: var(--c-primary-800); font-weight: 600;
+    }
+    .нет-вариантов {
+        margin-bottom: .9rem; padding: .7rem .9rem;
+        background: var(--c-warning-soft); color: var(--c-warning-text);
+        border-radius: var(--r-lg); font-size: .88rem;
+    }
+
     .self-row { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; margin-top: 1.25rem; }
     .self-row button { min-height: 58px; font-size: 1rem; }
 
@@ -99,6 +115,13 @@
     </div>
 
     <div id="экран-учёбы" hidden>
+        <div class="способы" id="способы" role="group" aria-label="Как спрашивать">
+            <button type="button" data-способ="flip">Переворот</button>
+            <button type="button" data-способ="choice">Выбор ответа</button>
+            <button type="button" data-способ="typed">Печатать ответ</button>
+        </div>
+        <div class="нет-вариантов" id="нет-вариантов" hidden></div>
+
         <div class="study-card">
             <div class="question" id="вопрос"></div>
 
@@ -165,12 +188,14 @@
     var CSRF = '{{ csrf_token }}';
     var КЛЮЧ_ХВОСТА = 'cards-pending-{{ колода.pk }}';
     var КЛЮЧ_ОЧЕРЕДИ = 'cards-queue-{{ колода.pk }}';
+    var КЛЮЧ_СПОСОБА = 'cards-ask-{{ колода.pk }}';
 
     var э = {};
     ['экран-учёбы', 'экран-конца', 'вопрос', 'блок-ответа', 'ответ', 'подсказка',
      'вердикт', 'варианты', 'блок-ввода', 'поле-ответа', 'кнопка-ответить',
      'кнопка-показать', 'сам-решает', 'угадал', 'не-угадал', 'оценки',
-     'осталось', 'сделано', 'итог', 'не-отправлено'].forEach(function (id) {
+     'осталось', 'сделано', 'итог', 'не-отправлено', 'способы',
+     'нет-вариантов'].forEach(function (id) {
         э[id] = document.getElementById(id);
     });
 
@@ -244,6 +269,14 @@
     хвост().forEach(function (о) { отвеченные[о.card + '-' + о.direction] = true; });
     очередь = очередь.filter(function (з) { return !отвеченные[з.ключ]; });
 
+    /*
+     * Как спрашивать, решает тот, кто сел заниматься, а не колода: один и тот
+     * же набор в понедельник удобно узнавать выбором, а в четверг — набирать
+     * с нуля. Выбор помнится для этой колоды и меняется посреди захода.
+     */
+    var СПОСОБ = 'flip';
+    try { СПОСОБ = localStorage.getItem(КЛЮЧ_СПОСОБА) || 'flip'; } catch (e) {}
+
     var текущее = null;
     var началось = 0;
     var раскрыто = false;
@@ -276,22 +309,56 @@
                   'блок-ввода', 'кнопка-показать', 'сам-решает']);
 
         К.разметка(э['вопрос'], текущее.вопрос);
-        э['вопрос'].lang = текущее.язык_вопроса || '';
-        э['ответ'].lang = текущее.язык_ответа || '';
+        спросить();
+        началось = Date.now();
+    }
 
-        if (текущее.вид === 'choice') {
+    function спросить() {
+        э['нет-вариантов'].hidden = true;
+        var способ = СПОСОБ;
+
+        if (способ === 'choice' && (текущее.варианты || []).length < 2) {
+            // Молча подменить способ было бы хуже: человек выбрал выбор и
+            // вправе знать, почему его нет.
+            э['нет-вариантов'].textContent =
+                'Не из чего собрать варианты: нужно хотя бы две карточки в колоде '
+                + 'или свои неверные ответы у этой карточки. Спрашиваю переворотом.';
+            э['нет-вариантов'].hidden = false;
+            способ = 'flip';
+        }
+
+        if (способ === 'choice') {
             нарисоватьВарианты();
-        } else if (текущее.вид === 'typed') {
+        } else if (способ === 'typed') {
             э['блок-ввода'].hidden = false;
             э['поле-ответа'].value = '';
             э['поле-ответа'].disabled = false;
-            э['поле-ответа'].lang = текущее.язык_ответа || '';
             э['поле-ответа'].focus();
         } else {
             э['кнопка-показать'].hidden = false;
         }
-        началось = Date.now();
     }
+
+    function отметитьСпособ() {
+        var кнопки = э['способы'].querySelectorAll('[data-способ]');
+        for (var i = 0; i < кнопки.length; i++) {
+            кнопки[i].setAttribute('aria-pressed',
+                кнопки[i].dataset.способ === СПОСОБ ? 'true' : 'false');
+        }
+    }
+
+    э['способы'].addEventListener('click', function (e) {
+        var кнопка = e.target.closest('[data-способ]');
+        if (!кнопка || кнопка.dataset.способ === СПОСОБ) { return; }
+        СПОСОБ = кнопка.dataset.способ;
+        try { localStorage.setItem(КЛЮЧ_СПОСОБА, СПОСОБ); } catch (err) {}
+        отметитьСпособ();
+        // Переспрашиваем текущую карточку заново, если ответ ещё не раскрыт.
+        if (текущее && !раскрыто) {
+            спрятать(['варианты', 'блок-ввода', 'кнопка-показать']);
+            спросить();
+        }
+    });
 
     function нарисоватьВарианты() {
         э['варианты'].innerHTML = '';
@@ -299,7 +366,6 @@
             var кнопка = document.createElement('button');
             кнопка.type = 'button';
             кнопка.className = 'option';
-            кнопка.lang = текущее.язык_ответа || '';
             К.разметка(кнопка, текст);
             кнопка.addEventListener('click', function () {
                 if (занято || раскрыто) { return; }
@@ -466,7 +532,7 @@
     document.addEventListener('keydown', function (e) {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') { return; }
         if ((e.key === ' ' || e.key === 'Enter') && !раскрыто && текущее
-            && текущее.вид === 'flip') {
+            && !э['кнопка-показать'].hidden) {
             e.preventDefault();
             раскрыть();
         } else if (раскрыто && !э['оценки'].hidden && e.key >= '1' && e.key <= '4') {
@@ -475,6 +541,7 @@
         }
     });
 
+    отметитьСпособ();
     показатьХвост();
     отправитьХвост();
     показатьСледующее();

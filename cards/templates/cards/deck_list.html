@@ -68,7 +68,6 @@
             <h3>{{ колода.title }}</h3>
             <div class="meta">
                 {{ колода.карточек }} {{ колода.карточек|слово:"карточка,карточки,карточек" }}
-                · {{ колода.get_visibility_display|truncatewords:1 }}
             </div>
             {% if user.is_authenticated %}
             <div class="due {% if not колода.ждёт %}empty{% endif %}">
@@ -81,7 +80,7 @@
     {% endif %}
 
     {% if чужие %}
-    <h2 class="h5 mb-3">Общие колоды</h2>
+    <h2 class="h5 mb-3">Открытые мне по ссылке</h2>
     <div class="deck-grid">
         {% for колода in чужие %}
         <a class="deck-card" href="{% url 'cards:deck' колода.pk %}">

@@ -20,7 +20,7 @@ from .ai_prompt import собрать
 from .models import Card, CardReview, CardState, Deck, SchedulerWeights
 from .parsing import разобрать
 from .richtext import очистить, текстом
-from .templatetags.cards_extras import колоды_урока, слово
+from .templatetags.cards_extras import слово
 
 
 class РазборСписка(TestCase):
@@ -238,24 +238,52 @@ class Страницы(TestCase):
         self.колода = Deck.objects.create(title='Формулы', owner=self.автор)
         Card.objects.create(deck=self.колода, front='Площадь круга', back='pi R^2')
 
-    def test_личная_колода_чужому_не_видна(self):
+    def test_чужая_колода_без_ссылки_не_открывается(self):
         self.client.force_login(self.чужой)
         ответ = self.client.get(reverse('cards:deck', args=[self.колода.pk]))
         self.assertEqual(ответ.status_code, 404)
 
-    def test_общая_колода_видна_всем_вошедшим(self):
-        self.колода.visibility = Deck.ОБЩАЯ
-        self.колода.save()
+    def test_ссылка_с_ключом_открывает_и_запоминается(self):
+        """Открыв ссылку один раз, ученик находит колоду у себя в разделе.
+
+        Иначе ссылку пришлось бы хранить в закладках и доставать перед каждым
+        занятием.
+        """
         self.client.force_login(self.чужой)
-        ответ = self.client.get(reverse('cards:deck', args=[self.колода.pk]))
+        адрес = reverse('cards:deck', args=[self.колода.pk])
+        ответ = self.client.get(адрес, {'k': self.колода.share_token})
         self.assertEqual(ответ.status_code, 200)
 
-    def test_чужой_не_правит_карточки(self):
-        self.колода.visibility = Deck.ОБЩАЯ
-        self.колода.save()
+        # Второй раз — уже без ключа.
+        self.assertEqual(self.client.get(адрес).status_code, 200)
+        список = self.client.get(reverse('cards:list'))
+        self.assertEqual([к.pk for к in список.context['чужие']], [self.колода.pk])
+
+    def test_неверный_ключ_не_открывает(self):
         self.client.force_login(self.чужой)
-        ответ = self.client.get(reverse('cards:import', args=[self.колода.pk]))
+        ответ = self.client.get(reverse('cards:deck', args=[self.колода.pk]),
+                                {'k': 'не-тот-ключ'})
         self.assertEqual(ответ.status_code, 404)
+
+    def test_ссылка_даёт_читать_но_не_править(self):
+        self.client.force_login(self.чужой)
+        self.client.get(reverse('cards:deck', args=[self.колода.pk]),
+                        {'k': self.колода.share_token})
+        for имя in ('import', 'edit', 'edit_cards'):
+            ответ = self.client.get(reverse('cards:%s' % имя, args=[self.колода.pk]))
+            self.assertEqual(ответ.status_code, 404, имя)
+
+    def test_гостю_ссылка_работает_в_рамках_сеанса(self):
+        адрес = reverse('cards:deck', args=[self.колода.pk])
+        self.assertEqual(
+            self.client.get(адрес, {'k': self.колода.share_token}).status_code, 200)
+        self.assertEqual(self.client.get(адрес).status_code, 200)
+
+    def test_у_каждой_колоды_свой_ключ(self):
+        другая = Deck.objects.create(title='Другая', owner=self.автор)
+        self.assertTrue(self.колода.share_token)
+        self.assertNotEqual(self.колода.share_token, другая.share_token)
+        self.assertGreaterEqual(len(self.колода.share_token), 20)
 
     def test_предпросмотр_не_создаёт_карточек(self):
         self.client.force_login(self.автор)
@@ -310,7 +338,7 @@ class Страницы(TestCase):
 
     def test_проверка_текстового_ответа_прощает_опечатку(self):
         колода = Deck.objects.create(
-            title='Термины', owner=self.автор, kind=Deck.ТЕКСТ, ask_mode=Deck.ВВОД,
+            title='Термины', owner=self.автор,
         )
         карточка = Card.objects.create(
             deck=колода, front='Отрезок из вершины к середине стороны',
@@ -327,10 +355,13 @@ class Страницы(TestCase):
             self.assertEqual(ответ.json()['верно'], ожидаем, набрано)
 
     def test_проверка_математического_ответа(self):
-        колода = Deck.objects.create(
-            title='Уравнения', owner=self.автор, kind=Deck.МАТЕМАТИКА,
-            ask_mode=Deck.ВВОД,
-        )
+        """Делить колоды на «математические» и «текстовые» оказалось незачем.
+
+        Вид ответа виден по самому ответу: в одной колоде спокойно уживаются
+        «Париж» и «2,5», и сравнение по значению включается там, где есть что
+        сравнивать по значению.
+        """
+        колода = Deck.objects.create(title='Уравнения', owner=self.автор)
         карточка = Card.objects.create(deck=колода, front='2x = 5', back='2,5')
         self.client.force_login(self.автор)
         for набрано, ожидаем in (('2,5', True), ('2.5', True), ('3', False)):
@@ -341,20 +372,16 @@ class Страницы(TestCase):
             )
             self.assertEqual(ответ.json()['верно'], ожидаем, набрано)
 
-    def test_способ_вопроса_приходит_с_карточкой(self):
-        """Разметка на странице одна на все три способа, выбирает её вид карточки."""
-        колода = Deck.objects.create(
-            title='Термины', owner=self.автор, kind=Deck.ТЕКСТ, ask_mode=Deck.ВВОД,
-        )
-        Card.objects.create(deck=колода, front='вопрос', back='ответ')
+    def test_способ_вопроса_выбирает_человек(self):
+        """Колода его не назначает: три кнопки есть на самой странице занятия."""
         self.client.force_login(self.автор)
-
-        ответ = self.client.get(reverse('cards:study', args=[колода.pk]))
-        self.assertEqual(ответ.context['задания'][0]['вид'], 'typed')
-        self.assertContains(ответ, reverse('cards:check', args=[колода.pk]))
-
-        переворот = self.client.get(reverse('cards:study', args=[self.колода.pk]))
-        self.assertEqual(переворот.context['задания'][0]['вид'], 'flip')
+        ответ = self.client.get(reverse('cards:study', args=[self.колода.pk]))
+        разметка = ответ.content.decode('utf-8')
+        for способ in ('flip', 'choice', 'typed'):
+            self.assertIn('data-способ="%s"' % способ, разметка)
+        # И честное предупреждение, когда собрать варианты не из чего.
+        self.assertIn('Не из чего собрать варианты', разметка)
+        self.assertNotIn('вид', ответ.context['задания'][0])
 
     def test_список_колод_считает_и_новые_карточки(self):
         """Колода, где все карточки новые, не должна писать «на сегодня всё»."""
@@ -404,7 +431,7 @@ class РежимыТренировки(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('ученик', 'пароль')
         self.колода = Deck.objects.create(
-            title='Термины', owner=self.user, kind=Deck.ТЕКСТ, ask_mode=Deck.ВВОД,
+            title='Термины', owner=self.user,
         )
         for i in range(8):
             Card.objects.create(deck=self.колода, front='вопрос %d' % i,
@@ -438,13 +465,19 @@ class РежимыТренировки(TestCase):
         self.assertFalse(ответ.context['хватает'])       # для заучивания нужно две
         self.assertFalse(ответ.context['есть_выбор'])    # и четыре для вариантов
 
-    def test_число_вопросов_теста_не_больше_колоды(self):
-        ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]),
-                                {'вопросов': 500})
-        self.assertEqual(ответ.context['вопросов'], 8)
-        ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]),
-                                {'вопросов': 'ерунда'})
-        self.assertEqual(ответ.context['вопросов'], 8)
+    def test_тест_идёт_стопками_по_семь(self):
+        """Двадцать вопросов одним листом — экзамен, а не тренировка."""
+        ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]))
+        разметка = ответ.content.decode('utf-8')
+        self.assertIn('В_СТОПКЕ = 7', разметка)
+        # Ошибки возвращаются в следующую стопку, а не теряются.
+        self.assertIn('ошиблись.push(в.карточка)', разметка)
+
+    def test_заучивание_идёт_полными_прогонами(self):
+        ответ = self.client.get(reverse('cards:learn', args=[self.колода.pk]))
+        разметка = ответ.content.decode('utf-8')
+        self.assertIn('начатьПрогон', разметка)
+        self.assertIn('Следующий прогон', разметка)
 
     def test_пачка_ответов_проверяется_разом(self):
         карточки = list(self.колода.cards.all()[:3])
@@ -482,11 +515,11 @@ class РежимыТренировки(TestCase):
         self.assertFalse(итог['верно'])
         self.assertEqual(итог['эталон'], '')
 
-    def test_открытая_колода_тренируется_без_входа(self):
+    def test_колода_по_ссылке_тренируется_без_входа(self):
         self.client.logout()
-        self.колода.visibility = Deck.ОТКРЫТАЯ
-        self.колода.save()
         карточка = self.колода.cards.first()
+        self.client.get(reverse('cards:deck', args=[self.колода.pk]),
+                        {'k': self.колода.share_token})
         for имя in ('learn', 'test', 'match'):
             ответ = self.client.get(reverse('cards:%s' % имя, args=[self.колода.pk]))
             self.assertEqual(ответ.status_code, 200, имя)
@@ -542,29 +575,6 @@ class Статистика(TestCase):
         self.client.force_login(чужак)
         ответ = self.client.get(reverse('cards:stats', args=[self.колода.pk]))
         self.assertEqual(ответ.status_code, 404)
-
-
-class КолодыНаУроке(TestCase):
-
-    def test_тег_отдаёт_только_видимые_колоды(self):
-        from users.models import Course, Lesson, Module
-
-        автор = User.objects.create_user('автор', 'пароль')
-        чужак = User.objects.create_user('чужак', 'пароль')
-        курс = Course.objects.create(title='Курс', slug='kurs')
-        модуль = Module.objects.create(course=курс, title='Модуль', order=1)
-        урок = Lesson.objects.create(module=модуль, title='Урок', order=1)
-
-        своя = Deck.objects.create(title='Личная', owner=автор, lesson=урок)
-        общая = Deck.objects.create(title='Общая', owner=автор, lesson=урок,
-                                    visibility=Deck.ОБЩАЯ)
-        Deck.objects.create(title='Без урока', owner=автор)
-
-        свои = колоды_урока({'user': автор}, урок)['колоды']
-        self.assertEqual({к.pk for к in свои}, {своя.pk, общая.pk})
-
-        чужие = колоды_урока({'user': чужак}, урок)['колоды']
-        self.assertEqual([к.pk for к in чужие], [общая.pk])
 
 
 class ОтветыБезСети(TestCase):
@@ -663,7 +673,6 @@ class ОбратныеКарточки(TestCase):
         self.user = User.objects.create_user('ученик', 'пароль')
         self.колода = Deck.objects.create(
             title='Слова', owner=self.user, reverse_enabled=True,
-            front_lang='zh', back_lang='ru',
         )
         for i in range(4):
             Card.objects.create(deck=self.колода, front='词%d' % i,
@@ -685,14 +694,6 @@ class ОбратныеКарточки(TestCase):
         self.assertEqual(прямое['вопрос'], обратное['ответ'])
         self.assertEqual(прямое['ответ'], обратное['вопрос'])
 
-    def test_язык_сторон_меняется_вместе_с_направлением(self):
-        """Без языка браузер рисует китайские иероглифы японским начертанием."""
-        ответ = self.client.get(reverse('cards:learn', args=[self.колода.pk]))
-        прямое = [з for з in ответ.context['набор'] if з['direction'] == 0][0]
-        обратное = [з for з in ответ.context['набор'] if з['direction'] == 1][0]
-        self.assertEqual((прямое['язык_вопроса'], прямое['язык_ответа']), ('zh', 'ru'))
-        self.assertEqual((обратное['язык_вопроса'], обратное['язык_ответа']), ('ru', 'zh'))
-
     def test_без_обратных_карточек_сторона_одна(self):
         self.колода.reverse_enabled = False
         self.колода.save()
@@ -705,7 +706,7 @@ class ВариантыОтвета(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('ученик', 'пароль')
         self.колода = Deck.objects.create(
-            title='География', owner=self.user, ask_mode=Deck.ВЫБОР,
+            title='География', owner=self.user,
         )
         self.карточка = Card.objects.create(
             deck=self.колода, front='Столица Франции', back='Париж',
@@ -750,20 +751,18 @@ class ВариантыОтвета(TestCase):
         self.assertIn('Столица Франции', варианты)
         self.assertNotIn('Лион', варианты)
 
-    def test_мало_карточек_выбор_не_собрать(self):
-        крошка = Deck.objects.create(title='Крошка', owner=self.user,
-                                     ask_mode=Deck.ВЫБОР)
+    def test_мало_карточек_вариантов_нет(self):
+        крошка = Deck.objects.create(title='Крошка', owner=self.user)
         Card.objects.create(deck=крошка, front='а', back='б')
         ответ = self.client.get(reverse('cards:study', args=[крошка.pk]))
-        # Не из чего выбирать — вопрос молча становится переворотом.
-        self.assertEqual(ответ.context['задания'][0]['вид'], 'flip')
+        self.assertLess(len(ответ.context['задания'][0]['варианты']), 2)
 
-    def test_выбор_приходит_на_страницу_повторения(self):
+    def test_варианты_приходят_на_страницу_повторения(self):
         ответ = self.client.get(reverse('cards:study', args=[self.колода.pk]))
         задание = [з for з in ответ.context['задания']
                    if з['card'] == self.карточка.pk][0]
-        self.assertEqual(задание['вид'], 'choice')
         self.assertIn(задание['ответ'], задание['варианты'])
+        self.assertTrue(задание['свои_неверные'])
 
 
 class Самопроверка(TestCase):
@@ -773,7 +772,7 @@ class Самопроверка(TestCase):
         self.user = User.objects.create_user('ученик', 'пароль')
         self.колода = Deck.objects.create(
             title='Определения', owner=self.user,
-            ask_mode=Deck.ВВОД, check_mode=Deck.САМ,
+            check_mode=Deck.САМ,
         )
         Card.objects.create(deck=self.колода, front='Медиана',
                             back='отрезок от вершины к середине стороны')
@@ -786,7 +785,7 @@ class Самопроверка(TestCase):
         self.assertIn('id="сам-решает"', разметка)
 
     def test_тест_не_предлагает_ввод_при_самопроверке(self):
-        """Два десятка вопросов с самопроверкой по каждому — это не тест."""
+        """Самопроверка по каждому из семи вопросов — это не тест."""
         ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]))
         self.assertFalse(ответ.context['просить_ввод'])
 
@@ -992,7 +991,7 @@ class ЧисткаРазметки(TestCase):
     def test_проверка_ответа_не_видит_разметки(self):
         """Ученик набирает «Париж», а в базе может лежать «<b>Париж</b>»."""
         автор = User.objects.create_user('автор', 'пароль')
-        колода = Deck.objects.create(title='К', owner=автор, kind=Deck.ТЕКСТ)
+        колода = Deck.objects.create(title='К', owner=автор)
         карточка = Card.objects.create(deck=колода, front='Столица',
                                        back='<b>Париж</b>')
         self.client.force_login(автор)
@@ -1121,15 +1120,14 @@ class ПростойРедактор(TestCase):
 
     def test_чужую_колоду_править_нельзя(self):
         чужак = User.objects.create_user('чужак', 'пароль')
-        колода = Deck.objects.create(title='Чужая', owner=чужак,
-                                     visibility=Deck.ОБЩАЯ)
+        колода = Deck.objects.create(title='Чужая', owner=чужак)
         ответ = self.client.get(reverse('cards:edit_cards', args=[колода.pk]))
         self.assertEqual(ответ.status_code, 404)
 
     def test_подробный_путь_остался_отдельно(self):
         ответ = self.client.get(reverse('cards:create_full'))
         self.assertEqual(ответ.status_code, 200)
-        self.assertIn('ask_mode', ответ.context['форма'].fields)
+        self.assertIn('check_mode', ответ.context['форма'].fields)
         # А простой — без настроек: в этом весь смысл.
         простой = self.client.get(reverse('cards:create'))
         self.assertEqual(list(простой.context['форма'].fields), ['title', 'description'])
