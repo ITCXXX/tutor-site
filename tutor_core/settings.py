@@ -86,6 +86,7 @@ INSTALLED_APPS = [
 
     # Ваши приложения
     "users",
+    "cards",
     "games",
     "board",
     "quoridor",

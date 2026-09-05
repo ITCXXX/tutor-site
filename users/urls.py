@@ -2,7 +2,7 @@
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from . import views
+from . import views, views_pwa
 from . import views_exam
 from . import views_materials
 from . import views_oge1_5
@@ -17,6 +17,12 @@ router.register(r'pdf-annotations', views.PDFAnnotationViewSet, basename='pdf-an
 
 # ===== 2. ОПРЕДЕЛЯЕМ МАРШРУТЫ =====
 urlpatterns = [
+    # Установка сайта на домашний экран. sw.js и манифест обязаны лежать в
+    # корне: service worker управляет только тем, что «ниже» него по адресу.
+    path('sw.js', views_pwa.service_worker, name='service_worker'),
+    path('manifest.webmanifest', views_pwa.manifest, name='manifest'),
+    path('offline/', views_pwa.offline, name='offline'),
+
     # --- ПОДКЛЮЧАЕМ API ПЕРВЫМИ ---
     path('api/', include(router.urls)),
 
@@ -115,14 +121,14 @@ urlpatterns = [
          views_exam.reset_db_assignment, name='reset_db_assignment'),
     path('exam/generate-new/<int:assignment_id>/', views_exam.generate_new_problem, name='generate_new_problem'),
     # Разбор задачи на доказательство (№24) до ответа: попытка не пишется.
-    # ВРЕМЕННО ОТКЛЮЧЕНО. Маршрут ссылается на views_exam.problem_solution, а сама
-    # функция ещё не закоммичена — она часть незаконченной работы по второй части
-    # ОГЭ и тянет за собой looks_like_interval и параметр kind у check_answer,
-    # которых в репозитории тоже нет. Строка попала сюда случайно, вместе с
-    # коммитом маршрутов чата, и на боевом сервере роняла ВЕСЬ сайт: битая
-    # таблица адресов — это 500 на каждой странице.
-    # Раскомментировать вместе с коммитом views_exam.py и answer_check.py.
-    # path('exam/solution/<int:problem_id>/', views_exam.problem_solution, name='problem_solution'),
+    # Строка была отключена, пока views_exam.problem_solution и правки
+    # answer_check.py (looks_like_interval, параметр kind) лежали
+    # незакоммиченными: маршрут на отсутствующую функцию — это 500 на КАЖДОЙ
+    # странице сайта, а не только на этой. Теперь всё три файла едут одним
+    # коммитом, поэтому маршрут включён обратно.
+    # ВАЖНО: users/urls.py нельзя коммитить без users/views_exam.py и
+    # users/answer_check.py.
+    path('exam/solution/<int:problem_id>/', views_exam.problem_solution, name='problem_solution'),
     path('lesson/<int:lesson_id>/practice/',
          views_exam.lesson_practice, name='lesson_practice'),
     path('lesson/<int:lesson_id>/next/',

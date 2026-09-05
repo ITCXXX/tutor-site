@@ -1,0 +1,285 @@
+{% extends "users/visitor_base.html" %}
+{% load static cards_extras %}
+
+{% block title %}{{ колода.title }} — тест{% endblock %}
+
+{% block extra_css %}
+<style>
+    .mode-wrap { max-width: 760px; margin: 0 auto; }
+    .q-card {
+        background: var(--c-surface); border: 1px solid var(--c-border);
+        border-radius: var(--r-xl); box-shadow: var(--shadow-sm);
+        padding: 1.25rem 1.4rem; margin-bottom: 1rem;
+    }
+    .q-card.right { border-color: var(--c-success); }
+    .q-card.wrong { border-color: var(--c-danger); }
+    .q-card .num { font-size: .75rem; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: .04em; }
+    .q-card .q { font-size: 1.08rem; margin: .35rem 0 .9rem; white-space: pre-wrap; word-break: break-word; }
+    .q-card .verdict { margin-top: .7rem; font-size: .9rem; }
+    .q-card .verdict.ok { color: var(--c-success-text); }
+    .q-card .verdict.no { color: var(--c-danger-text); }
+
+    .choice { display: flex; align-items: flex-start; gap: .6rem; padding: .5rem .2rem; cursor: pointer; }
+    .choice input { margin-top: .28rem; width: 20px; height: 20px; flex: none; }
+    .choice span { white-space: pre-wrap; word-break: break-word; }
+    .choice.marked-right span { font-weight: 600; color: var(--c-success-text); }
+
+    .score-card {
+        background: var(--c-surface); border: 1px solid var(--c-border);
+        border-radius: var(--r-2xl); box-shadow: var(--shadow-md);
+        padding: 1.75rem; text-align: center; margin-bottom: 1.5rem;
+    }
+    .score-card .n { font-size: 2.6rem; font-weight: 700; color: var(--c-primary-700); line-height: 1.1; }
+    .big-btn { width: 100%; min-height: 56px; font-size: 1.05rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem;">
+<div class="mode-wrap">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
+        <span class="text-muted small">{{ вопросов }} {{ вопросов|слово:"вопрос,вопроса,вопросов" }}</span>
+    </div>
+
+    {% if not хватает %}
+    <div class="app-empty-state">
+        <p class="mb-3">Для теста нужно хотя бы две карточки.</p>
+        <a href="{% url 'cards:import' колода.pk %}" class="btn btn-primary">Добавить карточки</a>
+    </div>
+    {% else %}
+
+    <div class="score-card" id="итог" hidden>
+        <div class="n" id="итог-число"></div>
+        <p class="text-muted mb-3" id="итог-текст"></p>
+        <div class="d-flex gap-2 justify-content-center flex-wrap">
+            <button class="btn btn-primary" id="кнопка-заново">Новый тест</button>
+            <a href="{% url 'cards:learn' колода.pk %}" class="btn btn-outline-primary">Доучить слабые</a>
+        </div>
+    </div>
+
+    <div id="вопросы"></div>
+
+    <button class="btn btn-primary big-btn" id="кнопка-проверить">Проверить</button>
+
+    {% endif %}
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ набор|json_script:"набор" }}
+<script src="{% static 'js/cards_modes.js' %}"></script>
+<script>
+(function () {
+    var К = window.Карточки;
+    var набор = JSON.parse(document.getElementById('набор').textContent);
+    if (!набор.length) { return; }
+
+    var СКОЛЬКО = {{ вопросов }};
+    // Ввод годится для теста, только если вердикт выносит сайт: два десятка
+    // вопросов с самопроверкой по каждому — это не тест, а мучение.
+    var ПРОСИТЬ_ВВОД = {{ просить_ввод|yesno:"true,false" }};
+    var АДРЕС_ПАЧКИ = '{% url "cards:check_many" колода.pk %}';
+    var CSRF = '{{ csrf_token }}';
+
+    var где = document.getElementById('вопросы');
+    var кнопка = document.getElementById('кнопка-проверить');
+    var итог = document.getElementById('итог');
+    var вопросы = [];
+
+    /*
+     * Виды вопросов подбираются под колоду. Ввод предлагаем, только если автор
+     * колоды об этом просил: набирать формулу в LaTeX руками — мучение, и в
+     * математических колодах вернее спрашивать выбором.
+     */
+    function видВопроса(номер, карточка) {
+        var естьВарианты = (карточка.варианты || []).length >= 2;
+        var виды = [];
+        if (естьВарианты) { виды.push('выбор'); }
+        if (ПРОСИТЬ_ВВОД) { виды.push('ввод'); }
+        виды.push('верно-неверно');
+        return виды[номер % виды.length];
+    }
+
+    function собрать() {
+        где.innerHTML = '';
+        итог.hidden = true;
+        кнопка.hidden = false;
+        кнопка.disabled = false;
+        вопросы = К.перемешать(набор).slice(0, СКОЛЬКО).map(function (карточка, i) {
+            var вопрос = {карточка: карточка, вид: видВопроса(i, карточка), узел: null};
+            вопрос.узел = нарисовать(вопрос, i);
+            где.appendChild(вопрос.узел);
+            return вопрос;
+        });
+    }
+
+    function нарисовать(вопрос, i) {
+        var блок = document.createElement('div');
+        блок.className = 'q-card';
+
+        var номер = document.createElement('div');
+        номер.className = 'num';
+        номер.textContent = 'Вопрос ' + (i + 1);
+        блок.appendChild(номер);
+
+        var текст = document.createElement('div');
+        текст.className = 'q';
+        блок.appendChild(текст);
+
+        текст.lang = вопрос.карточка.язык_вопроса || '';
+
+        if (вопрос.вид === 'выбор') {
+            К.написать(текст, вопрос.карточка.вопрос);
+            вопрос.варианты = вопрос.карточка.варианты;
+            вопрос.варианты.forEach(function (к, j) {
+                var подпись = document.createElement('label');
+                подпись.className = 'choice';
+                var кружок = document.createElement('input');
+                кружок.type = 'radio';
+                кружок.name = 'q' + i;
+                кружок.value = j;
+                подпись.appendChild(кружок);
+                var текстВарианта = document.createElement('span');
+                текстВарианта.lang = вопрос.карточка.язык_ответа || '';
+                К.написать(текстВарианта, к);
+                подпись.appendChild(текстВарианта);
+                блок.appendChild(подпись);
+            });
+
+        } else if (вопрос.вид === 'ввод') {
+            К.написать(текст, вопрос.карточка.вопрос);
+            var поле = document.createElement('input');
+            поле.type = 'text';
+            поле.className = 'form-control';
+            поле.placeholder = 'Ваш ответ';
+            поле.autocomplete = 'off';
+            поле.setAttribute('autocapitalize', 'off');
+            поле.setAttribute('autocorrect', 'off');
+            поле.spellcheck = false;
+            поле.lang = вопрос.карточка.язык_ответа || '';
+            блок.appendChild(поле);
+            вопрос.поле = поле;
+
+        } else {
+            // Верно/неверно: в половине случаев подставляем неверный вариант.
+            var чужие = (вопрос.карточка.варианты || []).filter(function (в) {
+                return в !== вопрос.карточка.ответ;
+            });
+            вопрос.правда = !чужие.length || Math.random() < 0.5;
+            var показанный = вопрос.правда
+                ? вопрос.карточка.ответ
+                : чужие[Math.floor(Math.random() * чужие.length)];
+            К.написать(текст, вопрос.карточка.вопрос + '\n—\n' + показанный);
+            [['да', 'Верно'], ['нет', 'Неверно']].forEach(function (пара) {
+                var подпись = document.createElement('label');
+                подпись.className = 'choice';
+                var кружок = document.createElement('input');
+                кружок.type = 'radio';
+                кружок.name = 'q' + i;
+                кружок.value = пара[0];
+                подпись.appendChild(кружок);
+                var надпись = document.createElement('span');
+                надпись.textContent = пара[1];
+                подпись.appendChild(надпись);
+                блок.appendChild(подпись);
+            });
+        }
+
+        var вердикт = document.createElement('div');
+        вердикт.className = 'verdict';
+        вердикт.hidden = true;
+        блок.appendChild(вердикт);
+        вопрос.вердикт = вердикт;
+        return блок;
+    }
+
+    function выбранное(вопрос) {
+        var отмеченный = вопрос.узел.querySelector('input[type=radio]:checked');
+        return отмеченный ? отмеченный.value : null;
+    }
+
+    function проверить() {
+        кнопка.disabled = true;
+
+        var наВвод = вопросы.filter(function (в) { return в.вид === 'ввод'; });
+        var запрос = наВвод.length
+            ? К.запрос(АДРЕС_ПАЧКИ, {
+                ответы: наВвод.map(function (в) {
+                    return {card: в.карточка.card, direction: в.карточка.direction,
+                            typed: в.поле.value.trim()};
+                })
+            }, CSRF)
+            : Promise.resolve({ответы: []});
+
+        запрос.then(function (данные) {
+            var поКарточке = {};
+            (данные.ответы || []).forEach(function (о) { поКарточке[о.card] = о; });
+            var верных = 0;
+            вопросы.forEach(function (в) {
+                var верно;
+                if (в.вид === 'выбор') {
+                    var j = выбранное(в);
+                    верно = j !== null && в.варианты[+j] === в.карточка.ответ;
+                } else if (в.вид === 'ввод') {
+                    верно = !!(поКарточке[в.карточка.card] || {}).верно;
+                } else {
+                    var ответ = выбранное(в);
+                    верно = ответ !== null && (ответ === 'да') === в.правда;
+                }
+                if (верно) { верных += 1; }
+                отметить(в, верно);
+            });
+            показатьИтог(верных);
+        }).catch(function () {
+            кнопка.disabled = false;
+        });
+    }
+
+    function отметить(вопрос, верно) {
+        вопрос.узел.classList.add(верно ? 'right' : 'wrong');
+        вопрос.вердикт.className = 'verdict ' + (верно ? 'ok' : 'no');
+        вопрос.вердикт.hidden = false;
+
+        вопрос.узел.querySelectorAll('input').forEach(function (поле) {
+            поле.disabled = true;
+        });
+
+        if (верно) {
+            вопрос.вердикт.textContent = 'Верно';
+            return;
+        }
+        if (вопрос.вид === 'верно-неверно') {
+            вопрос.вердикт.innerHTML = 'Неверно. Правильный ответ: <b class="ответ"></b>';
+            К.написать(вопрос.вердикт.querySelector('.ответ'), вопрос.карточка.ответ);
+        } else {
+            вопрос.вердикт.innerHTML = 'Неверно. Правильный ответ: <b class="ответ"></b>';
+            К.написать(вопрос.вердикт.querySelector('.ответ'), вопрос.карточка.ответ);
+            if (вопрос.вид === 'выбор') {
+                вопрос.узел.querySelectorAll('.choice').forEach(function (подпись, j) {
+                    if (вопрос.варианты[j] === вопрос.карточка.ответ) {
+                        подпись.classList.add('marked-right');
+                    }
+                });
+            }
+        }
+    }
+
+    function показатьИтог(верных) {
+        var доля = Math.round(100 * верных / вопросы.length);
+        document.getElementById('итог-число').textContent = верных + ' / ' + вопросы.length;
+        document.getElementById('итог-текст').textContent =
+            доля === 100 ? 'Всё верно.' : 'Верно ' + доля + '%. Разбор ошибок ниже.';
+        итог.hidden = false;
+        кнопка.hidden = true;
+        итог.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
+
+    кнопка.addEventListener('click', проверить);
+    document.getElementById('кнопка-заново').addEventListener('click', собрать);
+    собрать();
+})();
+</script>
+{% endblock %}

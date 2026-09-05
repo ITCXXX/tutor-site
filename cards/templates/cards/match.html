@@ -1,0 +1,200 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ колода.title }} — подбор{% endblock %}
+
+{% block extra_css %}
+<style>
+    .mode-wrap { max-width: 820px; margin: 0 auto; }
+    .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; }
+    @media (max-width: 700px) { .board { grid-template-columns: repeat(2, 1fr); } }
+
+    .tile {
+        min-height: 96px; padding: .7rem .8rem;
+        border: 1px solid var(--c-border-strong); border-radius: var(--r-lg);
+        background: var(--c-surface); cursor: pointer;
+        display: flex; align-items: center; justify-content: center; text-align: center;
+        font-size: .92rem; line-height: 1.35;
+        white-space: pre-wrap; word-break: break-word;
+        transition: border-color .12s, background .12s, opacity .25s, transform .25s;
+    }
+    .tile:hover { border-color: var(--c-primary-600); }
+    .tile.picked { border-color: var(--c-primary-600); background: var(--c-primary-100); }
+    .tile.wrong { border-color: var(--c-danger); background: var(--c-danger-soft); }
+    .tile.gone { opacity: 0; transform: scale(.9); pointer-events: none; }
+
+    .timer { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 1.1rem; }
+    .result { text-align: center; padding: 2rem 1rem; }
+    .result .n { font-size: 2.4rem; font-weight: 700; color: var(--c-primary-700); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem;">
+<div class="mode-wrap">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
+        <span class="timer" id="таймер">0,0 с</span>
+    </div>
+
+    {% if not хватает %}
+    <div class="app-empty-state">
+        <p class="mb-3">Для игры нужно хотя бы {{ минимум }} карточек — иначе подбирать не из чего.</p>
+        <a href="{% url 'cards:import' колода.pk %}" class="btn btn-primary">Добавить карточки</a>
+    </div>
+    {% else %}
+
+    <p class="text-muted small mb-3">
+        Нажмите на термин, потом на его пару. Совпавшие плитки исчезают.
+    </p>
+
+    <div class="board" id="поле"></div>
+
+    <div class="app-section-card result mt-4" id="итог" hidden>
+        <div class="n" id="итог-время"></div>
+        <p class="text-muted" id="итог-рекорд"></p>
+        <button class="btn btn-primary mt-2" id="кнопка-заново">Ещё раз</button>
+    </div>
+
+    {% endif %}
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ набор|json_script:"набор" }}
+<script src="{% static 'js/cards_modes.js' %}"></script>
+<script>
+(function () {
+    var К = window.Карточки;
+    var набор = JSON.parse(document.getElementById('набор').textContent);
+    var поле = document.getElementById('поле');
+    if (!набор.length || !поле) { return; }
+
+    var ПАР = 6;
+    var КЛЮЧ_РЕКОРДА = 'cards-match-best-{{ колода.pk }}';
+
+    var таймер = document.getElementById('таймер');
+    var итог = document.getElementById('итог');
+    var началось = 0;
+    var тик = null;
+    var выбранная = null;
+    var осталось = 0;
+    var занято = false;
+
+    function рекорд(новое) {
+        // Хранилище браузера может быть недоступно (приватное окно, запрет на
+        // данные сайтов) — тогда просто живём без рекорда.
+        try {
+            if (новое === undefined) { return parseInt(localStorage.getItem(КЛЮЧ_РЕКОРДА), 10) || 0; }
+            localStorage.setItem(КЛЮЧ_РЕКОРДА, String(новое));
+        } catch (e) { /* без рекорда */ }
+        return 0;
+    }
+
+    function начать() {
+        итог.hidden = true;
+        поле.innerHTML = '';
+        выбранная = null;
+        занято = false;
+
+        var пары = К.перемешать(набор).slice(0, ПАР);
+        осталось = пары.length;
+        var плитки = [];
+        пары.forEach(function (к) {
+            плитки.push({пара: к.ключ, текст: к.вопрос, язык: к.язык_вопроса});
+            плитки.push({пара: к.ключ, текст: к.ответ, язык: к.язык_ответа});
+        });
+
+        К.перемешать(плитки).forEach(function (данные) {
+            var плитка = document.createElement('button');
+            плитка.type = 'button';
+            плитка.className = 'tile';
+            плитка.dataset.пара = данные.пара;
+            плитка.lang = данные.язык || '';
+            К.написать(плитка, данные.текст);
+            плитка.addEventListener('click', function () { нажали(плитка); });
+            поле.appendChild(плитка);
+        });
+
+        началось = 0;
+        таймер.textContent = '0,0 с';
+        if (тик) { clearInterval(тик); тик = null; }
+    }
+
+    function запуститьЧасы() {
+        началось = Date.now();
+        тик = setInterval(function () {
+            таймер.textContent = ((Date.now() - началось) / 1000).toFixed(1).replace('.', ',') + ' с';
+        }, 100);
+    }
+
+    function нажали(плитка) {
+        if (занято || плитка.classList.contains('gone')) { return; }
+        if (!началось) { запуститьЧасы(); }
+
+        if (!выбранная) {
+            выбранная = плитка;
+            плитка.classList.add('picked');
+            return;
+        }
+        if (выбранная === плитка) {
+            плитка.classList.remove('picked');
+            выбранная = null;
+            return;
+        }
+
+        if (выбранная.dataset.пара === плитка.dataset.пара) {
+            плитка.classList.add('picked');
+            var первая = выбранная;
+            выбранная = null;
+            осталось -= 1;
+            setTimeout(function () {
+                первая.classList.add('gone');
+                плитка.classList.add('gone');
+                if (!осталось) { закончить(); }
+            }, 180);
+            return;
+        }
+
+        // Промах: подсвечиваем обе и на четверть секунды блокируем поле, чтобы
+        // ошибка была видна, а не проскочила незамеченной.
+        занято = true;
+        плитка.classList.add('wrong');
+        выбранная.classList.add('wrong');
+        var прошлая = выбранная;
+        выбранная = null;
+        setTimeout(function () {
+            плитка.classList.remove('wrong');
+            прошлая.classList.remove('wrong', 'picked');
+            занято = false;
+        }, 450);
+    }
+
+    function закончить() {
+        clearInterval(тик);
+        тик = null;
+        var затрачено = Date.now() - началось;
+        document.getElementById('итог-время').textContent = К.времяСловами(затрачено);
+
+        var было = рекорд();
+        var строка;
+        if (!было) {
+            строка = 'Первый результат — теперь есть что улучшать.';
+            рекорд(затрачено);
+        } else if (затрачено < было) {
+            строка = 'Новый рекорд, прошлый был ' + К.времяСловами(было) + '.';
+            рекорд(затрачено);
+        } else {
+            строка = 'Лучший результат: ' + К.времяСловами(было) + '.';
+        }
+        document.getElementById('итог-рекорд').textContent = строка;
+        итог.hidden = false;
+    }
+
+    document.getElementById('кнопка-заново').addEventListener('click', начать);
+    начать();
+})();
+</script>
+{% endblock %}

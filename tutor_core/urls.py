@@ -11,6 +11,7 @@ urlpatterns = [
     path('games/zabory/', include('quoridor.urls', namespace='quoridor')),
     path('games/', include('games.urls', namespace='games')),
     path('board/', include('board.urls', namespace='board')),
+    path('cards/', include('cards.urls', namespace='cards')),
     path('', include('users.urls')),  # Подключаем ВСЕ маршруты из приложения users
 ]
 

@@ -1,0 +1,58 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{% if колода %}Настройки колоды{% else %}Новая колода{% endif %}{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem; max-width: 780px;">
+
+    <a class="btn-back-link" href="{% if колода %}{% url 'cards:deck' колода.pk %}{% else %}{% url 'cards:list' %}{% endif %}">
+        ← {% if колода %}к колоде{% else %}ко всем колодам{% endif %}
+    </a>
+
+    <div class="app-hero compact my-3">
+        <h1>{% if колода %}{{ колода.title }} — настройки{% else %}Новая колода{% endif %}</h1>
+    </div>
+
+    <form method="post" class="app-form-card">
+        {% csrf_token %}
+
+        {% if форма.non_field_errors %}
+        <div class="alert alert-danger">{{ форма.non_field_errors }}</div>
+        {% endif %}
+
+        {% for поле in форма %}
+            {% if поле.field.widget.input_type == 'checkbox' %}
+            <div class="form-check mb-3">
+                {{ поле }}
+                <label class="form-check-label" for="{{ поле.id_for_label }}">{{ поле.label }}</label>
+                {% if поле.help_text %}<div class="form-text">{{ поле.help_text }}</div>{% endif %}
+            </div>
+            {% else %}
+            <div class="mb-3">
+                <label class="form-label" for="{{ поле.id_for_label }}">{{ поле.label }}</label>
+                {{ поле }}
+                {% if поле.help_text %}<div class="form-text">{{ поле.help_text }}</div>{% endif %}
+                {% if поле.errors %}<div class="text-danger small mt-1">{{ поле.errors|striptags }}</div>{% endif %}
+            </div>
+            {% endif %}
+        {% endfor %}
+
+        <div class="d-flex gap-2 mt-4">
+            <button type="submit" class="btn btn-primary">
+                {% if колода %}Сохранить{% else %}Создать колоду{% endif %}
+            </button>
+            <a href="{% if колода %}{% url 'cards:deck' колода.pk %}{% else %}{% url 'cards:list' %}{% endif %}"
+               class="btn btn-outline-secondary">Отмена</a>
+        </div>
+    </form>
+
+    {% if колода %}
+    <form method="post" action="{% url 'cards:delete' колода.pk %}" class="mt-4"
+          onsubmit="return confirm('Удалить колоду «{{ колода.title|escapejs }}» вместе со всеми карточками и историей повторений?');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-danger btn-sm">Удалить колоду</button>
+    </form>
+    {% endif %}
+
+</div>
+{% endblock %}

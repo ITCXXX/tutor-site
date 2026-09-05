@@ -1,0 +1,109 @@
+{% extends "users/visitor_base.html" %}
+{% load static cards_extras %}
+
+{% block title %}Карточки{% endblock %}
+
+{% block extra_css %}
+<style>
+    .deck-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 1rem;
+    }
+    .deck-card {
+        display: flex;
+        flex-direction: column;
+        background: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--r-xl);
+        box-shadow: var(--shadow-sm);
+        padding: 1.1rem 1.2rem;
+        text-decoration: none;
+        color: inherit;
+        transition: box-shadow .15s, transform .15s;
+    }
+    .deck-card:hover {
+        box-shadow: var(--shadow-md);
+        transform: translateY(-2px);
+        color: inherit;
+    }
+    .deck-card h3 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .35rem; }
+    .deck-card .meta { font-size: .82rem; color: var(--c-text-muted); }
+    .deck-card .due {
+        margin-top: .7rem;
+        font-size: .85rem;
+        font-weight: 600;
+        color: var(--c-primary-700);
+    }
+    .deck-card .due.empty { color: var(--c-text-muted); font-weight: 400; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem;">
+
+    <div class="app-hero large mb-4">
+        <h1>Карточки</h1>
+        <div class="meta">
+            Наборы для заучивания с интервальным повторением: сайт сам решает,
+            когда показать карточку снова, чтобы она осталась в памяти.
+        </div>
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 mb-4">
+        {% if user.is_authenticated %}
+        <a href="{% url 'cards:create' %}" class="btn btn-primary">Новая колода</a>
+        {% endif %}
+        <a href="{% url 'cards:prompt' %}" class="btn btn-outline-primary">
+            Инструкция для нейросети
+        </a>
+    </div>
+
+    {% if мои %}
+    <h2 class="h5 mb-3">Мои колоды</h2>
+    <div class="deck-grid mb-5">
+        {% for колода in мои %}
+        <a class="deck-card" href="{% url 'cards:deck' колода.pk %}">
+            <h3>{{ колода.title }}</h3>
+            <div class="meta">
+                {{ колода.карточек }} {{ колода.карточек|слово:"карточка,карточки,карточек" }}
+                · {{ колода.get_visibility_display|truncatewords:1 }}
+            </div>
+            {% if user.is_authenticated %}
+            <div class="due {% if not колода.ждёт %}empty{% endif %}">
+                {% if колода.ждёт %}К показу сегодня: {{ колода.ждёт }}{% else %}На сегодня всё{% endif %}
+            </div>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if чужие %}
+    <h2 class="h5 mb-3">Общие колоды</h2>
+    <div class="deck-grid">
+        {% for колода in чужие %}
+        <a class="deck-card" href="{% url 'cards:deck' колода.pk %}">
+            <h3>{{ колода.title }}</h3>
+            <div class="meta">
+                {{ колода.карточек }} {{ колода.карточек|слово:"карточка,карточки,карточек" }}
+                · автор: {{ колода.owner.username }}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not мои and not чужие %}
+    <div class="app-empty-state">
+        <p class="mb-3">Колод пока нет.</p>
+        {% if user.is_authenticated %}
+        <a href="{% url 'cards:create' %}" class="btn btn-primary">Создать первую</a>
+        {% else %}
+        <a href="{% url 'login' %}" class="btn btn-primary">Войти</a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

@@ -1,0 +1,382 @@
+{% extends "users/visitor_base.html" %}
+{% load static %}
+
+{% block title %}{{ колода.title }} — заучивание{% endblock %}
+
+{% block extra_css %}
+<style>
+    .mode-wrap { max-width: 720px; margin: 0 auto; }
+    .mode-top {
+        display: flex; justify-content: space-between; align-items: center;
+        gap: 1rem; margin-bottom: .75rem;
+        font-size: .85rem; color: var(--c-text-muted);
+    }
+    .progress-line {
+        height: 8px; border-radius: var(--r-pill);
+        background: var(--c-gray-200); overflow: hidden; margin-bottom: 1.25rem;
+    }
+    .progress-line span {
+        display: block; height: 100%; width: 0;
+        background: var(--c-primary-600); transition: width .3s;
+    }
+
+    .ask-card {
+        background: var(--c-surface); border: 1px solid var(--c-border);
+        border-radius: var(--r-2xl); box-shadow: var(--shadow-md);
+        padding: 2rem 1.75rem; min-height: 180px;
+        display: flex; flex-direction: column; justify-content: center;
+        text-align: center;
+    }
+    .ask-card .q { font-size: 1.3rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+    .ask-card .kind { font-size: .75rem; color: var(--c-text-muted); margin-bottom: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+
+    .options { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-top: 1.25rem; }
+    @media (max-width: 600px) { .options { grid-template-columns: 1fr; } }
+    .option {
+        min-height: 58px; padding: .7rem 1rem;
+        border: 1px solid var(--c-border-strong); border-radius: var(--r-lg);
+        background: var(--c-surface); text-align: left; font-size: .98rem;
+        cursor: pointer; transition: border-color .12s, background .12s;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    .option:hover:not(:disabled) { border-color: var(--c-primary-600); }
+    .option.right { border-color: var(--c-success); background: var(--c-success-soft); }
+    .option.wrong { border-color: var(--c-danger); background: var(--c-danger-soft); }
+    .option:disabled { cursor: default; }
+
+    .answer-input { min-height: 54px; font-size: 1.1rem; text-align: center; margin-top: 1.25rem; }
+    .big-btn { width: 100%; min-height: 56px; font-size: 1.05rem; margin-top: .75rem; }
+    .two-btns { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-top: 1.25rem; }
+
+    .reaction { margin-top: 1.25rem; padding: .9rem 1.1rem; border-radius: var(--r-lg); font-size: .95rem; }
+    .reaction.ok { background: var(--c-success-soft); color: var(--c-success-text); }
+    .reaction.no { background: var(--c-danger-soft); color: var(--c-danger-text); }
+    .reaction .right-answer { font-weight: 600; }
+
+    .round-done { text-align: center; padding: 2rem 1rem; }
+    .round-done .num { font-size: 2.5rem; font-weight: 700; color: var(--c-primary-700); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem;">
+<div class="mode-wrap">
+
+    <div class="mode-top">
+        <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
+        <div>Выучено <span id="счётчик">0</span> из <span id="всего">0</span></div>
+    </div>
+    <div class="progress-line"><span id="полоса"></span></div>
+
+    {% if not хватает %}
+    <div class="app-empty-state">
+        <p class="mb-3">Для заучивания нужно хотя бы две карточки.</p>
+        <a href="{% url 'cards:import' колода.pk %}" class="btn btn-primary">Добавить карточки</a>
+    </div>
+    {% else %}
+
+    <div id="экран-вопроса">
+        <div class="ask-card">
+            <div class="kind" id="тип-вопроса"></div>
+            <div class="q" id="вопрос"></div>
+        </div>
+
+        <div class="options" id="варианты" hidden></div>
+
+        <div id="блок-ввода" hidden>
+            <input type="text" class="form-control answer-input" id="поле-ответа"
+                   placeholder="Ваш ответ" autocomplete="off" autocapitalize="off"
+                   autocorrect="off" spellcheck="false">
+            <button class="btn btn-primary big-btn" id="кнопка-ответить">Ответить</button>
+        </div>
+
+        <div id="блок-самопроверки" hidden>
+            <button class="btn btn-primary big-btn" id="кнопка-показать">Показать ответ</button>
+            <div class="two-btns" id="знал-не-знал" hidden>
+                <button class="btn btn-outline-danger" style="min-height:56px" id="не-знал">Не знал</button>
+                <button class="btn btn-outline-success" style="min-height:56px" id="знал">Знал</button>
+            </div>
+        </div>
+
+        <div class="reaction" id="реакция" hidden></div>
+        <button class="btn btn-primary big-btn" id="кнопка-дальше" hidden>Дальше</button>
+    </div>
+
+    <div id="экран-раунда" hidden>
+        <div class="app-section-card round-done">
+            <div class="num" id="раунд-число"></div>
+            <p class="text-muted" id="раунд-текст"></p>
+            <button class="btn btn-primary btn-lg mt-2" id="кнопка-продолжить">Следующий раунд</button>
+        </div>
+    </div>
+
+    <div id="экран-конца" hidden>
+        <div class="app-section-card round-done">
+            <div class="num">Готово</div>
+            <p class="text-muted">Все карточки колоды пройдены дважды подряд без ошибок.</p>
+            <div class="d-flex gap-2 justify-content-center mt-3 flex-wrap">
+                <a href="{% url 'cards:study' колода.pk %}" class="btn btn-primary">Поставить на повторение</a>
+                <button class="btn btn-outline-primary" id="кнопка-заново">Пройти заново</button>
+            </div>
+        </div>
+    </div>
+
+    {% endif %}
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ набор|json_script:"набор" }}
+<script src="{% static 'js/cards_modes.js' %}"></script>
+<script>
+(function () {
+    var К = window.Карточки;
+    var набор = JSON.parse(document.getElementById('набор').textContent);
+    if (!набор.length) { return; }
+
+    var ПРОВЕРЯЕТ = '{{ колода.check_mode }}';       // auto | self
+    var АДРЕС_ПРОВЕРКИ = '{% url "cards:check" колода.pk %}';
+    var CSRF = '{{ csrf_token }}';
+
+    // Сколько раз подряд карточку надо назвать верно, чтобы считать выученной,
+    // и сколько карточек берём в один раунд. Семь — чтобы раунд заканчивался
+    // раньше, чем надоест, и ученик видел движение.
+    var НУЖНО_ПОДРЯД = 2;
+    var В_РАУНДЕ = 7;
+
+    var э = {};
+    ['экран-вопроса', 'экран-раунда', 'экран-конца', 'тип-вопроса', 'вопрос',
+     'варианты', 'блок-ввода', 'поле-ответа', 'кнопка-ответить',
+     'блок-самопроверки', 'кнопка-показать', 'знал-не-знал', 'знал', 'не-знал',
+     'реакция', 'кнопка-дальше', 'счётчик', 'всего', 'полоса', 'раунд-число',
+     'раунд-текст', 'кнопка-продолжить', 'кнопка-заново'].forEach(function (id) {
+        э[id] = document.getElementById(id);
+    });
+
+    var прогресс = {};
+    var раунд = [];
+    var текущая = null;
+    var занято = false;
+
+    function невыученные() {
+        return набор.filter(function (к) { return (прогресс[к.ключ] || 0) < НУЖНО_ПОДРЯД; });
+    }
+
+    function обновитьПолосу() {
+        var выучено = набор.length - невыученные().length;
+        э['счётчик'].textContent = выучено;
+        э['всего'].textContent = набор.length;
+        э['полоса'].style.width = (100 * выучено / набор.length) + '%';
+    }
+
+    function начатьРаунд() {
+        var осталось = невыученные();
+        if (!осталось.length) { финал(); return; }
+        раунд = К.перемешать(осталось).slice(0, В_РАУНДЕ);
+        показатьЭкран('экран-вопроса');
+        следующая();
+    }
+
+    function показатьЭкран(имя) {
+        ['экран-вопроса', 'экран-раунда', 'экран-конца'].forEach(function (id) {
+            э[id].hidden = (id !== имя);
+        });
+    }
+
+    function финал() {
+        обновитьПолосу();
+        показатьЭкран('экран-конца');
+    }
+
+    function следующая() {
+        текущая = раунд.shift();
+        if (!текущая) { междуРаундами(); return; }
+
+        э['реакция'].hidden = true;
+        э['кнопка-дальше'].hidden = true;
+        э['варианты'].hidden = true;
+        э['блок-ввода'].hidden = true;
+        э['блок-самопроверки'].hidden = true;
+        э['знал-не-знал'].hidden = true;
+        э['кнопка-показать'].hidden = false;
+
+        К.написать(э['вопрос'], текущая.вопрос);
+        э['вопрос'].lang = текущая.язык_вопроса || '';
+
+        // Первый показ — узнавание: выбрать из вариантов легче, чем вспомнить
+        // с нуля, и связка успевает закрепиться. Дальше спрашиваем так, как
+        // задано у колоды: это уже припоминание.
+        var шаг = прогресс[текущая.ключ] || 0;
+        var естьВарианты = (текущая.варианты || []).length >= 2;
+        if (шаг === 0 && естьВарианты) {
+            спроситьВыбором();
+        } else if (текущая.вид === 'typed') {
+            спроситьВводом();
+        } else if (текущая.вид === 'choice' && естьВарианты) {
+            спроситьВыбором();
+        } else {
+            спроситьСамопроверкой();
+        }
+    }
+
+    function спроситьВыбором() {
+        э['тип-вопроса'].textContent = 'выберите ответ';
+        // Варианты приходят с сервера: там сначала берутся неверные ответы,
+        // написанные автором карточки, и лишь потом добираются чужие.
+        var варианты = текущая.варианты;
+        э['варианты'].innerHTML = '';
+        варианты.forEach(function (текст) {
+            var кнопка = document.createElement('button');
+            кнопка.className = 'option';
+            кнопка.type = 'button';
+            кнопка.lang = текущая.язык_ответа || '';
+            К.написать(кнопка, текст);
+            кнопка.addEventListener('click', function () {
+                if (занято) { return; }
+                занято = true;
+                var верно = текст === текущая.ответ;
+                Array.prototype.forEach.call(э['варианты'].children, function (д, i) {
+                    д.disabled = true;
+                    if (варианты[i] === текущая.ответ) { д.classList.add('right'); }
+                });
+                if (!верно) { кнопка.classList.add('wrong'); }
+                разобрать(верно);
+            });
+            э['варианты'].appendChild(кнопка);
+        });
+        э['варианты'].hidden = false;
+    }
+
+    function спроситьВводом() {
+        э['тип-вопроса'].textContent = 'наберите ответ';
+        э['блок-ввода'].hidden = false;
+        э['поле-ответа'].value = '';
+        э['поле-ответа'].disabled = false;
+        э['поле-ответа'].lang = текущая.язык_ответа || '';
+        э['поле-ответа'].focus();
+    }
+
+    function спроситьСамопроверкой() {
+        э['тип-вопроса'].textContent = 'вспомните ответ';
+        э['блок-самопроверки'].hidden = false;
+    }
+
+    function проверитьВвод() {
+        if (занято) { return; }
+        var набрано = э['поле-ответа'].value.trim();
+        if (!набрано) { return; }
+        э['поле-ответа'].disabled = true;
+
+        // Колода может быть настроена на самопроверку, а сети может не быть
+        // вовсе. В обоих случаях показываем эталон и спрашиваем самого ученика:
+        // это честнее, чем засчитать наугад или отказать в занятии.
+        if (ПРОВЕРЯЕТ === 'self') { спроситьСебя(); return; }
+
+        занято = true;
+        К.запрос(АДРЕС_ПРОВЕРКИ, {
+            card: текущая.card, direction: текущая.direction, typed: набрано
+        }, CSRF).then(function (данные) {
+            разобрать(данные.верно);
+        }).catch(function () {
+            занято = false;
+            спроситьСебя();
+        });
+    }
+
+    function спроситьСебя() {
+        // Ученик написал ответ, сайт показывает верный — судит ученик.
+        э['реакция'].className = 'reaction ok';
+        э['реакция'].innerHTML = 'Верный ответ: <span class="right-answer"></span>';
+        var где = э['реакция'].querySelector('.right-answer');
+        К.написать(где, текущая.ответ);
+        где.lang = текущая.язык_ответа || '';
+        э['реакция'].hidden = false;
+        э['блок-самопроверки'].hidden = false;
+        э['кнопка-показать'].hidden = true;
+        э['знал-не-знал'].hidden = false;
+    }
+
+    function разобрать(верно) {
+        if (верно) {
+            прогресс[текущая.ключ] = (прогресс[текущая.ключ] || 0) + 1;
+            э['реакция'].className = 'reaction ok';
+            э['реакция'].textContent = прогресс[текущая.ключ] >= НУЖНО_ПОДРЯД
+                ? 'Верно. Карточка выучена.'
+                : 'Верно.';
+        } else {
+            // Сбрасываем в ноль, а не отнимаем шаг: ошибка означает, что связка
+            // не держится, и начинать надо с узнавания, а не с припоминания.
+            прогресс[текущая.ключ] = 0;
+            раунд.push(текущая);
+            э['реакция'].className = 'reaction no';
+            э['реакция'].innerHTML = 'Правильный ответ: <span class="right-answer"></span>';
+            К.написать(э['реакция'].querySelector('.right-answer'), текущая.ответ);
+        }
+        if (текущая.подсказка) {
+            var подсказка = document.createElement('div');
+            подсказка.className = 'small mt-1';
+            К.написать(подсказка, текущая.подсказка);
+            э['реакция'].appendChild(подсказка);
+        }
+        э['реакция'].hidden = false;
+        э['кнопка-дальше'].hidden = false;
+        э['кнопка-дальше'].focus();
+        обновитьПолосу();
+    }
+
+    function междуРаундами() {
+        var осталось = невыученные().length;
+        if (!осталось) { финал(); return; }
+        э['раунд-число'].textContent = (набор.length - осталось) + ' / ' + набор.length;
+        э['раунд-текст'].textContent = 'Осталось выучить: ' + осталось + '.';
+        показатьЭкран('экран-раунда');
+    }
+
+    э['кнопка-дальше'].addEventListener('click', function () {
+        занято = false;
+        следующая();
+    });
+    э['кнопка-продолжить'].addEventListener('click', начатьРаунд);
+    э['кнопка-заново'].addEventListener('click', function () {
+        прогресс = {};
+        начатьРаунд();
+    });
+    э['кнопка-ответить'].addEventListener('click', проверитьВвод);
+    э['поле-ответа'].addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); проверитьВвод(); }
+    });
+    э['кнопка-показать'].addEventListener('click', function () {
+        э['кнопка-показать'].hidden = true;
+        э['знал-не-знал'].hidden = false;
+        э['реакция'].className = 'reaction ok';
+        э['реакция'].innerHTML = '<span class="right-answer"></span>';
+        К.написать(э['реакция'].querySelector('.right-answer'), текущая.ответ);
+        э['реакция'].hidden = false;
+    });
+    э['знал'].addEventListener('click', function () {
+        if (занято) { return; }
+        занято = true;
+        э['знал-не-знал'].hidden = true;
+        разобрать(true);
+    });
+    э['не-знал'].addEventListener('click', function () {
+        if (занято) { return; }
+        занято = true;
+        э['знал-не-знал'].hidden = true;
+        разобрать(false);
+    });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.target.tagName === 'INPUT') { return; }
+        if ((e.key === 'Enter' || e.key === ' ') && !э['кнопка-дальше'].hidden) {
+            e.preventDefault();
+            э['кнопка-дальше'].click();
+        }
+    });
+
+    обновитьПолосу();
+    начатьРаунд();
+})();
+</script>
+{% endblock %}

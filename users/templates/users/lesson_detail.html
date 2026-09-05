@@ -1,5 +1,5 @@
 {% extends "users/visitor_base.html" %}
-{% load static %}
+{% load static cards_extras %}
 
 {% block title %}{{ lesson.title }} — {{ course.title }}{% endblock %}
 
@@ -151,6 +151,8 @@
             </span>
         </div>
         {% endif %}
+
+        {% колоды_урока lesson %}
 
         <div class="lesson-nav">
             {% if prev_lesson %}

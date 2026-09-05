@@ -1,0 +1,135 @@
+{% extends "users/visitor_base.html" %}
+{% load cards_extras %}
+
+{% block title %}{{ колода.title }} — статистика{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stats-wrap { max-width: 860px; margin: 0 auto; }
+
+    .split { display: flex; height: 34px; border-radius: var(--r-pill); overflow: hidden; background: var(--c-gray-100); }
+    .split div { display: flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 600; color: #fff; }
+    .split .g1 { background: var(--c-primary-700); }
+    .split .g2 { background: var(--c-primary-500); }
+    .split .g3 { background: var(--c-warning); }
+    .split .g4 { background: var(--c-gray-300); color: var(--c-text-soft); }
+    .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .8rem; font-size: .85rem; }
+    .legend span::before {
+        content: ''; display: inline-block; width: 10px; height: 10px;
+        border-radius: 2px; margin-right: .4rem; vertical-align: baseline;
+    }
+    .legend .l1::before { background: var(--c-primary-700); }
+    .legend .l2::before { background: var(--c-primary-500); }
+    .legend .l3::before { background: var(--c-warning); }
+    .legend .l4::before { background: var(--c-gray-300); }
+
+    .bars { display: flex; align-items: flex-end; gap: 3px; height: 130px; }
+    .bars .col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+    .bars .bar { background: var(--c-primary-500); border-radius: 2px 2px 0 0; min-height: 2px; }
+    .bars .bar.empty { background: var(--c-gray-200); }
+    .bars .col.today .bar { background: var(--c-primary-800); }
+    .axis { display: flex; gap: 3px; margin-top: .4rem; font-size: .68rem; color: var(--c-text-muted); }
+    .axis div { flex: 1; text-align: center; overflow: hidden; }
+
+    .hard-row {
+        display: grid; grid-template-columns: 1fr auto; gap: 1rem;
+        padding: .6rem 0; border-bottom: 1px solid var(--c-border); font-size: .92rem;
+    }
+    .hard-row:last-child { border-bottom: none; }
+    .hard-row .side { white-space: pre-wrap; word-break: break-word; }
+    .hard-row .count { color: var(--c-danger-text); font-weight: 600; white-space: nowrap; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem;">
+<div class="stats-wrap">
+
+    <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
+
+    <div class="app-hero compact my-3">
+        <h1>Статистика</h1>
+        <div class="meta">
+            Повторений всего: {{ всего_повторений }}{% if дней_подряд %} · подряд занимаетесь {{ дней_подряд }} {{ дней_подряд|слово:"день,дня,дней" }}{% endif %}
+        </div>
+    </div>
+
+    <div class="app-section-card">
+        <h2>Что уже выучено</h2>
+        {% if сторон %}
+        <div class="split">
+            {% if закрепилось %}<div class="g1" style="width: {% widthratio закрепилось сторон 100 %}%">{{ закрепилось }}</div>{% endif %}
+            {% if на_повторении %}<div class="g2" style="width: {% widthratio на_повторении сторон 100 %}%">{{ на_повторении }}</div>{% endif %}
+            {% if изучается %}<div class="g3" style="width: {% widthratio изучается сторон 100 %}%">{{ изучается }}</div>{% endif %}
+            {% if не_начато %}<div class="g4" style="width: {% widthratio не_начато сторон 100 %}%">{{ не_начато }}</div>{% endif %}
+        </div>
+        <div class="legend">
+            <span class="l1">Закрепилось — интервал больше трёх недель</span>
+            <span class="l2">На повторении</span>
+            <span class="l3">Изучается</span>
+            <span class="l4">Не начато</span>
+        </div>
+        {% else %}
+        <p class="text-muted mb-0">В колоде пока нет карточек.</p>
+        {% endif %}
+    </div>
+
+    <div class="app-section-card mt-3">
+        <h2>Сколько работы впереди</h2>
+        <p class="text-muted small">
+            По дням на две недели вперёд. Просроченное показано в сегодняшнем столбце.
+        </p>
+        <div class="bars">
+            {% for день in прогноз %}
+            <div class="col{% if forloop.first %} today{% endif %}"
+                 title="{{ день.день|date:'d.m' }}: {{ день.сколько }}">
+                <div class="bar{% if not день.сколько %} empty{% endif %}"
+                     style="height: {{ день.доля }}%"></div>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="axis">
+            {% for день in прогноз %}
+            <div>{% if forloop.first %}сег{% else %}{{ день.день|date:"j" }}{% endif %}</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="app-section-card mt-3">
+        <h2>Занятия за месяц</h2>
+        <div class="bars">
+            {% for день in активность %}
+            <div class="col{% if forloop.last %} today{% endif %}"
+                 title="{{ день.день|date:'d.m' }}: {{ день.сколько }}">
+                <div class="bar{% if not день.сколько %} empty{% endif %}"
+                     style="height: {{ день.доля }}%"></div>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="axis">
+            {% for день in активность %}
+            <div>{% if forloop.counter0|divisibleby:5 %}{{ день.день|date:"j" }}{% endif %}</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if трудные %}
+    <div class="app-section-card mt-3">
+        <h2>Трудные карточки</h2>
+        <p class="text-muted small">
+            Забывались три раза и больше. Обычно дело не в памяти, а в самой
+            карточке: слишком длинный ответ или два факта вместо одного — такие
+            стоит переписать или разбить.
+        </p>
+        {% for состояние in трудные %}
+        <div class="hard-row">
+            <div class="side">{{ состояние.card.front }}</div>
+            <div class="count">{{ состояние.lapses }} {{ состояние.lapses|слово:"забывание,забывания,забываний" }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+</div>
+</div>
+{% endblock %}

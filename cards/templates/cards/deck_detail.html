@@ -1,0 +1,171 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}{{ колода.title }} — карточки{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stat-row { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.5rem; }
+    .stat {
+        flex: 1 1 130px;
+        background: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--r-lg);
+        padding: .8rem 1rem;
+    }
+    .stat .n { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+    .stat .l { font-size: .78rem; color: var(--c-text-muted); }
+    .stat.accent { background: var(--c-primary-100); border-color: var(--c-primary-100); }
+    .stat.accent .n { color: var(--c-primary-800); }
+
+    .modes {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: .6rem;
+    }
+    .mode-tile {
+        display: flex;
+        flex-direction: column;
+        gap: .15rem;
+        min-height: 74px;
+        padding: .85rem 1rem;
+        border: 1px solid var(--c-border-strong);
+        border-radius: var(--r-lg);
+        background: var(--c-surface);
+        text-decoration: none;
+        color: inherit;
+        transition: border-color .12s, box-shadow .12s;
+    }
+    .mode-tile:hover { border-color: var(--c-primary-600); box-shadow: var(--shadow-sm); color: inherit; }
+    .mode-tile b { font-size: 1rem; }
+    .mode-tile span { font-size: .78rem; color: var(--c-text-muted); }
+    .mode-tile.primary { background: var(--c-primary-100); border-color: var(--c-primary-100); }
+    .mode-tile.primary b { color: var(--c-primary-800); }
+    .mode-tile.primary span { color: var(--c-primary-800); opacity: .8; }
+
+    .card-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 1rem;
+        align-items: start;
+        padding: .7rem 0;
+        border-bottom: 1px solid var(--c-border);
+    }
+    .card-row:last-child { border-bottom: none; }
+    .card-row .side { white-space: pre-wrap; word-break: break-word; }
+    .card-row .hint { font-size: .8rem; color: var(--c-text-muted); margin-top: .2rem; }
+    .card-row .tools { display: flex; gap: .4rem; }
+    @media (max-width: 640px) {
+        .card-row { grid-template-columns: 1fr; gap: .25rem; }
+        .card-row .side + .side { color: var(--c-text-soft); }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem; max-width: 900px;">
+
+    <a class="btn-back-link" href="{% url 'cards:list' %}">← ко всем колодам</a>
+
+    <div class="app-hero large my-3">
+        <h1>{{ колода.title }}</h1>
+        <div class="meta">
+            {{ колода.get_kind_display }} · {{ колода.get_ask_mode_display }}{% if колода.reverse_enabled %} · в обе стороны{% endif %} · {{ колода.get_visibility_display }}
+            {% if колода.lesson %} · урок «{{ колода.lesson.title }}»{% endif %}
+            {% if колода.exam_date %} · экзамен {{ колода.exam_date|date:"d.m.Y" }}{% endif %}
+        </div>
+        {% if колода.description %}<div class="meta mt-2">{{ колода.description }}</div>{% endif %}
+    </div>
+
+    {% if счёт %}
+    <div class="stat-row">
+        <div class="stat accent">
+            <div class="n">{{ счёт.ждут }}</div>
+            <div class="l">ждут повторения</div>
+        </div>
+        <div class="stat">
+            <div class="n">{{ счёт.новых_доступно }}</div>
+            <div class="l">новых на сегодня</div>
+        </div>
+        <div class="stat">
+            <div class="n">{{ счёт.сделано_сегодня }}</div>
+            <div class="l">сделано сегодня</div>
+        </div>
+        <div class="stat">
+            <div class="n">{{ счёт.выучено }}<span class="text-muted" style="font-size:1rem">/{{ счёт.всего }}</span></div>
+            <div class="l">закрепились</div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if карточки %}
+    <div class="modes mb-4">
+        {% if user.is_authenticated %}
+        <a href="{% url 'cards:study' колода.pk %}" class="mode-tile primary">
+            <b>Повторение</b>
+            <span>{% if счёт.ждут or счёт.новых_доступно %}на сегодня: {{ счёт.ждут|add:счёт.новых_доступно }}{% else %}всё сделано{% endif %}</span>
+        </a>
+        {% endif %}
+        <a href="{% url 'cards:learn' колода.pk %}" class="mode-tile">
+            <b>Заучивание</b>
+            <span>раунды до полного знания</span>
+        </a>
+        <a href="{% url 'cards:test' колода.pk %}" class="mode-tile">
+            <b>Тест</b>
+            <span>вопросы и оценка в конце</span>
+        </a>
+        <a href="{% url 'cards:match' колода.pk %}" class="mode-tile">
+            <b>Подбор</b>
+            <span>игра на время</span>
+        </a>
+    </div>
+    {% endif %}
+
+    <div class="d-flex flex-wrap gap-2 mb-4">
+        {% if user.is_authenticated %}
+        <a href="{% url 'cards:stats' колода.pk %}" class="btn btn-outline-secondary btn-sm">Статистика</a>
+        {% endif %}
+        {% if можно_править %}
+        <a href="{% url 'cards:import' колода.pk %}" class="btn btn-outline-primary btn-sm">Добавить карточки</a>
+        <a href="{% url 'cards:edit' колода.pk %}" class="btn btn-outline-secondary btn-sm">Настройки</a>
+        {% endif %}
+    </div>
+
+    <div class="app-section-card">
+        <h2>Карточки <span class="text-muted fw-normal">({{ карточки|length }})</span></h2>
+
+        {% if карточки %}
+            {% for карточка in карточки %}
+            <div class="card-row">
+                <div class="side">{{ карточка.front }}</div>
+                <div class="side">
+                    {{ карточка.back }}
+                    {% if карточка.hint %}<div class="hint">{{ карточка.hint }}</div>{% endif %}
+                    {% if карточка.distractors %}
+                    <div class="hint">неверные: {{ карточка.distractors|linebreaksbr }}</div>
+                    {% endif %}
+                </div>
+                {% if можно_править %}
+                <div class="tools">
+                    <a href="{% url 'cards:card_edit' карточка.pk %}"
+                       class="btn btn-sm btn-outline-secondary">Править</a>
+                    <form method="post" action="{% url 'cards:card_delete' карточка.pk %}"
+                          onsubmit="return confirm('Удалить карточку?');">
+                        {% csrf_token %}
+                        <button class="btn btn-sm btn-outline-danger">×</button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="app-empty-state compact">
+                <p class="mb-3">Карточек пока нет.</p>
+                {% if можно_править %}
+                <a href="{% url 'cards:import' колода.pk %}" class="btn btn-primary">Добавить списком</a>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

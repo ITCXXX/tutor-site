@@ -1,0 +1,24 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}Нет соединения{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem; max-width: 560px;">
+    <div class="app-empty-state">
+        <h1 class="h4 mb-3">Нет соединения</h1>
+        <p class="text-muted mb-4">
+            Эту страницу не удалось загрузить: телефон сейчас без сети.
+            Страницы, которые вы уже открывали, работают и так — попробуйте
+            вернуться назад.
+        </p>
+        <div class="d-flex gap-2 justify-content-center flex-wrap">
+            <button class="btn btn-primary" onclick="location.reload()">Попробовать ещё раз</button>
+            <a href="{% url 'cards:list' %}" class="btn btn-outline-primary">К карточкам</a>
+        </div>
+        <p class="text-muted small mt-4 mb-0">
+            Если вы начали повторение до того, как пропала сеть, оценки
+            сохраняются на телефоне и уйдут на сервер сами, когда связь вернётся.
+        </p>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,139 @@
+{% extends "users/visitor_base.html" %}
+
+{% block title %}Инструкция для нейросети — карточки{% endblock %}
+
+{% block extra_css %}
+<style>
+    .steps { counter-reset: шаг; list-style: none; padding: 0; margin: 0; }
+    .steps li {
+        counter-increment: шаг;
+        position: relative;
+        padding-left: 2.4rem;
+        margin-bottom: .9rem;
+        color: var(--c-text-soft);
+    }
+    .steps li::before {
+        content: counter(шаг);
+        position: absolute;
+        left: 0; top: -.1rem;
+        width: 1.7rem; height: 1.7rem;
+        border-radius: var(--r-pill);
+        background: var(--c-primary-100);
+        color: var(--c-primary-800);
+        font-weight: 700;
+        font-size: .85rem;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .prompt-box {
+        background: var(--c-surface);
+        border: 1px solid var(--c-border-strong);
+        border-radius: var(--r-lg);
+        padding: 1rem 1.15rem;
+        font-family: var(--font-mono);
+        font-size: .82rem;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        max-height: 420px;
+        overflow: auto;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container" style="padding-top: 90px; padding-bottom: 3rem; max-width: 860px;">
+
+    <a class="btn-back-link" href="{% url 'cards:list' %}">← ко всем колодам</a>
+
+    <div class="app-hero large my-3">
+        <h1>Список карточек за одну минуту</h1>
+        <div class="meta">
+            Готовое задание для нейросети. Она вернёт список в том виде, который
+            сайт принимает без единой правки.
+        </div>
+    </div>
+
+    <div class="app-section-card mb-4">
+        <h2>Как это работает</h2>
+        <ol class="steps">
+            <li>Впишите тему и нажмите «Собрать задание».</li>
+            <li>Скопируйте задание и вставьте в любую нейросеть — ChatGPT, Claude,
+                Алису, DeepSeek, всё равно.</li>
+            <li>Ответ целиком скопируйте в поле «Добавить карточки» у своей колоды
+                и нажмите «Разобрать»: сайт покажет, что получилось, до того как
+                карточки будут созданы.</li>
+        </ol>
+        <p class="small text-muted mb-0">
+            Если нейросеть всё-таки добавит нумерацию, вступление или таблицу —
+            ничего страшного: разбор их снимает. Инструкция лишь избавляет от
+            ручной чистки.
+        </p>
+    </div>
+
+    <form method="get" class="app-form-card mb-4">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label" for="тема">Тема</label>
+                <input class="form-control" id="тема" name="тема" value="{{ тема }}"
+                       placeholder="Например: формулы площадей, 9 класс" autofocus>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="сколько">Сколько карточек</label>
+                <input class="form-control" id="сколько" name="сколько" type="number"
+                       min="1" max="300" value="{{ количество }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="вид">Материал</label>
+                <select class="form-select" id="вид" name="вид">
+                    <option value="text" {% if вид == 'text' %}selected{% endif %}>Обычный текст</option>
+                    <option value="math" {% if вид == 'math' %}selected{% endif %}>С формулами</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-check mt-3">
+            <input class="form-check-input" type="checkbox" id="варианты" name="варианты"
+                   value="1" {% if с_вариантами %}checked{% endif %}>
+            <label class="form-check-label" for="варианты">
+                Просить неверные варианты — для карточек с выбором ответа
+            </label>
+        </div>
+        <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="подсказки" name="подсказки"
+                   value="1" {% if с_подсказками %}checked{% endif %}>
+            <label class="form-check-label" for="подсказки">
+                Разрешить столбец с подсказкой или примером
+            </label>
+        </div>
+        <button type="submit" class="btn btn-primary mt-3">Собрать задание</button>
+    </form>
+
+    <div class="app-section-card">
+        <h2>Задание для нейросети</h2>
+        <pre class="prompt-box" id="ai-prompt">{{ текст }}</pre>
+        <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+            <button type="button" class="btn btn-primary" id="copy-prompt">Скопировать</button>
+            <span class="small" id="copy-status" style="color: var(--c-primary-700);"></span>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('copy-prompt').addEventListener('click', function () {
+    var текст = document.getElementById('ai-prompt').textContent;
+    var статус = document.getElementById('copy-status');
+    navigator.clipboard.writeText(текст).then(function () {
+        статус.textContent = 'Скопировано — вставляйте в нейросеть';
+        setTimeout(function () { статус.textContent = ''; }, 2500);
+    }, function () {
+        var диапазон = document.createRange();
+        диапазон.selectNodeContents(document.getElementById('ai-prompt'));
+        var выделение = window.getSelection();
+        выделение.removeAllRanges();
+        выделение.addRange(диапазон);
+        статус.textContent = 'Выделено — нажмите Ctrl+C';
+    });
+});
+</script>
+{% endblock %}
