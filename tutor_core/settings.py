@@ -284,9 +284,13 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Папки для статических файлов в разработке
+# Папку users/static сюда вписывать НЕ надо: users стоит в INSTALLED_APPS,
+# и Django забирает её статику как папку приложения. От второй записи каждый
+# файл находился дважды, и collectstatic писал «skipped due to conflict» —
+# безвредно (файл-то один и тот же), но прятало бы настоящий конфликт, если
+# бы он однажды появился.
 STATICFILES_DIRS = [
     BASE_DIR / "static",
-    BASE_DIR / "users" / "static",
 ]
 
 # WhiteNoise: сжатый storage с manifest (имена файлов с хешем — долгий cache).
