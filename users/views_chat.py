@@ -11,12 +11,14 @@
 
 from django.contrib import messages as django_messages
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from .chat import (addressable_for, create_group, direct_thread, may_manage,
-                   may_talk_to, threads_for)
+from .chat import (addressable_for, ask_question, create_group, direct_thread,
+                   may_manage, may_talk_to, question_of, threads_for,
+                   withdraw_question)
 from .models import Assignment, Thread, ThreadMember, User
 
 
@@ -194,3 +196,42 @@ def chat_ask_about(request, assignment_id):
     ветка = direct_thread(request.user, собеседник)
     адрес = reverse('chat_thread', args=[ветка.id])
     return redirect('%s?about=%d' % (адрес, задание.id))
+
+
+@login_required
+@require_POST
+def chat_toggle_question(request, assignment_id):
+    """Пометить задачу вопросом или снять пометку. Одно нажатие, без текста.
+
+    Хранится это ТЕМ ЖЕ сообщением-вопросом, что и вопрос из переписки, и это
+    главное решение здесь. Заведи мы отдельную табличку «вопрос по домашке» —
+    и «есть вопрос» стало бы жить в двух местах: одно погасло бы после ответа
+    в чате, второе осталось бы висеть. Правило зачёта в этом проекте уже
+    разъехалось ровно так.
+    """
+    from .views import _can_access_lesson
+    задание = get_object_or_404(
+        Assignment.objects.select_related('lesson', 'lesson__module',
+                                          'lesson__module__course'),
+        pk=assignment_id)
+    if request.user.role != 'student' or not _can_access_lesson(request.user, задание.lesson):
+        raise Http404
+
+    if question_of(request.user, задание) is not None:
+        снято = withdraw_question(request.user, задание)
+        django_messages.success(
+            request,
+            'Пометка снята.' if снято
+            else 'Вы уже написали об этом в переписке — пометка останется там.')
+    else:
+        m, завели = ask_question(request.user, задание)
+        if m is None:
+            django_messages.error(
+                request, 'Некому сообщить: преподаватель ещё не назначен.')
+        else:
+            django_messages.success(
+                request, 'Преподаватель увидит, что здесь вопрос.')
+
+    # Возвращаем ровно туда, откуда нажали.
+    назад = request.META.get('HTTP_REFERER')
+    return redirect(назад or reverse('lesson_detail', args=[задание.lesson_id]))

@@ -110,20 +110,11 @@ def mark_read(thread, user, when=None):
             .update(last_read_at=when))
 
 
-def read_watermark(thread, user):
-    """Докуда дочитали ОСТАЛЬНЫЕ участники: раньше этого момента — прочитано всеми.
-
-    Для личной переписки это просто отметка собеседника. Для группы берём
-    самого отстающего: «прочитано» честно значит «прочитали все», а не «хоть кто-то».
-    """
-    uid = getattr(user, 'id', user)
-    отметки = list(ThreadMember.objects
-                   .filter(thread=thread)
-                   .exclude(user_id=uid)
-                   .values_list('last_read_at', flat=True))
-    if not отметки or any(о is None for о in отметки):
-        return None
-    return min(отметки)
+# read_watermark отсюда убран намеренно. Он сводил отметки участников к одному
+# ответу «прочитано всеми или нет», и после того как страница научилась
+# показывать, КТО именно прочитал, остался вторым способом считать то же самое.
+# Два способа на один вопрос в этом проекте уже расходились — с правилом зачёта.
+# Отметки отдаёт consumers._read_state, решение принимает страница.
 
 
 # ─────────────────────── кого можно звать ────────────────────
@@ -146,6 +137,89 @@ def addressable_for(user):
 
 def may_talk_to(user, other):
     return any(o.id == other.id for o in addressable_for(user))
+
+
+# ─────────────────── вопрос по задаче ────────────────────
+
+def _наставник(student):
+    профиль = getattr(student, 'student_profile', None)
+    return профиль.teacher if профиль else None
+
+
+def question_of(student, assignment):
+    """Открытый вопрос ученика по этой задаче — или None.
+
+    Открытый значит «ещё не отвечен»: как только преподаватель ответил на
+    сообщение, оно закрывается само, и пометка в домашке гаснет вместе с ним.
+    """
+    наставник = _наставник(student)
+    if наставник is None:
+        return None
+    ветка = Thread.objects.filter(
+        kind=Thread.KIND_DIRECT,
+        pair_key=Thread.make_pair_key(student.id, наставник.id)).first()
+    if ветка is None:
+        return None
+    return (Message.objects
+            .filter(thread=ветка, author=student, about_assignment=assignment,
+                    is_question=True, answered_at__isnull=True)
+            .order_by('-created_at').first())
+
+
+def ask_question(student, assignment):
+    """Пометить задачу вопросом. Возвращает (сообщение, завели_ли_новое).
+
+    Текста нет намеренно: пометка должна стоить ОДНО нажатие. Ученик, который
+    затрудняется, чаще всего не может и объяснить, что именно не выходит, —
+    заставлять его писать значит получить пустую галочку вместо сигнала.
+    Захочет объяснить — рядом есть «Спросить по задаче», она ведёт в переписку.
+    """
+    уже = question_of(student, assignment)
+    if уже is not None:
+        return уже, False
+    наставник = _наставник(student)
+    if наставник is None:
+        return None, False
+    ветка = direct_thread(student, наставник)
+    m = Message.objects.create(
+        thread=ветка, author=student, text='',
+        about_assignment=assignment, is_question=True)
+    Thread.objects.filter(pk=ветка.id).update(updated_at=m.created_at)
+    return m, True
+
+
+def withdraw_question(student, assignment):
+    """Снять пометку. Удаляем ТОЛЬКО пустую — ту, что поставлена кнопкой.
+
+    Если ученик успел написать словами, сообщение остаётся: стереть его значило
+    бы молча выбросить чужой текст из переписки, где вторая сторона его уже,
+    возможно, прочитала.
+    """
+    m = question_of(student, assignment)
+    if m is None:
+        return False
+    if (m.text or '').strip():
+        return False
+    m.delete()
+    return True
+
+
+def open_questions_for(teacher):
+    """Открытые вопросы всех учеников этого преподавателя, свежие сверху.
+
+    Нужны на экране проверки работ: вопрос чаще всего задают по задаче, которую
+    ещё НЕ сдали, — значит в списке сдач его не будет вовсе, и без отдельной
+    полки преподаватель о нём не узнает.
+    """
+    return list(Message.objects
+                .filter(is_question=True, answered_at__isnull=True,
+                        about_assignment__isnull=False,
+                        author__student_profile__teacher=teacher)
+                .select_related('author', 'author__student_profile', 'thread',
+                                'about_assignment',
+                                'about_assignment__lesson',
+                                'about_assignment__lesson__module__course')
+                .order_by('-created_at')[:50])
 
 
 def may_manage(thread, user):

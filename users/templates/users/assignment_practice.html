@@ -1,5 +1,6 @@
 {% extends "users/visitor_base.html" %}
 {% load static %}
+{% load questions %}
 
 {% block title %}{{ title }}{% endblock %}
 
@@ -274,11 +275,25 @@
                             Блокировать поле после верного ответа
                         </label>
                     </div>
-                    <!-- Спросить преподавателя: уводит в общую переписку,
-                         но с цитатой этой задачи. -->
+                    <!-- Две разные вещи, и путать их не надо. Пометка — одно
+                         нажатие, без слов: ученик, который затрудняется, чаще
+                         всего не может и объяснить, что именно не выходит.
+                         «Спросить» — когда есть что сказать словами. -->
+                    {% if request.user.role == 'student' %}
+                    {% question_open request.user assignment as есть_вопрос %}
+                    <form method="post" action="{% url 'chat_toggle_question' assignment.id %}" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit"
+                                class="btn btn-sm {% if есть_вопрос %}btn-warning{% else %}btn-outline-warning{% endif %} text-nowrap"
+                                title="{% if есть_вопрос %}Преподаватель видит, что здесь вопрос. Нажмите, чтобы снять пометку{% else %}Одно нажатие — преподаватель увидит, что здесь у вас вопрос{% endif %}">
+                            <i class="bi bi-question-circle{% if есть_вопрос %}-fill{% endif %}"></i>
+                            {% if есть_вопрос %}Вопрос отмечен{% else %}У меня вопрос{% endif %}
+                        </button>
+                    </form>
+                    {% endif %}
                     <a class="btn btn-outline-primary btn-sm"
                        href="{% url 'chat_ask_about' assignment.id %}">
-                        <i class="bi bi-question-circle"></i> Спросить по задаче
+                        <i class="bi bi-chat-dots"></i> Спросить словами
                     </a>
                     <!-- Сброс прогресса -->
                     <button class="btn btn-outline-danger btn-sm" id="resetBtn"
@@ -377,9 +392,21 @@
             <div class="card mb-4">
                 <div class="card-header bg-light d-flex align-items-center justify-content-between gap-2">
                     <h4 class="mb-0">{{ assignment.title }}</h4>
+{% if request.user.role == 'student' %}
+                    {% question_open request.user assignment as есть_вопрос %}
+                    <form method="post" action="{% url 'chat_toggle_question' assignment.id %}" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit"
+                                class="btn btn-sm {% if есть_вопрос %}btn-warning{% else %}btn-outline-warning{% endif %} text-nowrap"
+                                title="{% if есть_вопрос %}Преподаватель видит, что здесь вопрос. Нажмите, чтобы снять пометку{% else %}Одно нажатие — преподаватель увидит, что здесь у вас вопрос{% endif %}">
+                            <i class="bi bi-question-circle{% if есть_вопрос %}-fill{% endif %}"></i>
+                            {% if есть_вопрос %}Вопрос отмечен{% else %}У меня вопрос{% endif %}
+                        </button>
+                    </form>
+                    {% endif %}
                     <a class="btn btn-outline-primary btn-sm text-nowrap"
                        href="{% url 'chat_ask_about' assignment.id %}">
-                        <i class="bi bi-question-circle"></i> Спросить по задаче
+                        <i class="bi bi-chat-dots"></i> Спросить словами
                     </a>
                 </div>
                 <div class="card-body">

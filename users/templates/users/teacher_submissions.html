@@ -150,6 +150,16 @@
 .score-in:focus { outline: none; border-color: var(--c-primary-600); }
 .score-max { font-size: .9rem; color: var(--c-text-muted, #6b6b76); }
 .score-hint { font-size: .78rem; color: var(--c-text-muted, #9a9aa4); }
+.q-shelf { background: #fff8e8; border: 1px solid #e8c98a; border-radius: 12px;
+            padding: .9rem 1.1rem; margin-bottom: 1.2rem; }
+.q-shelf h2 { font-size: 1rem; margin: 0 0 .6rem; color: #7a5310; }
+.q-row { display: flex; align-items: baseline; gap: .6rem; padding: .4rem 0;
+         border-top: 1px solid #f0dfc0; flex-wrap: wrap; }
+.q-row:first-of-type { border-top: none; }
+.q-who { font-weight: 600; }
+.q-task { color: #4a4a55; }
+.q-where { font-size: .82rem; color: #8a7a5a; }
+.q-go { margin-left: auto; font-size: .85rem; white-space: nowrap; }
 .grade-badge { display: inline-block; padding: .1rem .5rem; border-radius: 8px;
                background: var(--c-bg-soft); font-weight: 600; font-size: .88rem; }
 </style>
@@ -165,6 +175,25 @@
             <h1>Решения учеников</h1>
             <div class="meta">{{ counts.pending }} на проверке · {{ counts.accepted }} принято · {{ counts.rejected }} возвращено</div>
         </div>
+
+        {% if вопросы %}
+        {% comment %}
+        Полка стоит ВЫШЕ вкладок намеренно. Вопрос задают по задаче, которую
+        обычно ещё не сдали, — значит ни в одну из вкладок он не попадает, и
+        внизу страницы его бы просто не увидели.
+        {% endcomment %}
+        <div class="q-shelf">
+            <h2>Вопросы учеников · {{ вопросы|length }}</h2>
+            {% for q in вопросы %}
+            <div class="q-row">
+                <span class="q-who">{{ q.author.student_profile.display_name|default:q.author.username }}</span>
+                <span class="q-task">{{ q.about_assignment.title }}</span>
+                <span class="q-where">{{ q.about_assignment.lesson.module.course.title }} · {{ q.about_assignment.lesson.title }}</span>
+                <a class="q-go" href="{% url 'chat_thread' q.thread_id %}">Ответить →</a>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
 
         <nav class="tabs">
             <a href="?status=pending" class="{% if status == 'pending' %}active{% endif %}">

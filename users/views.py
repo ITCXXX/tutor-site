@@ -1914,10 +1914,15 @@ def teacher_submissions(request):
     else:
         submissions_qs = submissions_qs.order_by('-reviewed_at', '-submitted_at')
 
+    # Вопросы — ОТДЕЛЬНОЙ полкой, а не колонкой в списке сдач. Причина простая:
+    # спрашивают обычно про задачу, которую ещё НЕ сдали, — в списке сдач её
+    # нет вовсе, и колонка про неё промолчала бы.
+    from .chat import open_questions_for
     return render(request, 'users/teacher_submissions.html', {
         'submissions': submissions_qs,
         'status': status,
         'counts': counts,
+        'вопросы': open_questions_for(request.user),
         'title': 'Решения учеников',
     })
 

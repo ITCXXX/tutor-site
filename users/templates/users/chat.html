@@ -150,6 +150,11 @@
   var quoteText = document.getElementById('cw-quote-text');
 
   var ws = null, retry = 1000, alive = null, lastDay = '';
+  // Кто докуда дочитал: [{id, name, at}] — приходит с историей и обновляется
+  // по ходу. Решение «прочитано или нет» принимается ЗДЕСЬ, сравнением времени
+  // сообщения с отметками, а не приходит готовым с сервера: иначе сервер и
+  // страница однажды ответят по-разному на один и тот же вопрос.
+  var читатели = [];
   // Что прицеплено к следующему сообщению: ответ на чьё-то или задание.
   var прицеп = { reply: null, about: null };
   var вопрос = false;
@@ -227,10 +232,11 @@
       meta.appendChild(t);
     }
     if (моё) {
-      var r = el('span', '', m.read ? 'прочитано' : 'отправлено');
+      var r = el('span', '', 'отправлено');
       r.dataset.role = 'read';
       meta.appendChild(r);
     }
+    box.dataset.at = m.at;   // по нему считается, кто это уже прочитал
     box.appendChild(meta);
 
     // Кнопки: ответить всегда, «закрыть вопрос» — только на открытом вопросе.
@@ -278,9 +284,39 @@
     if (btn) btn.textContent = отвечено ? 'Открыть' : 'Закрыть';
   }
 
-  function markAllRead() {
-    feed.querySelectorAll('.msg.me [data-role="read"]').forEach(function (n) {
-      n.textContent = 'прочитано';
+  // Подпись под СВОИМ сообщением. В личной переписке достаточно слова, в
+  // группе нужна доля: «прочитано» там, где прочитал один из троих, — обман.
+  function времяЧтения(iso) {
+    return new Date(iso).toLocaleString('ru-RU',
+      { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function обновитьПрочтение() {
+    var другие = читатели.filter(function (ч) { return ч.id !== ME; });
+    if (!другие.length) return;
+    feed.querySelectorAll('.msg.me').forEach(function (box) {
+      var подпись = box.querySelector('[data-role="read"]');
+      if (!подпись || !box.dataset.at) return;
+      var когда = new Date(box.dataset.at).getTime();
+      var прочли = другие.filter(function (ч) {
+        return ч.at && new Date(ч.at).getTime() >= когда;
+      });
+      if (!прочли.length) {
+        подпись.textContent = 'отправлено';
+        подпись.title = 'Пока никто не прочитал';
+      } else if (другие.length === 1) {
+        подпись.textContent = 'прочитано';
+        подпись.title = прочли[0].name + ' — ' + времяЧтения(прочли[0].at);
+      } else if (прочли.length === другие.length) {
+        подпись.textContent = 'прочитано всеми';
+        подпись.title = прочли.map(function (ч) {
+          return ч.name + ' — ' + времяЧтения(ч.at); }).join('\n');
+      } else {
+        подпись.textContent = 'прочитали ' + прочли.length + ' из ' + другие.length;
+        var кто = прочли.map(function (ч) { return ч.name; }).join(', ');
+        var нет = другие.filter(function (ч) {
+          return прочли.indexOf(ч) < 0; }).map(function (ч) { return ч.name; }).join(', ');
+        подпись.title = 'Прочитали: ' + кто + '\nЕщё нет: ' + нет;
+      }
     });
   }
 
@@ -342,16 +378,25 @@
       if (d.action === 'history') {
         feed.querySelectorAll('.msg, .day').forEach(function (n) { n.remove(); });
         lastDay = '';
+        читатели = d.readers || [];
         (d.messages || []).forEach(function (m) { draw(m, false); });
+        обновитьПрочтение();
         toBottom();
       } else if (d.action === 'message') {
         var снизу = atBottom();
         draw(d.message, снизу);
+        обновитьПрочтение();
         if (d.message.author !== ME && document.visibilityState === 'visible') {
           ws.send(JSON.stringify({ action: 'read' }));
         }
       } else if (d.action === 'read') {
-        markAllRead();
+        var нашли = false;
+        читатели.forEach(function (ч) {
+          if (ч.id === d.by) { ч.at = d.at; нашли = true; }
+        });
+        // Участник, которого мы ещё не знали (позвали в группу при нас).
+        if (!нашли) читатели.push({ id: d.by, name: d.name || 'Участник', at: d.at });
+        обновитьПрочтение();
       } else if (d.action === 'answered') {
         пометитьОтвеченным(d.id, d.answered);
       } else if (d.action === 'rejected') {

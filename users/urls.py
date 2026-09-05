@@ -153,6 +153,7 @@ urlpatterns = [
     path('chat/group/new/', views_chat.chat_group_new, name='chat_group_new'),
     path('chat/<int:thread_id>/group/', views_chat.chat_group_add, name='chat_group_add'),
     path('chat/ask/<int:assignment_id>/', views_chat.chat_ask_about, name='chat_ask_about'),
+    path('chat/question/<int:assignment_id>/', views_chat.chat_toggle_question, name='chat_toggle_question'),
     path('chat/<int:thread_id>/', views_chat.chat_thread, name='chat_thread'),
 ]
 

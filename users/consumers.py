@@ -56,6 +56,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         self.thread_id = thread['id']
         self.members = thread['members']       # id всех участников, включая себя
+        self.my_name = thread['name']          # взято в синхронном месте, см. _get_thread
         self.group = f'chat_{self.thread_id}'
         self._rate = []
 
@@ -67,6 +68,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             'action': 'history',
             'messages': await self._history(self.thread_id, self.user.id),
             'me': self.user.id,
+            'readers': await self._read_state(self.thread_id),
         })
         # Вошёл — значит прочитал то, что накопилось.
         await self._read_all()
@@ -149,9 +151,11 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({'action': 'message', 'message': event['message']})
 
     async def chat_read(self, event):
-        # Собеседник прочитал: у автора галочка становится «прочитано».
+        # Собеседник дочитал докуда-то. Своё же прочтение себе не шлём — оно
+        # ничего не меняет: свои сообщения читателем считаешь не ты.
         if event.get('by') != getattr(self.user, 'id', None):
-            await self.send_json({'action': 'read', 'by': event['by'], 'at': event['at']})
+            await self.send_json({'action': 'read', 'by': event['by'],
+                                  'name': event.get('name', ''), 'at': event['at']})
 
     async def chat_answered(self, event):
         await self.send_json({'action': 'answered', 'id': event['id'],
@@ -165,6 +169,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_send(self.group, {
             'type': 'chat.read',
             'by': self.user.id,
+            'name': getattr(self, 'my_name', ''),
             'at': timezone.now().isoformat(),
         })
 
@@ -185,14 +190,39 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                          .values_list('user_id', flat=True))
         if user.id not in участники:
             return None
-        return {'id': t.id, 'members': участники}
+        # Имя забираем ЗДЕСЬ, пока мы в синхронном месте. Свойство display лезет
+        # в базу за профилем, и вызов его позже, из асинхронного обработчика,
+        # роняет соединение целиком — проверено, падало на входе в переписку.
+        return {'id': t.id, 'members': участники,
+                'name': (getattr(user, 'display', '') or user.username)}
+
+    @database_sync_to_async
+    def _read_state(self, thread_id):
+        """Докуда дочитал КАЖДЫЙ участник: [{id, name, at}].
+
+        Отдаём список целиком, а не готовый ответ «прочитано / нет». Решает
+        браузер, сравнивая время сообщения с отметками, — и тогда одна и та же
+        запись обслуживает и личную переписку («прочитано»), и группу
+        («прочитали двое из трёх»), и подпись с именами. Считать это на сервере
+        для каждого сообщения значило бы гонять полсотни одинаковых сравнений
+        и всё равно не знать, что именно захочет показать страница.
+        """
+        from .models import ThreadMember
+        строки = (ThreadMember.objects.filter(thread_id=thread_id)
+                  .select_related('user'))
+        return [{
+            'id': m.user_id,
+            'name': (getattr(m.user, 'display', '') or m.user.username),
+            'at': m.last_read_at.isoformat() if m.last_read_at else None,
+        } for m in строки]
 
     @database_sync_to_async
     def _history(self, thread_id, me):
-        from .chat import read_watermark
-        from .models import Message, Thread
-        t = Thread.objects.filter(pk=thread_id).first()
-        порог = read_watermark(t, me) if t else None
+        # Порога здесь больше нет: «прочитано» считает страница по списку
+        # отметок (см. _read_state). Один расчёт вместо двух — иначе сервер и
+        # браузер однажды ответили бы по-разному на один и тот же вопрос.
+        from .models import Message
+        порог = None
         qs = (Message.objects.filter(thread_id=thread_id)
               .select_related('author', 'reply_to', 'reply_to__author',
                               'about_assignment', 'about_assignment__lesson')
