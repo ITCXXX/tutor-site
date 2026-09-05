@@ -424,7 +424,14 @@
         points: d.points || [0, 0],
         lineCap: 'round',
         lineJoin: 'round',
-        tension: !d.marker ? 0.4 : 0,
+        // Карандашный штрих Konva ведёт сплайном (натяжение 0.4): так рука
+        // выглядит естественнее. Маркеру натяжение не нужно — он широкий.
+        // Третий случай — straight: штрих, у которого стороны обязаны быть
+        // прямыми. Такой ставит умное рисование, распознав треугольник: со
+        // сплайном у распознанного треугольника скруглились бы углы, то есть
+        // «исправление» вышло бы кривее исходника. Поля straight у прежних
+        // элементов нет — для них ничего не меняется.
+        tension: (d.marker || d.straight) ? 0 : 0.4,
         hitStrokeWidth: Math.max(12, common.strokeWidth + 8),
         opacity: d.marker ? (d.opacity != null ? d.opacity : 0.4) : 1,
       });
@@ -6539,6 +6546,138 @@
     }
     return out;
   }
+  // ── Умное рисование ────────────────────────────────────────────────────
+  // Превращает нарисованное от руки в ровную фигуру, когда уверено. Разбор
+  // самого штриха живёт в отдельном файле static/board/smartdraw.js — здесь
+  // только связь с доской: когда спрашивать и что делать с ответом.
+  //
+  // ВКЛЮЧАЕТСЯ КНОПКОЙ И ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО. На этой доске постоянно пишут
+  // формулы от руки, и если каждый штрих начнёт «исправляться» в фигуру, писать
+  // станет невозможно. Разбор от этого тоже страхуется — мелкие штрихи он не
+  // трогает, — но одной страховки мало: решать должен человек.
+  //
+  // Выбор личный и хранится в браузере, а не в доске: у одного участника урок
+  // по геометрии, у другого — разбор задачи, и навязывать им общий режим нельзя.
+  const SMART_STORE = 'board_smart_draw_v1';
+  let smartDraw = false;
+  try { const v = localStorage.getItem(SMART_STORE); if (v !== null) smartDraw = (v === '1'); } catch (e) {}
+  // Подсказку про Ctrl+Z показываем только первые несколько раз за занятие:
+  // напоминание нужно, пока приём незнаком, а дальше оно мешает.
+  let smartПодсказок = 0;
+  function setSmartDraw(on) {
+    smartDraw = !!on;
+    try { localStorage.setItem(SMART_STORE, smartDraw ? '1' : '0'); } catch (e) {}
+    const c = document.getElementById('smart-draw'); if (c) c.checked = smartDraw;
+    smartПодсказок = 0;
+    boardHint(smartDraw ? 'Умное рисование включено: карандаш выпрямляет фигуры'
+                        : 'Умное рисование выключено');
+  }
+
+  // Названия для подсказки. Отдельной картой, а не в коде разбора: тот про
+  // доску ничего не знает и знать не должен.
+  const SMART_ИМЕНА = { line: 'прямая', circle: 'окружность', ellipse: 'овал',
+                        rect: 'прямоугольник', triangle: 'треугольник' };
+
+  function smartПодсказка(kind) {
+    if (smartПодсказок >= 3) return;
+    smartПодсказок++;
+    boardHint((SMART_ИМЕНА[kind] || 'фигура') + ' — Ctrl+Z вернёт рисунок от руки');
+  }
+
+  // Собрать элемент доски по разобранной фигуре. Формат data копируется из
+  // startDraw дословно: восьмого способа рисовать прямоугольник заводить не
+  // надо, иначе распознанная фигура будет вести себя не как нарисованная.
+  function smartЭлемент(фиг, штрих) {
+    const d = штрих.data;
+    // Цвет и толщину берём у самого штриха, а не у текущих настроек: человек
+    // мог сменить карандаш уже после того, как начал вести линию.
+    const base = { stroke: d.stroke, strokeWidth: d.strokeWidth };
+    let el = null;
+    if (фиг.kind === 'line') {
+      el = { id: uuid(), type: 'line', z: штрих.z,
+        data: { ...base, x: фиг.a.x, y: фиг.a.y,
+                points: [0, 0, фиг.b.x - фиг.a.x, фиг.b.y - фиг.a.y],
+                startCap: 'none', endCap: 'none' } };
+    } else if (фиг.kind === 'circle' || фиг.kind === 'ellipse') {
+      // И круг, и овал делаем типом ellipse с равными или разными радиусами.
+      // Свободный тип circle на доске тоже есть, но он из другого семейства — с
+      // собственной обработкой перетаскивания, рассчитанной на построения по
+      // точкам. Здесь нужна обычная фигура, которую тянут за рамку.
+      const rx = (фиг.kind === 'circle') ? фиг.r : фиг.rx;
+      const ry = (фиг.kind === 'circle') ? фиг.r : фиг.ry;
+      el = { id: uuid(), type: 'ellipse', z: штрих.z,
+        data: { ...base, x: фиг.cx, y: фиг.cy, radiusX: rx, radiusY: ry } };
+    } else if (фиг.kind === 'rect') {
+      el = { id: uuid(), type: 'rect', z: штрих.z,
+        data: { ...base, x: фиг.x, y: фиг.y, width: фиг.w, height: фиг.h } };
+    }
+    // Штрих мог быть нарисован внутри математического окна — тогда и фигура
+    // принадлежит ему, иначе она отвяжется от окна при его перемещении.
+    if (el && d.frame) el.data.frame = d.frame;
+    return el;
+  }
+
+  // Разобрать законченный штрих и, если фигура узнана, подменить его.
+  // Возвращает true, если штрих уже отправлен и записан в историю сам.
+  function smartЗаменить(штрих) {
+    if (!smartDraw || !window.SmartDraw) return false;
+    const d = штрих.data;
+    if (!d || !d.points || d.points.length < 8) return false;
+    let фиг = null;
+    try {
+      фиг = window.SmartDraw.recognize(
+        window.SmartDraw.изПлоского(d.points, d.x, d.y), stage.scaleX());
+    } catch (e) {
+      // Ошибка в разборе не должна стоить человеку штриха: молча оставляем
+      // нарисованное от руки.
+      console.warn('умное рисование:', e);
+      return false;
+    }
+    if (!фиг) return false;
+
+    // ── Треугольник остаётся ТЕМ ЖЕ элементом, только с прямыми сторонами.
+    // Причина не в экономии: у доски нет типа «произвольный треугольник».
+    // Готовая фигура shape/tri — всегда равнобедренная, и прямоугольный
+    // треугольник она молча превратила бы в равнобедренный, то есть испортила
+    // бы чертёж. Многоугольник по точкам подошёл бы, но он строится из
+    // отдельных элементов-точек — это другое семейство и другой разговор.
+    if (фиг.kind === 'triangle') {
+      const пт = [];
+      const v = фиг.pts.concat([фиг.pts[0]]);   // замыкаем
+      for (let i = 0; i < v.length; i++) { пт.push(v[i].x - d.x, v[i].y - d.y); }
+      d.points = пт;
+      d.straight = true;      // рисовать ломаной, а не сплайном (см. buildNode)
+      upsertNode(штрих);
+      smartПодсказка(фиг.kind);
+      return false;           // дальше обычный ход endDraw: отправка и история
+    }
+
+    const el = smartЭлемент(фиг, штрих);
+    if (!el) return false;
+
+    // ── Тип элемента сервер сменить не даст: он берёт его из базы и правкой не
+    // меняет (board/consumers.py, _upsert_element). Прислать element_update с
+    // тем же id и новым типом — значит увидеть фигуру у себя и кривой штрих у
+    // собеседника, а после перезагрузки и у себя тоже. Поэтому подмена только
+    // так: старый удалить, новый добавить с новым id.
+    send({ action: 'element_delete', id: штрих.id });
+    removeNode(штрих.id);
+    upsertNode(el);
+    send({ action: 'element_add', element: stripPrivate(el) });
+
+    // ── История: ДВА шага, и это нарочно.
+    // Первый Ctrl+Z возвращает рисунок от руки (пакет отменяется целиком: фигура
+    // исчезает, штрих возвращается), второй убирает и его. Так у человека есть
+    // выход, когда доска узнала фигуру неверно, — иначе пришлось бы рисовать
+    // заново. Пакет обязан быть одной записью: тремя отдельными первый же Ctrl+Z
+    // вернул бы штрих ПОВЕРХ фигуры.
+    histAdd(stripPrivate(штрих));
+    histBatch([{ kind: 'del', el: stripPrivate(штрих) },
+               { kind: 'add', el: stripPrivate(el) }]);
+    smartПодсказка(фиг.kind);
+    return true;
+  }
+
   function startDraw() {
     closeToolPanels();
     if (selected.size) clearSelection(); // начали рисовать — снять прежнее выделение
@@ -6687,6 +6826,11 @@
       if (пт.length <= 2) drawing.data.points = [пт[0] || 0, пт[1] || 0, (пт[0] || 0) + 0.01, пт[1] || 0];
       else drawing.data.points = smoothStroke(пт);
       upsertNode(drawing);      // без этого узел на холсте остаётся с прежними точками
+      // Умное рисование — только карандашом. Маркер тут нарочно пропущен: он
+      // широкий и полупрозрачный, а у типов rect/ellipse/line прозрачность не
+      // читается вовсе, так что выделение маркером превратилось бы в жирную
+      // непрозрачную рамку — не то, чего человек хотел.
+      if (drawing.data.marker !== true && smartЗаменить(drawing)) { drawing = null; return; }
     }
     send({ action: 'element_update', element: stripPrivate(drawing) });
     histAdd(stripPrivate(drawing));
@@ -12293,6 +12437,8 @@
     }));
     const curTgl = document.getElementById('cursors-toggle');
     if (curTgl) curTgl.addEventListener('change', () => setPeerCursors(curTgl.checked));
+    const smTgl = document.getElementById('smart-draw');
+    if (smTgl) { smTgl.checked = smartDraw; smTgl.addEventListener('change', () => setSmartDraw(smTgl.checked)); }
     const gdTgl = document.getElementById('guides-toggle');
     if (gdTgl) gdTgl.addEventListener('change', () => { guidesEnabled = gdTgl.checked; boardHint(guidesEnabled ? 'Направляющие включены' : 'Направляющие выключены'); });
     on('history-btn', () => { hideBoardMenu(); toggleHistoryPanel(true); });
@@ -12797,7 +12943,7 @@
   function toggleBoardMenu() {
     const p = document.getElementById('board-menu'), b = document.getElementById('board-menu-btn'); if (!p) return;
     const show = p.hidden; p.hidden = !show; if (b) b.classList.toggle('on', show);
-    if (show) { syncBgUI(); const c = document.getElementById('cursors-toggle'); if (c) c.checked = showPeerCursors; const g = document.getElementById('guides-toggle'); if (g) g.checked = guidesEnabled; }
+    if (show) { syncBgUI(); const c = document.getElementById('cursors-toggle'); if (c) c.checked = showPeerCursors; const g = document.getElementById('guides-toggle'); if (g) g.checked = guidesEnabled; const sm = document.getElementById('smart-draw'); if (sm) sm.checked = smartDraw; }
   }
   // Клик мимо меню — закрыть.
   document.addEventListener('mousedown', (e) => { const m = document.getElementById('board-menu'); if (m && !m.hidden && !e.target.closest('#board-menu') && !e.target.closest('#board-menu-btn')) hideBoardMenu(); });

@@ -1890,6 +1890,7 @@
     <label class="bm-toggle"><input type="checkbox" id="guides-toggle" checked> Направляющие (выравнивание)</label>
     <label class="bm-toggle" title="Про мышь и два пальца на тачпаде. Выключите, если привычнее, чтобы они двигали доску, — на тачпаде так удобнее. Щипок приближает всегда, независимо от этой настройки."><input type="checkbox" id="wheel-zoom" checked> Колесо мыши приближает</label>
     <label class="bm-toggle" id="finger-draw-row" hidden title="Обычно пером рисуют, а пальцем двигают доску. Включите, если пера сейчас нет под рукой."><input type="checkbox" id="finger-draw"> Рисовать пальцем</label>
+    <label class="bm-toggle" title="Карандаш будет превращать нарисованное от руки в ровную фигуру: прямую, окружность, овал, прямоугольник, треугольник. Мелкие штрихи не трогает, поэтому писать формулы можно как обычно. Ctrl+Z возвращает рисунок от руки."><input type="checkbox" id="smart-draw"> Умное рисование</label>
     <div class="bm-sep"></div>
     <button class="bm-item" id="export-pdf-btn">Экспорт в PDF…</button>
     <button class="bm-item" id="history-btn">История доски…</button>
@@ -2342,7 +2343,7 @@ window.BOARD_CONFIG = {
     // Серверы для голосовой связи: их состав решает сервер, поэтому смена
     // схемы связи в будущем не потребует править браузерную часть.
     iceServers: JSON.parse(document.getElementById('ice-servers').textContent),
-    // Версию считает сервер по времени правки board.js — руками её не задают.
+    // Версию считает сервер по времени правки файлов доски — руками не задают.
     ver: "{{ board_ver }}",
     // Адреса библиотек отдаёт шаблон: на проде {% templatetag openblock %} static {% templatetag closeblock %}
     // подставляет имена с хешем, поэтому собирать эти пути в JS нельзя.
@@ -2360,6 +2361,12 @@ window.BOARD_CONFIG = {
 <script src="{% static 'vendor/konva-9.3.16.min.js' %}"></script>
 <!-- pdf.js: просмотр и извлечение страниц PDF. -->
 <script src="{% static 'vendor/pdfjs-3.11.174/pdf.min.js' %}"></script>
+<!-- Умное рисование: распознавание фигуры в штрихе от руки. Отдельным файлом —
+     это чистая геометрия без единой строчки про доску, и её проверяют числами
+     (static/board/smartdraw.test.js). Грузится ДО board.js: тот при завершении
+     штриха обращается к window.SmartDraw. Если файл не доедет, доска работает
+     как прежде — board.js проверяет наличие перед обращением. -->
+<script src="{% static 'board/smartdraw.js' %}?v={{ board_ver }}"></script>
 <script src="{% static 'board/board.js' %}?v={{ board_ver }}"></script>
 <script>
 (function () {
