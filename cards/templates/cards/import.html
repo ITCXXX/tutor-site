@@ -58,17 +58,17 @@
     <div class="ai-panel">
         <h2>Не набирать же это руками</h2>
         <p>
-            Скопируйте задание ниже, вставьте в любую нейросеть — ответ можно будет
-            вставить в поле сразу, без правки. Тема уже подставлена из названия колоды.
+            Правило формата для нейросети: приложите его к своему вопросу — и ответ
+            можно будет вставить в поле ниже как есть.
         </p>
         <pre id="ai-prompt">{{ подсказка }}</pre>
         <div class="d-flex flex-wrap gap-2 align-items-center">
             <button type="button" class="btn btn-primary btn-sm" id="copy-prompt">
-                Скопировать задание
+                Скопировать правило
             </button>
             <a class="btn btn-outline-primary btn-sm"
-               href="{% url 'cards:prompt' %}?тема={{ колода.title|urlencode }}&amp;вид={{ колода.kind }}">
-                Настроить задание
+               href="{% url 'cards:prompt' %}?вид={{ колода.kind }}">
+                Как этим пользоваться
             </a>
             <span class="small" id="copy-status" style="color: var(--c-primary-800);"></span>
         </div>

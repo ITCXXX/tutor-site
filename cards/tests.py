@@ -99,19 +99,44 @@ class РазборСписка(TestCase):
         self.assertTrue(замечания)
 
 
-class ЗаданиеДляНейросети(TestCase):
+class ПравилоДляНейросети(TestCase):
+    """Это правило формата, а не задание.
 
-    def test_тема_и_количество_попадают_в_текст(self):
-        текст = собрать('формулы площадей', 12, 'math')
-        self.assertIn('формулы площадей', текст)
-        self.assertIn('12 карточек', текст)
-        self.assertIn('LaTeX', текст)
+    Ни темы, ни количества карточек в нём быть не должно: задание ставит
+    человек, он уже сидит в чате со своим материалом, а сколько карточек выйдет
+    — зависит от материала, а не от круглого числа.
+    """
 
-    def test_текстовый_вид_без_правила_формул(self):
-        self.assertNotIn('LaTeX', собрать('литература', 10, 'text'))
+    def test_правило_не_задаёт_тему_и_количество(self):
+        текст = собрать('text')
+        for лишнее in ('тем', 'карточек:', 'ровно', 'Сделай'):
+            self.assertNotIn(лишнее, текст, лишнее)
 
-    def test_количество_не_уходит_за_пределы(self):
-        self.assertIn('300 карточек', собрать('тема', 9999, 'text'))
+    def test_формат_описан(self):
+        текст = собрать('text')
+        self.assertIn('лицевая сторона | оборотная сторона', текст)
+        self.assertIn('восклицательным знаком', текст)
+        self.assertIn('подсказка', текст)
+
+    def test_правило_формул_только_для_математики(self):
+        self.assertIn('LaTeX', собрать('math'))
+        self.assertNotIn('LaTeX', собрать('text'))
+
+    def test_пример_разбирается_тем_же_разбором(self):
+        """Главная проверка: то, что мы просим у нейросети, сайт понимает."""
+        for вид in ('text', 'math'):
+            строки = собрать(вид).split('Пример:')[1].strip().splitlines()
+            карточки, замечания = разобрать('\n'.join(строки))
+            self.assertEqual(len(карточки), 3, вид)
+            self.assertFalse(замечания, вид)
+            # В каждом примере есть карточка с неверными вариантами.
+            self.assertTrue(any(к['distractors'] for к in карточки), вид)
+            self.assertTrue(any(к['hint'] for к in карточки), вид)
+
+    def test_неизвестный_вид_не_роняет_страницу(self):
+        ответ = self.client.get(reverse('cards:prompt'), {'вид': 'ерунда'})
+        self.assertEqual(ответ.status_code, 200)
+        self.assertEqual(ответ.context['вид'], 'text')
 
 
 class Планировщик(TestCase):
@@ -344,10 +369,10 @@ class Страницы(TestCase):
         ответ = self.client.get(reverse('cards:list'))
         self.assertEqual(ответ.context['мои'][0].ждёт, 0)
 
-    def test_инструкция_открыта_без_входа(self):
-        ответ = self.client.get(reverse('cards:prompt'), {'тема': 'тригонометрия'})
+    def test_правило_открыто_без_входа(self):
+        ответ = self.client.get(reverse('cards:prompt'))
         self.assertEqual(ответ.status_code, 200)
-        self.assertContains(ответ, 'тригонометрия')
+        self.assertContains(ответ, 'лицевая сторона | оборотная сторона')
 
 
 class ФормаЧисла(TestCase):

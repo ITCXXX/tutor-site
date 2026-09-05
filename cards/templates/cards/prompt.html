@@ -45,69 +45,40 @@
     <a class="btn-back-link" href="{% url 'cards:list' %}">← ко всем колодам</a>
 
     <div class="app-hero large my-3">
-        <h1>Список карточек за одну минуту</h1>
+        <h1>Правило для нейросети</h1>
         <div class="meta">
-            Готовое задание для нейросети. Она вернёт список в том виде, который
-            сайт принимает без единой правки.
+            Короткое правило формата: приложите его к своему вопросу — и ответ
+            можно будет вставить в колоду как есть.
         </div>
     </div>
 
     <div class="app-section-card mb-4">
         <h2>Как это работает</h2>
         <ol class="steps">
-            <li>Впишите тему и нажмите «Собрать задание».</li>
-            <li>Скопируйте задание и вставьте в любую нейросеть — ChatGPT, Claude,
-                Алису, DeepSeek, всё равно.</li>
-            <li>Ответ целиком скопируйте в поле «Добавить карточки» у своей колоды
-                и нажмите «Разобрать»: сайт покажет, что получилось, до того как
-                карточки будут созданы.</li>
+            <li>Скопируйте правило.</li>
+            <li>Вставьте его в любую нейросеть — ChatGPT, Claude, Алису, DeepSeek,
+                всё равно. Можно вместе со своим вопросом («выпиши термины из этой
+                главы и оформи так»), можно после её ответа («переделай в этот
+                формат»), можно приложить к куску учебника.</li>
+            <li>Нужную часть ответа скопируйте в поле «Добавить карточки» у своей
+                колоды и нажмите «Разобрать»: сайт покажет, что получилось, до
+                того как карточки будут созданы.</li>
         </ol>
         <p class="small text-muted mb-0">
-            Если нейросеть всё-таки добавит нумерацию, вступление или таблицу —
-            ничего страшного: разбор их снимает. Инструкция лишь избавляет от
-            ручной чистки.
+            Ни темы, ни количества карточек правило не задаёт: тему вы знаете
+            лучше, а сколько выйдет — зависит от материала. Если нейросеть
+            добавит нумерацию, вступление или таблицу, разбор их снимет.
         </p>
     </div>
 
-    <form method="get" class="app-form-card mb-4">
-        <div class="row g-3">
-            <div class="col-md-6">
-                <label class="form-label" for="тема">Тема</label>
-                <input class="form-control" id="тема" name="тема" value="{{ тема }}"
-                       placeholder="Например: формулы площадей, 9 класс" autofocus>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label" for="сколько">Сколько карточек</label>
-                <input class="form-control" id="сколько" name="сколько" type="number"
-                       min="1" max="300" value="{{ количество }}">
-            </div>
-            <div class="col-md-3">
-                <label class="form-label" for="вид">Материал</label>
-                <select class="form-select" id="вид" name="вид">
-                    <option value="text" {% if вид == 'text' %}selected{% endif %}>Обычный текст</option>
-                    <option value="math" {% if вид == 'math' %}selected{% endif %}>С формулами</option>
-                </select>
-            </div>
-        </div>
-        <div class="form-check mt-3">
-            <input class="form-check-input" type="checkbox" id="варианты" name="варианты"
-                   value="1" {% if с_вариантами %}checked{% endif %}>
-            <label class="form-check-label" for="варианты">
-                Просить неверные варианты — для карточек с выбором ответа
-            </label>
-        </div>
-        <div class="form-check mt-2">
-            <input class="form-check-input" type="checkbox" id="подсказки" name="подсказки"
-                   value="1" {% if с_подсказками %}checked{% endif %}>
-            <label class="form-check-label" for="подсказки">
-                Разрешить столбец с подсказкой или примером
-            </label>
-        </div>
-        <button type="submit" class="btn btn-primary mt-3">Собрать задание</button>
-    </form>
-
     <div class="app-section-card">
-        <h2>Задание для нейросети</h2>
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+            <h2 class="mb-0">Правило</h2>
+            <div class="btn-group btn-group-sm" role="group">
+                <a href="?вид=text" class="btn btn-outline-primary{% if вид == 'text' %} active{% endif %}">Обычный текст</a>
+                <a href="?вид=math" class="btn btn-outline-primary{% if вид == 'math' %} active{% endif %}">С формулами</a>
+            </div>
+        </div>
         <pre class="prompt-box" id="ai-prompt">{{ текст }}</pre>
         <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
             <button type="button" class="btn btn-primary" id="copy-prompt">Скопировать</button>
