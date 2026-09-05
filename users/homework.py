@@ -214,13 +214,22 @@ def lesson_report(lesson, students):
 # разошлось по трём местам и копии перестали совпадать — со сроками повторять
 # нельзя, поэтому точка одна.
 
-def dates_for(lesson, student, ext=None):
+# «Продление не передавали» и «продления нет» — РАЗНЫЕ вещи, и различать их
+# обязательно. Пока обе значили None, пакетная загрузка не работала вовсе: для
+# урока без продления карта отдавала None, dates_for считала, что ей ничего не
+# передали, и шла в базу сама. Замер до починки: шесть уроков без единого
+# продления — восемнадцать запросов, тринадцать из них про продления.
+НЕ_ПЕРЕДАНО = object()
+
+
+def dates_for(lesson, student, ext=НЕ_ПЕРЕДАНО):
     """(срок, приём до) для конкретного ученика с учётом личного продления.
 
     ext можно передать заранее — тогда запроса не будет (нужно для списков).
-    Пустое поле в продлении означает «как у всех».
+    Передать можно и None: это значит «продления у него нет, я проверил».
+    Пустое поле в самом продлении означает «как у всех».
     """
-    if ext is None:
+    if ext is НЕ_ПЕРЕДАНО:
         ext = (HomeworkExtension.objects
                .filter(lesson=lesson, student=student).first())
     due = (ext.due_date if ext and ext.due_date else lesson.due_date)
@@ -233,7 +242,7 @@ def dates_for(lesson, student, ext=None):
     return due, cut
 
 
-def accepts_from(lesson, student, today=None, ext=None):
+def accepts_from(lesson, student, today=None, ext=НЕ_ПЕРЕДАНО):
     """Принимаем ли ещё работу ИМЕННО от этого ученика."""
     _, cut = dates_for(lesson, student, ext)
     if not cut:
@@ -241,7 +250,7 @@ def accepts_from(lesson, student, today=None, ext=None):
     return (today or timezone.localdate()) <= cut
 
 
-def is_late_for(lesson, student, when, ext=None):
+def is_late_for(lesson, student, when, ext=НЕ_ПЕРЕДАНО):
     """Считается ли сдача этого ученика в этот день опозданием."""
     due, _ = dates_for(lesson, student, ext)
     if not due or not when:
