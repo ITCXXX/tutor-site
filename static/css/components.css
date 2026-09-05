@@ -1,75 +1,216 @@
 /* =========================================================================
-   Общие компоненты UI. Используются на нескольких страницах.
-   Подключается в visitor_base.html после tokens.css.
+   Общие компоненты интерфейса. Подключается в visitor_base.html ПОСЛЕ
+   tokens.css и Bootstrap.
+
+   ЗАЧЕМ ЭТОТ ФАЙЛ ВЫРОС. Замер 6 сентября 2026: на сайте 65 страниц, 51 из них
+   несла собственный блок <style> — всего 5550 строк против 394 в системе. Из-за
+   этого одно и то же было нарисовано много раз и слегка по-разному:
+
+       шапка страницы   19 копий под 10 именами (app-hero, form-hero,
+                        teacher-hero, student-hero, workbook-hero, sub-hero,
+                        enroll-hero, progress-page-hero, practice-hero, rep-hero)
+       карточка-панель  25 копий под 16 именами
+       ссылка «назад»   17 копий в 17 файлах
+       кнопка           37 версий
+       бейдж            32 версии
+       поле ввода       25 версий
+
+   Причём расхождения в основном НЕ по замыслу: половина копий писала
+   `border-radius: .5rem` там, где другая писала `var(--r-lg)` — а это одно и то
+   же число. Или #ede9fe вместо var(--c-primary-100) — тоже одно и то же.
+
+   ПОРЯДОК ПЕРЕЕЗДА. Блоки <style> шаблонов идут ПОСЛЕ этого файла (в
+   visitor_base.html он в <head> на строке 32, а {% block extra_css %} на 112),
+   поэтому местное правило всегда побеждает общее. Значит добавление компонента
+   сюда НЕ МЕНЯЕТ вид ни одной страницы, пока из шаблона не удалён его
+   собственный CSS. Переезд идёт по одному шаблону: удалили блок — страница
+   подхватила общий вид — посмотрели.
+
+   Ради этого ниже у компонентов перечислены СТАРЫЕ ИМЕНА. Пока шаблон держит
+   своё правило, оно и работает; как только его убрали, имя цепляется за общий
+   компонент, и переписывать разметку не нужно.
+
+   Bootstrap 5.1.3 на сайте уже есть: кнопки, поля, таблицы, сетку берём у него,
+   здесь только то, чего у него нет.
    ========================================================================= */
 
-/* ── Hero-блок (фиолетовый градиентный заголовок страницы) ─────────────── */
-.app-hero {
-    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
+/* ══ Шапка страницы ══════════════════════════════════════════════════════
+   Фиолетовый градиентный заголовок. Три размера, а не десять: обычный,
+   compact (для форм и вложенных страниц) и large (дашборд).
+   Радиус — var(--r-xl); прежние копии писали 12px, и это ровно .75rem.       */
+.app-hero,
+.form-hero, .teacher-hero, .student-hero, .workbook-hero, .workbook-form-hero,
+.sub-hero, .enroll-hero, .progress-page-hero, .practice-hero, .rep-hero {
+    background: var(--gradient-hero);
     color: #fff;
-    border-radius: 12px;
+    border-radius: var(--r-xl);
     padding: 1.5rem 2rem;
     margin-bottom: 1.5rem;
 }
-.app-hero h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 .35rem; }
-.app-hero .meta { opacity: .9; font-size: .9rem; }
+.app-hero h1,
+.form-hero h1, .teacher-hero h1, .student-hero h1, .workbook-hero h1,
+.workbook-form-hero h1, .sub-hero h1, .enroll-hero h1, .progress-page-hero h1,
+.practice-hero h1, .rep-hero h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0 0 .35rem;
+}
+/* Подпись под заголовком: дата, счётчик, имя ученика. */
+.app-hero .meta,
+.form-hero .meta, .teacher-hero .meta, .student-hero .meta, .workbook-hero .meta,
+.sub-hero .meta, .enroll-hero .meta, .progress-page-hero .meta,
+.app-hero .lead, .teacher-hero .lead {
+    opacity: .9;
+    font-size: .9rem;
+    margin-bottom: 0;
+}
 .app-hero.compact { padding: 1.25rem 1.75rem; }
 .app-hero.compact h1 { font-size: 1.4rem; }
-
-/* ── Большой hero для дашборда (поплоче) ────────────────────────────────── */
 .app-hero.large { padding: 2rem; }
 .app-hero.large h1 { font-size: 1.75rem; margin-bottom: .5rem; }
 
-/* ── Карточка-форма ─────────────────────────────────────────────────────── */
-.app-form-card {
-    background: #fff;
-    border: 1px solid var(--c-border);
-    border-radius: var(--r-lg);
-    padding: 1.5rem;
-}
-.app-form-card label { font-weight: 500; font-size: .9rem; color: var(--c-text-soft); }
-.app-form-card .form-text { font-size: .78rem; color: var(--c-text-muted); }
+/* Ссылки внутри шапки — белые: на фиолетовом фоне фирменный фиолетовый текст
+   ссылки нечитаем. */
+.app-hero a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+.app-hero a:hover { color: #fff; opacity: .85; }
 
-/* ── Разделённая «секция» с заголовком ──────────────────────────────────── */
-.app-section-card {
-    background: #fff;
+/* ══ Карточки ════════════════════════════════════════════════════════════
+   Белый блок с рамкой — основа всех страниц кабинета. Три вида отличаются
+   только внутренним отступом, поэтому и заведены модификаторами, а не
+   отдельными классами.                                                       */
+.app-card,
+.app-section-card,
+.app-form-card {
+    background: var(--c-surface);
     border: 1px solid var(--c-border);
     border-radius: var(--r-lg);
-    padding: 1.25rem 1.5rem;
-    margin-bottom: 1.25rem;
 }
-.app-section-card h2 {
+.app-card { padding: 1.25rem 1.5rem; }
+.app-section-card { padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.app-form-card { padding: 1.5rem; }
+
+.app-section-card > h2,
+.app-card > h2 {
     font-size: 1rem;
     font-weight: 600;
     margin: 0 0 .85rem;
     color: var(--c-text);
 }
+.app-form-card label { font-weight: 500; font-size: .9rem; color: var(--c-text-soft); }
+.app-form-card .form-text { font-size: .78rem; color: var(--c-text-muted); }
 
-/* ── Ссылка «Назад» в actions-bar ───────────────────────────────────────── */
-.btn-back-link {
+/* Карточка, по которой щёлкают (курс, колода, доска). Подъём при наведении
+   один на весь сайт: прежде было три разных — на 3, 5 и 10 пикселей. */
+.app-card.clickable,
+.app-card-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.app-card.clickable:hover,
+.app-card-link:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--c-border-strong);
+    color: inherit;
+}
+
+/* ══ Заголовок раздела ═══════════════════════════════════════════════════ */
+.app-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--c-text);
+    margin: 0 0 .85rem;
+}
+/* Надстрочная метка над группой: «ДОМАШНЕЕ ЗАДАНИЕ», «МАТЕРИАЛЫ». */
+.app-eyebrow {
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--c-text-muted);
+    margin-bottom: .5rem;
+}
+
+/* ══ Приглушённый текст ══════════════════════════════════════════════════
+   Мелкий серый текст был набран девятью кеглями от .76rem до .95rem. Здесь
+   два: обычный и совсем мелкий. Больше двух глаз всё равно не различает.      */
+.app-muted { font-size: .88rem; color: var(--c-text-muted); }
+.app-muted-xs { font-size: .78rem; color: var(--c-text-muted); }
+
+/* ══ Ссылка «Назад» ══════════════════════════════════════════════════════ */
+.btn-back-link,
+.btn-back, .tg-back, .cw-back {
     color: var(--c-text-muted);
     text-decoration: none;
     font-size: .9rem;
     margin-bottom: 1rem;
     display: inline-block;
 }
-.btn-back-link:hover { color: var(--c-primary-600); }
+.btn-back-link:hover,
+.btn-back:hover, .tg-back:hover, .cw-back:hover { color: var(--c-primary-600); }
 
-/* ── Бейдж типа курса (задачник, курс с ДЗ и т.д.) ──────────────────────── */
+/* ══ Бейджи ══════════════════════════════════════════════════════════════
+   Форм две: прямоугольная (метка типа) и пилюля (счётчик). Цвета — только из
+   палитры. Прежде их набирали хексами: #ede9fe вместо var(--c-primary-100),
+   #fef3c7 вместо var(--c-warning-soft) — те же цвета, написанные вручную.     */
 .app-badge {
     display: inline-block;
     font-size: .7rem;
     font-weight: 600;
     padding: .12rem .5rem;
-    border-radius: .25rem;
+    border-radius: var(--r-sm);
     margin-left: .35rem;
     vertical-align: middle;
+    background: var(--c-gray-100);
+    color: var(--c-text-soft);
 }
-.app-badge.workbook { background: var(--c-warning-soft); color: var(--c-warning-text); }
-.app-badge.homework { background: var(--c-primary-100); color: var(--c-primary-800); }
+.app-badge.pill { border-radius: var(--r-pill); padding: .15rem .6rem; font-size: .75rem; }
+.app-badge.primary,  .app-badge.homework { background: var(--c-primary-100);  color: var(--c-primary-800); }
+.app-badge.warning,  .app-badge.workbook { background: var(--c-warning-soft);  color: var(--c-warning-text); }
+.app-badge.success { background: var(--c-success-soft); color: var(--c-success-text); }
+.app-badge.danger  { background: var(--c-danger-soft);  color: var(--c-danger-text); }
+.app-badge.mono    { font-family: var(--font-mono); font-weight: 600; }
 
-/* ── Empty-state (плашка «нет данных») ──────────────────────────────────── */
-.app-empty-state {
+/* Счётчик непрочитанного: круглая пилюля с числом. */
+.app-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: var(--r-pill);
+    background: var(--c-primary-600);
+    color: #fff;
+    font-size: .78rem;
+    font-weight: 600;
+}
+
+/* ══ Плашка-сообщение ════════════════════════════════════════════════════
+   Цветная полоса с пояснением: пример, замечание, предупреждение, ошибка.
+   Раньше это были .context-block, .ex, .note, .warn, .status-banner, .flash —
+   шесть имён и семь наборов цветов, часть мимо палитры (#fffbeb вместо
+   --c-warning-soft, #ef4444 вместо --c-danger).                               */
+.app-note {
+    background: var(--c-primary-50);
+    border-left: 3px solid var(--c-primary-400);
+    border-radius: var(--r-md);
+    padding: .85rem 1.1rem;
+    margin-bottom: 1.25rem;
+    line-height: 1.6;
+    color: var(--c-text);
+}
+.app-note.warn    { background: var(--c-warning-soft); border-left-color: var(--c-warning); }
+.app-note.success { background: var(--c-success-soft); border-left-color: var(--c-success); }
+.app-note.danger  { background: var(--c-danger-soft);  border-left-color: var(--c-danger); }
+.app-note.plain   { background: var(--c-bg-soft);      border-left-color: var(--c-border-strong); }
+.app-note > :last-child { margin-bottom: 0; }
+
+/* ══ «Пусто» ═════════════════════════════════════════════════════════════ */
+.app-empty-state,
+.nt-empty, .ch-empty {
     background: var(--c-bg-soft);
     border: 1px dashed var(--c-border);
     border-radius: var(--r-lg);
@@ -79,17 +220,105 @@
 }
 .app-empty-state.compact { padding: 1rem; }
 
-/* ── Мобильная адаптация ──────────────────────────────────────────────── */
+/* ══ Полоса выполнения ═══════════════════════════════════════════════════
+   Было девять версий: высота 4, 6 и 8 пикселей, радиус 2, 3, 4 и 999,
+   заливка то со скруглением, то без. Здесь одна.                             */
+.app-bar {
+    height: 8px;
+    border-radius: var(--r-pill);
+    background: var(--c-gray-200);
+    overflow: hidden;
+}
+.app-bar > i {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: var(--c-primary-600);
+    transition: width .3s ease;
+}
+.app-bar.done > i { background: var(--c-success); }
+.app-bar.thin { height: 5px; }
+
+/* ══ Плитка со счётчиком ═════════════════════════════════════════════════ */
+.app-stat {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    padding: 1.25rem 1rem;
+    text-align: center;
+}
+.app-stat .num { font-size: 1.5rem; font-weight: 700; line-height: 1.2; color: var(--c-text); }
+.app-stat .lbl { font-size: .8rem; color: var(--c-text-muted); margin-top: .2rem; }
+.app-stat.primary .num { color: var(--c-primary-700); }
+.app-stat.success .num { color: var(--c-success); }
+.app-stat.danger  .num { color: var(--c-danger); }
+
+/* ══ Строка списка ═══════════════════════════════════════════════════════
+   Ученик, урок, задача, переписка — всюду одна и та же строка: слева название,
+   справа состояние, вся строка кликабельна.                                  */
+.app-list {
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-lg);
+    overflow: hidden;
+}
+.app-list .app-row + .app-row { border-top: 1px solid var(--c-border); }
+.app-row {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .8rem 1rem;
+    color: inherit;
+    text-decoration: none;
+}
+a.app-row:hover { background: var(--c-bg-soft); color: inherit; }
+.app-row .grow { flex: 1 1 auto; min-width: 0; }
+.app-row .name { font-weight: 600; color: var(--c-text); }
+.app-row .sub  { font-size: .82rem; color: var(--c-text-muted); }
+
+/* ══ Крупная кнопка-призыв ═══════════════════════════════════════════════
+   Единственная кнопка, которой нет в Bootstrap: скруглённая «пилюля» с
+   градиентом — она на главной и на посадочных экранах. Всё остальное — обычные
+   .btn-primary и .btn-outline-primary, перекрашенные в tokens.css.            */
+.app-cta {
+    display: inline-block;
+    background: var(--gradient-hero);
+    color: #fff;
+    border: none;
+    border-radius: var(--r-pill);
+    padding: .8rem 2rem;
+    font-weight: 700;
+    text-decoration: none;
+    box-shadow: var(--shadow-md);
+    transition: transform .15s ease, box-shadow .15s ease;
+}
+.app-cta:hover {
+    color: #fff;
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-primary);
+}
+.app-cta.sm { padding: .5rem 1.25rem; font-size: .9rem; }
+
+/* ══ Мобильная адаптация ═════════════════════════════════════════════════ */
 @media (max-width: 640px) {
-    .app-hero, .app-hero.compact { padding: 1rem 1.1rem; }
-    .app-hero h1, .app-hero.compact h1 { font-size: 1.15rem; }
+    .app-hero, .app-hero.compact,
+    .form-hero, .teacher-hero, .student-hero, .workbook-hero, .workbook-form-hero,
+    .sub-hero, .enroll-hero, .progress-page-hero, .practice-hero, .rep-hero {
+        padding: 1rem 1.1rem;
+    }
+    .app-hero h1, .app-hero.compact h1,
+    .form-hero h1, .teacher-hero h1, .student-hero h1, .workbook-hero h1,
+    .workbook-form-hero h1, .sub-hero h1, .enroll-hero h1, .progress-page-hero h1,
+    .practice-hero h1, .rep-hero h1 { font-size: 1.15rem; }
     .app-hero.large { padding: 1.1rem 1.2rem; }
     .app-hero.large h1 { font-size: 1.3rem; }
-    .app-section-card { padding: 1rem 1.1rem; }
+    .app-card, .app-section-card { padding: 1rem 1.1rem; }
     .app-form-card { padding: 1.1rem; }
+    .app-cta { padding: .7rem 1.5rem; }
 }
 
-/* ── Экранные окна вместо системных alert / confirm / prompt ──────────────
+/* ══ Экранные окна вместо системных alert / confirm / prompt ══════════════
    Разметку строит static/js/ui_dialog.js. Системное окно браузера подписано
    «Сайт сообщает…», выглядит чужеродно и на телефоне занимает пол-экрана;
    ученик читает предупреждение браузера, а не текст.                        */

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Образцы оформления — сайт Ивана Зенченко</title>
+
+<!--
+    ВИТРИНА КОМПОНЕНТОВ. Открывается по адресу /static/design/index.html
+    и нужна ровно для одного: смотреть на элементы сайта все сразу и говорить,
+    что поменять. Читать для этого CSS не надо.
+
+    Страница НАМЕРЕННО статическая. Django-адреса она не заводит и в urls.py не
+    лезет: витрина не стоит того, чтобы трогать маршруты работающего сайта.
+    Из-за этого здесь нет верхней панели сайта — только сами элементы.
+
+    Всё, что ниже, нарисовано теми же двумя файлами, что и весь сайт:
+    tokens.css (палитра) и components.css (компоненты). Своих стилей у витрины
+    почти нет — иначе она показывала бы не сайт, а саму себя.
+-->
+
+<link href="../vendor/bootstrap-5.1.3/bootstrap.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!--
+    Свои два файла подключаем скриптом и с меткой времени. Причина не в
+    придирчивости: витрина обязана показывать СЕГОДНЯШНИЙ вид, а браузер по
+    умолчанию держит css в кэше и показывает вчерашний. Я на этом попался при
+    самой первой проверке — правил компоненты, а страница не менялась, и полчаса
+    ушло на поиск несуществующей ошибки в стилях.
+
+    Для обычных страниц сайта такого не нужно: там имена файлов получают хеш при
+    сборке статики, и адрес меняется сам. Витрина ссылается на файлы напрямую,
+    мимо сборки, поэтому метку ставим руками.
+-->
+<script>
+    for (var файл of ['tokens.css', 'components.css']) {
+        document.write('<link rel="stylesheet" href="../css/' + файл + '?t=' + Date.now() + '">');
+    }
+</script>
+
+<style>
+    /* Стили самой витрины — к сайту отношения не имеют. */
+    body { background: var(--c-bg-soft); padding: 2rem 0 5rem; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 0 1rem; }
+    .dsn-head { margin-bottom: 2rem; }
+    .dsn-head h1 { font-size: 1.6rem; font-weight: 700; margin: 0 0 .5rem; }
+    .dsn-head p { color: var(--c-text-soft); max-width: 70ch; margin: 0 0 .4rem; }
+    .dsn-sec { margin: 2.5rem 0 1rem; padding-top: 1.5rem; border-top: 2px solid var(--c-border); }
+    .dsn-sec h2 { font-size: 1.15rem; font-weight: 700; margin: 0 0 .25rem; }
+    .dsn-sec .was {
+        font-size: .82rem; color: var(--c-danger-text);
+        background: var(--c-danger-soft); display: inline-block;
+        padding: .1rem .5rem; border-radius: var(--r-sm);
+    }
+    .dsn-sec .cls { font-family: var(--font-mono); font-size: .8rem; color: var(--c-text-muted); }
+    .dsn-box { background: var(--c-surface); border: 1px solid var(--c-border);
+               border-radius: var(--r-lg); padding: 1.25rem; margin-top: .85rem; }
+    .dsn-lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--c-text-muted); margin: 1.1rem 0 .4rem; font-weight: 600; }
+    .dsn-lbl:first-child { margin-top: 0; }
+    .sw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: .5rem; }
+    .sw { border-radius: var(--r-md); border: 1px solid var(--c-border); overflow: hidden; font-size: .7rem; }
+    .sw i { display: block; height: 44px; }
+    .sw span { display: block; padding: .3rem .4rem; font-family: var(--font-mono); color: var(--c-text-muted); }
+    .row-demo { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+    <div class="dsn-head">
+        <h1>Образцы оформления</h1>
+        <p>Здесь собраны все элементы, из которых состоит сайт. Смотрите и говорите словами,
+           что поменять: «шапки слишком яркие», «карточки тесные», «кнопки слишком круглые».
+           Правка в одном месте меняет вид на всех страницах сразу.</p>
+        <p class="app-muted">Красной меткой отмечено, во скольких видах этот элемент существовал
+           до сведения в один. Это не упрёк, а мера беспорядка: чем больше число,
+           тем сильнее страницы разъезжались.</p>
+    </div>
+
+    <!-- ══ Шапка страницы ══ -->
+    <div class="dsn-sec">
+        <h2>Шапка страницы</h2>
+        <span class="was">было 19 копий под 10 именами</span>
+        <span class="cls">.app-hero · .compact · .large</span>
+    </div>
+    <div class="app-hero large">
+        <h1>Кабинет преподавателя</h1>
+        <div class="meta">Большая — для главной страницы кабинета</div>
+    </div>
+    <div class="app-hero">
+        <h1>Алгебра, 9 класс</h1>
+        <div class="meta">Обычная — 12 уроков · 48 задач</div>
+    </div>
+    <div class="app-hero compact">
+        <h1>Новый урок</h1>
+        <div class="meta">Компактная — для форм и вложенных страниц</div>
+    </div>
+
+    <!-- ══ Карточки ══ -->
+    <div class="dsn-sec">
+        <h2>Карточки</h2>
+        <span class="was">было 25 копий под 16 именами</span>
+        <span class="cls">.app-card · .app-section-card · .app-form-card</span>
+    </div>
+    <div class="app-section-card">
+        <h2>Раздел с заголовком</h2>
+        <p class="mb-0 app-muted">Такими собраны страницы курса, ученика, сводки.</p>
+    </div>
+    <div class="app-form-card">
+        <label class="form-label">Название курса</label>
+        <input type="text" class="form-control" value="Алгебра, 9 класс">
+        <div class="form-text">Карточка формы — отступ побольше, чтобы поля дышали.</div>
+    </div>
+    <div class="row g-3 mt-1">
+        <div class="col-sm-6">
+            <a href="#" class="app-card app-card-link">
+                <div class="app-title mb-1">Кликабельная карточка</div>
+                <div class="app-muted">Наведите — приподнимется. Подъём один на весь
+                    сайт; прежде было три разных.</div>
+            </a>
+        </div>
+        <div class="col-sm-6">
+            <div class="app-card">
+                <div class="app-title mb-1">Обычная карточка</div>
+                <div class="app-muted">Без наведения.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══ Текст ══ -->
+    <div class="dsn-sec">
+        <h2>Текст</h2>
+        <span class="was">серый текст был набран 9 кеглями</span>
+        <span class="cls">.app-title · .app-eyebrow · .app-muted · .app-muted-xs</span>
+    </div>
+    <div class="dsn-box">
+        <div class="app-eyebrow">Домашнее задание</div>
+        <div class="app-title">Заголовок раздела</div>
+        <p>Обычный текст страницы.</p>
+        <p class="app-muted mb-1">Приглушённый — подписи, даты, счётчики.</p>
+        <p class="app-muted-xs mb-0">Совсем мелкий — пояснения под полями.</p>
+    </div>
+
+    <!-- ══ Кнопки ══ -->
+    <div class="dsn-sec">
+        <h2>Кнопки</h2>
+        <span class="was">было 37 версий</span>
+        <span class="cls">.btn-primary (Bootstrap) · .app-cta</span>
+    </div>
+    <div class="dsn-box">
+        <div class="dsn-lbl">Обычные — это кнопки Bootstrap, перекрашенные в наш фиолетовый</div>
+        <div class="row-demo">
+            <button class="btn btn-primary">Сохранить</button>
+            <button class="btn btn-outline-primary">Отмена</button>
+            <button class="btn btn-outline-secondary">Второстепенная</button>
+            <button class="btn btn-outline-danger">Удалить</button>
+            <button class="btn btn-primary btn-sm">Мелкая</button>
+            <button class="btn btn-primary" disabled>Недоступна</button>
+        </div>
+        <div class="dsn-lbl">Крупная кнопка-призыв — единственная своя, для главной страницы</div>
+        <div class="row-demo">
+            <a href="#" class="app-cta">Записаться на занятие</a>
+            <a href="#" class="app-cta sm">Поменьше</a>
+        </div>
+        <div class="dsn-lbl">Ссылка «назад» <span class="cls">.btn-back-link · было 17 копий</span></div>
+        <a href="#" class="btn-back-link">← К списку курсов</a>
+    </div>
+
+    <!-- ══ Метки ══ -->
+    <div class="dsn-sec">
+        <h2>Метки и счётчики</h2>
+        <span class="was">было 32 версии</span>
+        <span class="cls">.app-badge · .app-count</span>
+    </div>
+    <div class="dsn-box">
+        <div class="dsn-lbl">Метки типа</div>
+        <div class="row-demo">
+            <span class="app-badge">обычная</span>
+            <span class="app-badge primary">курс с ДЗ</span>
+            <span class="app-badge warning">задачник</span>
+            <span class="app-badge success">сдано</span>
+            <span class="app-badge danger">просрочено</span>
+            <span class="app-badge mono">AJ53CD</span>
+        </div>
+        <div class="dsn-lbl">Пилюли</div>
+        <div class="row-demo">
+            <span class="app-badge pill primary">вариант</span>
+            <span class="app-badge pill warning">ожидает</span>
+            <span class="app-badge pill success">готово</span>
+        </div>
+        <div class="dsn-lbl">Счётчик непрочитанного</div>
+        <div class="row-demo">
+            <span class="app-count">3</span>
+            <span class="app-count">12</span>
+            <span class="app-count">99+</span>
+        </div>
+    </div>
+
+    <!-- ══ Плашки ══ -->
+    <div class="dsn-sec">
+        <h2>Плашки-сообщения</h2>
+        <span class="was">было 24 версии, часть цветов мимо палитры</span>
+        <span class="cls">.app-note · .warn · .success · .danger · .plain</span>
+    </div>
+    <div class="app-note">Пояснение или пример. Синяя полоса слева — обычное сообщение.</div>
+    <div class="app-note warn">Замечание: срок сдачи истекает завтра.</div>
+    <div class="app-note success">Задача принята. Оценка 5.</div>
+    <div class="app-note danger">Ответ неверный. Попробуйте ещё раз.</div>
+    <div class="app-note plain">Нейтральная врезка без цвета.</div>
+
+    <!-- ══ Пусто ══ -->
+    <div class="dsn-sec">
+        <h2>Когда ничего нет</h2>
+        <span class="was">было 7 версий</span>
+        <span class="cls">.app-empty-state</span>
+    </div>
+    <div class="app-empty-state">Пока ни одного курса. Нажмите «Создать курс», чтобы начать.</div>
+
+    <!-- ══ Полосы ══ -->
+    <div class="dsn-sec">
+        <h2>Полоса выполнения</h2>
+        <span class="was">было 9 версий: высоты 4, 6 и 8 px, радиусы 2, 3, 4 и 999</span>
+        <span class="cls">.app-bar</span>
+    </div>
+    <div class="dsn-box">
+        <div class="dsn-lbl">Курс пройден на 40%</div>
+        <div class="app-bar"><i style="width:40%"></i></div>
+        <div class="dsn-lbl">Пройден полностью</div>
+        <div class="app-bar done"><i style="width:100%"></i></div>
+        <div class="dsn-lbl">Тонкая — для строк списка</div>
+        <div class="app-bar thin"><i style="width:65%"></i></div>
+    </div>
+
+    <!-- ══ Плитки ══ -->
+    <div class="dsn-sec">
+        <h2>Плитки со счётчиком</h2>
+        <span class="cls">.app-stat</span>
+    </div>
+    <div class="row g-3">
+        <div class="col-6 col-md-3"><div class="app-stat"><div class="num">14</div><div class="lbl">учеников</div></div></div>
+        <div class="col-6 col-md-3"><div class="app-stat primary"><div class="num">6</div><div class="lbl">курсов</div></div></div>
+        <div class="col-6 col-md-3"><div class="app-stat success"><div class="num">92%</div><div class="lbl">сдано вовремя</div></div></div>
+        <div class="col-6 col-md-3"><div class="app-stat danger"><div class="num">3</div><div class="lbl">просрочено</div></div></div>
+    </div>
+
+    <!-- ══ Списки ══ -->
+    <div class="dsn-sec">
+        <h2>Строки списка</h2>
+        <span class="was">было 10 версий</span>
+        <span class="cls">.app-list · .app-row</span>
+    </div>
+    <div class="app-list">
+        <a href="#" class="app-row">
+            <div class="grow">
+                <div class="name">Смирнова Анна</div>
+                <div class="sub">Алгебра, 9 класс · последний вход вчера</div>
+            </div>
+            <span class="app-badge success">всё сдано</span>
+        </a>
+        <a href="#" class="app-row">
+            <div class="grow">
+                <div class="name">Ковалёв Пётр</div>
+                <div class="sub">Геометрия, 8 класс · 2 задачи не сданы</div>
+            </div>
+            <span class="app-badge warning">есть долги</span>
+        </a>
+        <a href="#" class="app-row">
+            <div class="grow">
+                <div class="name">Новиков Илья</div>
+                <div class="sub">Подготовка к ОГЭ · не заходил 9 дней</div>
+            </div>
+            <span class="app-count">2</span>
+        </a>
+    </div>
+
+    <!-- ══ Поля ══ -->
+    <div class="dsn-sec">
+        <h2>Поля ввода</h2>
+        <span class="was">было 25 версий</span>
+        <span class="cls">Bootstrap, обводка фокуса перекрашена в tokens.css</span>
+    </div>
+    <div class="app-form-card">
+        <div class="mb-3">
+            <label class="form-label">Обычное поле</label>
+            <input type="text" class="form-control" placeholder="Щёлкните — обводка фиолетовая">
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Выбор из списка</label>
+            <select class="form-select"><option>Алгебра</option><option>Геометрия</option></select>
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Многострочное</label>
+            <textarea class="form-control" rows="2">Решение задачи…</textarea>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="ch1" checked>
+            <label class="form-check-label" for="ch1">Отметка</label>
+        </div>
+    </div>
+
+    <!-- ══ Палитра ══ -->
+    <div class="dsn-sec">
+        <h2>Палитра</h2>
+        <span class="cls">tokens.css — менять цвета сайта надо здесь</span>
+    </div>
+    <div class="dsn-box">
+        <div class="dsn-lbl">Основной фиолетовый</div>
+        <div class="sw-grid">
+            <div class="sw"><i style="background:var(--c-primary-100)"></i><span>primary-100</span></div>
+            <div class="sw"><i style="background:var(--c-primary-400)"></i><span>primary-400</span></div>
+            <div class="sw"><i style="background:var(--c-primary-600)"></i><span>primary-600</span></div>
+            <div class="sw"><i style="background:var(--c-primary-700)"></i><span>primary-700</span></div>
+            <div class="sw"><i style="background:var(--c-primary-800)"></i><span>primary-800</span></div>
+        </div>
+        <div class="dsn-lbl">Смысловые</div>
+        <div class="sw-grid">
+            <div class="sw"><i style="background:var(--c-success)"></i><span>success</span></div>
+            <div class="sw"><i style="background:var(--c-warning)"></i><span>warning</span></div>
+            <div class="sw"><i style="background:var(--c-danger)"></i><span>danger</span></div>
+        </div>
+        <div class="dsn-lbl">Серые</div>
+        <div class="sw-grid">
+            <div class="sw"><i style="background:var(--c-gray-100)"></i><span>gray-100</span></div>
+            <div class="sw"><i style="background:var(--c-gray-200)"></i><span>gray-200</span></div>
+            <div class="sw"><i style="background:var(--c-gray-500)"></i><span>gray-500</span></div>
+            <div class="sw"><i style="background:var(--c-gray-700)"></i><span>gray-700</span></div>
+            <div class="sw"><i style="background:var(--c-gray-900)"></i><span>gray-900</span></div>
+        </div>
+    </div>
+
+</div>
+</body>
+</html>
