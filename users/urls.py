@@ -115,7 +115,14 @@ urlpatterns = [
          views_exam.reset_db_assignment, name='reset_db_assignment'),
     path('exam/generate-new/<int:assignment_id>/', views_exam.generate_new_problem, name='generate_new_problem'),
     # Разбор задачи на доказательство (№24) до ответа: попытка не пишется.
-    path('exam/solution/<int:problem_id>/', views_exam.problem_solution, name='problem_solution'),
+    # ВРЕМЕННО ОТКЛЮЧЕНО. Маршрут ссылается на views_exam.problem_solution, а сама
+    # функция ещё не закоммичена — она часть незаконченной работы по второй части
+    # ОГЭ и тянет за собой looks_like_interval и параметр kind у check_answer,
+    # которых в репозитории тоже нет. Строка попала сюда случайно, вместе с
+    # коммитом маршрутов чата, и на боевом сервере роняла ВЕСЬ сайт: битая
+    # таблица адресов — это 500 на каждой странице.
+    # Раскомментировать вместе с коммитом views_exam.py и answer_check.py.
+    # path('exam/solution/<int:problem_id>/', views_exam.problem_solution, name='problem_solution'),
     path('lesson/<int:lesson_id>/practice/',
          views_exam.lesson_practice, name='lesson_practice'),
     path('lesson/<int:lesson_id>/next/',
