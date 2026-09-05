@@ -18,15 +18,6 @@
     padding: 1.5rem 1.75rem;
     min-height: 320px;
 }
-.practice-hero {
-    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
-    color: #fff;
-    border-radius: 12px;
-    padding: 1.25rem 1.5rem;
-    margin-bottom: 1.25rem;
-}
-.practice-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
-.practice-hero .meta { opacity: .9; font-size: .9rem; }
 
 .btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; display: inline-block; margin-bottom: 1rem; }
 .btn-back:hover { color: var(--c-primary-600); }
@@ -275,7 +266,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
     <div class="container" style="max-width: 1100px;">
         <a href="{% url 'course_detail' course.slug %}" class="btn-back">← К курсу</a>
 
-        <div class="practice-hero">
+        <div class="app-hero compact">
             <h1>{{ lesson.title }}</h1>
             <div class="meta">{{ course.title }}</div>
         </div>

@@ -4,16 +4,6 @@
 
 {% block extra_css %}
 <style>
-.teacher-hero {
-    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
-    color: #fff;
-    border-radius: 12px;
-    padding: 2rem;
-    margin-bottom: 2rem;
-}
-.teacher-hero h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: .5rem; }
-.teacher-hero .lead { opacity: .9; margin-bottom: 0; }
-
 .stat-card {
     background: var(--c-surface);
     border: 1px solid var(--c-border);
@@ -167,7 +157,7 @@
 <section style="padding-top: 80px;">
     <div class="container">
         <!-- Шапка -->
-        <div class="teacher-hero">
+        <div class="app-hero large">
             <h1>Кабинет преподавателя</h1>
             <p class="lead">Здравствуйте, {{ user.username }}!
                 {% if user.teacher_profile %} {{ user.teacher_profile.specialization }}{% endif %}</p>

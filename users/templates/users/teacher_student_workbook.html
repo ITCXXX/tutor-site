@@ -4,16 +4,6 @@
 
 {% block extra_css %}
 <style>
-.workbook-hero {
-    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
-    color: #fff;
-    border-radius: 12px;
-    padding: 1.25rem 1.75rem;
-    margin-bottom: 1.5rem;
-}
-.workbook-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0 0 .35rem; }
-.workbook-hero .meta { opacity: .9; font-size: .9rem; }
-
 .actions-bar {
     display: flex;
     justify-content: space-between;
@@ -133,7 +123,7 @@
             <a href="{% url 'teacher_course_progress' course.slug %}" class="btn-back">← К списку учеников</a>
         </div>
 
-        <div class="workbook-hero">
+        <div class="app-hero compact">
             <h1>{{ profile.display_name }}{% if profile.grade %} · {{ profile.grade }} класс{% endif %}</h1>
             <div class="meta">{{ course.title }}</div>
         </div>

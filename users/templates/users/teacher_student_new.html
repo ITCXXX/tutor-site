@@ -4,15 +4,6 @@
 
 {% block extra_css %}
 <style>
-.form-hero {
-    background: linear-gradient(135deg, var(--c-primary-600) 0%, var(--c-primary-700) 100%);
-    color: #fff;
-    border-radius: 12px;
-    padding: 1.25rem 1.75rem;
-    margin-bottom: 1.5rem;
-}
-.form-hero h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
-
 .form-card {
     background: var(--c-surface);
     border: 1px solid var(--c-border);
@@ -32,7 +23,7 @@
 
         <a href="{% url 'teacher_dashboard' %}" class="btn-back">← К кабинету</a>
 
-        <div class="form-hero">
+        <div class="app-hero compact">
             <h1>Новый ученик</h1>
         </div>
 
