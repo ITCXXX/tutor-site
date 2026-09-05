@@ -6551,27 +6551,21 @@
   // самого штриха живёт в отдельном файле static/board/smartdraw.js — здесь
   // только связь с доской: когда спрашивать и что делать с ответом.
   //
-  // ВКЛЮЧАЕТСЯ КНОПКОЙ И ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО. На этой доске постоянно пишут
-  // формулы от руки, и если каждый штрих начнёт «исправляться» в фигуру, писать
-  // станет невозможно. Разбор от этого тоже страхуется — мелкие штрихи он не
-  // трогает, — но одной страховки мало: решать должен человек.
+  // ЭТО ОТДЕЛЬНЫЙ ИНСТРУМЕНТ, а не режим карандаша, и разница тут не
+  // косметическая. Сперва я сделал галочку в меню, рассуждая так: раз рисует
+  // карандаш, значит это его настройка, а инструментом её не сделать — панель
+  // снимет выделение с карандаша, и рисовать станет нечем. Рассуждение неверное.
+  // Умное рисование — не настройка карандаша, а ВТОРОЙ карандаш: одним пишут
+  // формулы, другим чертят. Тогда переключение — один щелчок по панели вместо
+  // трёх по меню, и видно, чем сейчас рисуешь, не открывая меню.
   //
-  // Выбор личный и хранится в браузере, а не в доске: у одного участника урок
-  // по геометрии, у другого — разбор задачи, и навязывать им общий режим нельзя.
-  const SMART_STORE = 'board_smart_draw_v1';
-  let smartDraw = false;
-  try { const v = localStorage.getItem(SMART_STORE); if (v !== null) smartDraw = (v === '1'); } catch (e) {}
-  // Подсказку про Ctrl+Z показываем только первые несколько раз за занятие:
-  // напоминание нужно, пока приём незнаком, а дальше оно мешает.
+  // Хранить между занятиями нечего: инструмент выбирают каждый раз заново, как
+  // маркер или ластик.
+  //
+  // Подсказку про Ctrl+Z показываем только первые несколько раз после выбора
+  // инструмента: напоминание нужно, пока приём незнаком, а дальше мешает.
   let smartПодсказок = 0;
-  function setSmartDraw(on) {
-    smartDraw = !!on;
-    try { localStorage.setItem(SMART_STORE, smartDraw ? '1' : '0'); } catch (e) {}
-    const c = document.getElementById('smart-draw'); if (c) c.checked = smartDraw;
-    smartПодсказок = 0;
-    boardHint(smartDraw ? 'Умное рисование включено: карандаш выпрямляет фигуры'
-                        : 'Умное рисование выключено');
-  }
+  function умноеРисование() { return tool === 'smartpen'; }
 
   // Названия для подсказки. Отдельной картой, а не в коде разбора: тот про
   // доску ничего не знает и знать не должен.
@@ -6620,7 +6614,7 @@
   // Разобрать законченный штрих и, если фигура узнана, подменить его.
   // Возвращает true, если штрих уже отправлен и записан в историю сам.
   function smartЗаменить(штрих) {
-    if (!smartDraw || !window.SmartDraw) return false;
+    if (!умноеРисование() || !window.SmartDraw) return false;
     const d = штрих.data;
     if (!d || !d.points || d.points.length < 8) return false;
     let фиг = null;
@@ -6683,7 +6677,10 @@
     if (selected.size) clearSelection(); // начали рисовать — снять прежнее выделение
     const p = worldPoint();
     const base = { stroke: strokeColor, strokeWidth: strokeWidth };
-    if (tool === 'pen') {
+    if (tool === 'pen' || tool === 'smartpen') {
+      // Умный карандаш ведёт ТОТ ЖЕ штрих: пока рисуют, разницы нет никакой, и
+      // это нарочно — рука должна видеть свою линию, а не догадку доски.
+      // Разница появляется в endDraw, когда штрих закончен.
       drawing = { id: uuid(), type: 'freehand', z: 0,
         data: { ...base, x: p.x, y: p.y, points: [0, 0] } };
     } else if (tool === 'marker') {
@@ -6880,13 +6877,28 @@
   // поэтому проверяем и признак стилуса Safari, и тип последнего события указателя.
   function evtIsFinger(e) {
     const ev = e && e.evt;
-    const list = ev && (ev.touches || ev.changedTouches);
-    if (!list) return false;                    // мышь или перо без тач-совместимости
+    // changedTouches ПЕРВЫМ, и это не мелочь. Раньше бралось touches[0] — то есть
+    // первое из ВСЕХ лежащих на экране касаний, а не то, которое сейчас
+    // произошло. Пока стилус на экране, touches[0] — это он, у него touchType
+    // 'stylus', и палец, легший рядом, признавался не-пальцем: проверка ладони
+    // ниже до него не доходила. Дыра открывалась ровно во время письма пером,
+    // то есть тогда, когда отсечение ладони и нужно.
+    const list = ev && ((ev.changedTouches && ev.changedTouches.length ? ev.changedTouches : ev.touches));
+    if (!list || !list.length) return false;    // мышь или перо без тач-совместимости
     const t0 = list[0];
     if (t0 && t0.touchType === 'stylus') return false;
     if (lastDownType === 'pen') return false;
     return true;
   }
+
+  // Инструменты, ведущие штрих от руки. Только они запрещены пальцу: у них
+  // форма произвольная, и случайное касание портит запись. Стрелку или
+  // прямоугольник пальцем поставить можно — они рисуются двумя точками, и
+  // промахнуться нечем.
+  const ШТРИХ_ОТ_РУКИ = { pen: 1, smartpen: 1, marker: 1 };
+
+  // Текущее касание отдано доске: инструмент его не увидит вовсе.
+  let палецВедётДоску = false;
 
   // Должна ли обычная логика доски пропустить это событие.
   function touchBlocked(e) {
@@ -6903,9 +6915,24 @@
     // послабление её не касается.
     // Только что писали пером → палец сейчас это ладонь (перо ещё рядом).
     if (Date.now() - lastPenAt < 1200) return true;
-    // Иначе палец РАБОТАЕТ как выбранный инструмент, в том числе рисует. Прежде
-    // здесь пальцу запрещали карандаш/маркер в penMode — теперь пальцем можно
-    // писать; панорама ушла на два пальца и кнопку «Перемещение».
+    // Палец в режиме выделения отдан ДОСКЕ: ведёт её, а рамку начинает долгим
+    // нажатием (см. отдатьКасаниеДоске). Инструменту это касание не достаётся.
+    if (палецВедётДоску) return true;
+    // ШТРИХ ПАЛЬЦЕМ — ТОЛЬКО ТАМ, ГДЕ ПЕРА НЕТ.
+    //
+    // Здесь однажды уже стояла такая проверка, её сняли, и палец начал писать
+    // везде. Снимали по делу: тогда один палец ещё и возил доску, и выходило
+    // «начинаешь рисовать, а доска едет». Возвращаем не то, что было, а только
+    // половину: палец не ВЕДЁТ ШТРИХ, но по-прежнему делает всё остальное —
+    // стрелки, фигуры, стикеры, текст, стирание, выделение, перетаскивание.
+    // Доску он не хватает: для этого два пальца и кнопка «Перемещение», как
+    // сейчас.
+    //
+    // Условие — penMode(), то есть «на этом устройстве работали пером и человек
+    // не попросил обратного». На планшете без пера ничего не меняется: там
+    // палец единственный инструмент, и запрет сделал бы доску бесполезной.
+    // Обратный ход — галочка «Рисовать пальцем» в меню; она снова что-то значит.
+    if (penMode() && ШТРИХ_ОТ_РУКИ[tool]) return true;
     return false;
   }
 
@@ -7033,6 +7060,53 @@
   }
   let pendingPan = null;   // палец лежит, но пока непонятно: щелчок это или панорама
 
+  // ── Палец в режиме выделения ───────────────────────────────────────────
+  // На планшете рамкой выделяют редко, а доску возят постоянно, поэтому частому
+  // действию отдан простой жест: повёл пальцем по пустому месту — доска поехала.
+  // Рамка осталась доступной, но её надо ЗАПРОСИТЬ: подержать палец на месте
+  // полсекунды. Так же устроено долгое нажатие в телефоне, объяснять не придётся.
+  //
+  // Пальца это касается только в режиме выделения и только на пустом месте:
+  // касание объекта по-прежнему его выбирает и тащит, а мышь работает как
+  // работала — ей рамка даётся сразу, без удержания.
+  const HOLD_MS = 500;      // сколько держать палец, чтобы началась рамка
+  const HOLD_SLOP = 12;     // на столько палец может дрогнуть, не отменив удержание
+  let holdTimer = null, holdAt = null;
+
+  function отменитьУдержание() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    holdAt = null;
+  }
+
+  // Отдать текущее (единственное) касание доске: движение повезёт её, удержание
+  // начнёт рамку. Зовётся из разбора нажатия, когда уже известно, что под
+  // пальцем пусто — повторять поиск объекта здесь незачем и вредно: два разных
+  // ответа на один вопрос рано или поздно разойдутся.
+  function отдатьКасаниеДоске() {
+    if (touchPts.size !== 1) return false;
+    let id = null, p = null;
+    touchPts.forEach((v, k) => { if (id === null) { id = k; p = v; } });
+    if (id === null) return false;
+    палецВедётДоску = true;
+    pendingPan = { id, x: p.x, y: p.y };
+    отменитьУдержание();
+    holdAt = { id, x: p.x, y: p.y };
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      // За полсекунды всё могло измениться: палец подняли, лёг второй, началась
+      // панорама. Проверяем ещё раз, а не полагаемся на то, что было.
+      if (!holdAt || gesture || touchPts.size !== 1) { holdAt = null; return; }
+      holdAt = null;
+      pendingPan = null;          // доску больше не везём
+      палецВедётДоску = false;    // касание возвращается инструменту — иначе
+                                  // движение не дойдёт до отрисовки рамки
+      startMarquee({ evt: {} });  // от той точки, где палец лежит сейчас
+      boardHint('Рамка выделения — ведите палец');
+      if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
+    }, HOLD_MS);
+    return true;
+  }
+
   stageEl.addEventListener('pointerdown', (ev) => {
     lastDownType = ev.pointerType || 'mouse';
     // Порог, после которого Konva считает нажатие перетаскиванием. Пальцу даём
@@ -7050,6 +7124,7 @@
       // Второй палец — это всегда жест доски. Что успел зацепить первый —
       // возвращаем на место.
       отменитьПеретаскиваниеОбъекта();
+      отменитьУдержание();
       pendingPan = null; startGesture(); return;
     }
     // Один палец в режиме пера или в режиме перемещения: НЕ хватаем доску сразу.
@@ -7065,6 +7140,11 @@
     if (ev.pointerType !== 'touch') return;
     if (!touchPts.has(ev.pointerId)) return;
     touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    // Палец дрогнул сильнее допуска — это уже не удержание.
+    if (holdAt && ev.pointerId === holdAt.id &&
+        Math.hypot(ev.clientX - holdAt.x, ev.clientY - holdAt.y) > HOLD_SLOP) {
+      отменитьУдержание();
+    }
     // Палец пошёл — только теперь это панорама.
     if (pendingPan && ev.pointerId === pendingPan.id && !gesture) {
       if (Math.hypot(ev.clientX - pendingPan.x, ev.clientY - pendingPan.y) >= TOUCH_PAN_PX) {
@@ -7077,8 +7157,20 @@
   function onPointerGone(ev) {
     if (ev.pointerType === 'pen') { penDown = false; lastPenAt = Date.now(); return; }
     if (ev.pointerType !== 'touch') return;
-    if (pendingPan && ev.pointerId === pendingPan.id) pendingPan = null;
+    if (pendingPan && ev.pointerId === pendingPan.id) {
+      // Палец лёг на пустое место и поднялся, не сдвинувшись, — это ТАП, и он
+      // обязан снимать выделение, как щелчок мышью по пустому месту. Раньше это
+      // делала рамка выделения (endMarquee при нулевом движении), но теперь
+      // палец рамку не начинает, и снимать выделение стало нечем: выделенное
+      // держалось намертво, пока не возьмёшь мышь. Проверка палецВедётДоску
+      // важна — при кнопке «Перемещение» pendingPan тоже заводится, но там тап
+      // по доске выделение снимать не должен.
+      if (палецВедётДоску && !gesture && !marquee) clearSelection();
+      pendingPan = null;
+    }
+    if (holdAt && ev.pointerId === holdAt.id) отменитьУдержание();
     touchPts.delete(ev.pointerId);
+    if (!touchPts.size) палецВедётДоску = false;
     if (gesture) {
       if (touchPts.size >= 1) startGesture();  // остались пальцы — продолжаем с новой опорой
       else endGestureIfDone();
@@ -7204,6 +7296,12 @@
         return;
       }
       if (vennSel.id) clearVennSel();
+      // Палец по пустому месту: доска едет, рамка — по удержанию. Решение
+      // принимается ЗДЕСЬ, потому что здесь уже известно, что под касанием
+      // пусто: выше отработали и поиск объекта, и поиск матокна. Считать это
+      // второй раз в обработчике указателя значило бы завести второй ответ на
+      // тот же вопрос.
+      if (evtIsFinger(e) && !panMode && отдатьКасаниеДоске()) { dragStart = null; return; }
       startMarquee(e); // пустое место → рамочное выделение
       dragStart = null;
       return;
@@ -7807,6 +7905,7 @@
     if (name !== 'macro') macroPickPts = [];
     if (name !== 'macro_record') macroMode = null;
     if (!MARK_PICKS[name]) markPicks = [];
+    if (name === 'smartpen') smartПодсказок = 0;   // взяли инструмент — снова подскажем про Ctrl+Z
     if (name !== 'laser') laserDrawing = false;
     if (!isEraser(name)) eraserActive = false;
     if (name !== 'lasso') { lassoActive = false; if (lassoLine) lassoLine.visible(false); }
@@ -9887,7 +9986,10 @@
     shape: ['#1f2937', '#6b7280', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff'],
   };
   function drawKey(t) {
-    if (t === 'pen') return 'pen';
+    // Умный карандаш делит настройки с обычным НАРОЧНО. Две отдельные толщины
+    // на два карандаша — это два места, где надо помнить, что ты выставил, и
+    // они разъезжаются на первом же занятии.
+    if (t === 'pen' || t === 'smartpen') return 'pen';
     if (t === 'marker') return 'marker';
     if (isEraser(t)) return 'eraser';
     if (t === 'line' || t === 'arrow' || t === 'divider') return 'line';
@@ -12286,7 +12388,7 @@
     // через карту ниже его не повесить. Маркер поэтому переехал на K.
     if (_L === 'm') { e.preventDefault(); setPanMode(!panMode); return; }
     const map = {
-      v: 'select',  p: 'pen',     k: 'marker',  e: 'eraser_full', q: 'laser',
+      v: 'select',  p: 'pen',     u: 'smartpen', k: 'marker', e: 'eraser_full', q: 'laser',
       l: 'line',    a: 'arrow',   r: 'rect',    o: 'ellipse',     s: 'sticky',
       t: 'text_plain', f: 'latex', g: 'graph',  c: 'circ_cp',     d: 'point',
       w: 'frame',   b: 'table',
@@ -12314,7 +12416,8 @@
   // неоткуда узнать. Собираем окно из JS, чтобы не плодить разметку.
   const KEYS_HELP = [
     ['Инструменты', [
-      ['V', 'стрелка (выделение)'], ['P', 'карандаш'], ['K', 'маркер'],
+      ['V', 'стрелка (выделение)'], ['P', 'карандаш'],
+      ['U', 'умный карандаш: выпрямляет фигуры'], ['K', 'маркер'],
       ['E', 'ластик'], ['Q', 'указка'], ['L', 'линия'], ['A', 'стрелка-объект'],
       ['R', 'прямоугольник'], ['O', 'овал'], ['C', 'окружность'], ['D', 'точка'],
       ['T', 'текст'], ['F', 'формула'], ['G', 'график'], ['S', 'стикер'],
@@ -12437,8 +12540,6 @@
     }));
     const curTgl = document.getElementById('cursors-toggle');
     if (curTgl) curTgl.addEventListener('change', () => setPeerCursors(curTgl.checked));
-    const smTgl = document.getElementById('smart-draw');
-    if (smTgl) { smTgl.checked = smartDraw; smTgl.addEventListener('change', () => setSmartDraw(smTgl.checked)); }
     const gdTgl = document.getElementById('guides-toggle');
     if (gdTgl) gdTgl.addEventListener('change', () => { guidesEnabled = gdTgl.checked; boardHint(guidesEnabled ? 'Направляющие включены' : 'Направляющие выключены'); });
     on('history-btn', () => { hideBoardMenu(); toggleHistoryPanel(true); });
@@ -12943,7 +13044,7 @@
   function toggleBoardMenu() {
     const p = document.getElementById('board-menu'), b = document.getElementById('board-menu-btn'); if (!p) return;
     const show = p.hidden; p.hidden = !show; if (b) b.classList.toggle('on', show);
-    if (show) { syncBgUI(); const c = document.getElementById('cursors-toggle'); if (c) c.checked = showPeerCursors; const g = document.getElementById('guides-toggle'); if (g) g.checked = guidesEnabled; const sm = document.getElementById('smart-draw'); if (sm) sm.checked = smartDraw; }
+    if (show) { syncBgUI(); const c = document.getElementById('cursors-toggle'); if (c) c.checked = showPeerCursors; const g = document.getElementById('guides-toggle'); if (g) g.checked = guidesEnabled; }
   }
   // Клик мимо меню — закрыть.
   document.addEventListener('mousedown', (e) => { const m = document.getElementById('board-menu'); if (m && !m.hidden && !e.target.closest('#board-menu') && !e.target.closest('#board-menu-btn')) hideBoardMenu(); });
