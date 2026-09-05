@@ -32,6 +32,13 @@
 
         <form method="post" class="form-card">
             {% csrf_token %}
+            <label class="stu-item mb-3">
+                <input type="checkbox" name="sequential" class="form-check-input"
+                       {% if course.sequential %}checked{% endif %}>
+                <span>Последовательный курс
+                    <span class="muted">· следующий урок открывается, когда пройден предыдущий</span></span>
+            </label>
+
             {% if students %}
             <div class="mb-3">
                 {% for s in students %}
@@ -39,6 +46,19 @@
                     <input type="checkbox" name="students" value="{{ s.profile.user_id }}"
                            class="form-check-input" {% if s.enrolled %}checked{% endif %}>
                     <span>{{ s.profile.display_name }}{% if s.profile.grade %} <span class="muted">· {{ s.profile.grade }} класс</span>{% endif %}</span>
+                    {% comment %}
+                    Окно доступа. Пустые поля — как было: доступ без границ.
+                    Заполненные снимают с преподавателя обязанность помнить,
+                    кого и когда отключить.
+                    {% endcomment %}
+                    <span class="muted" style="margin-left:auto; display:flex; gap:.4rem; align-items:center;">
+                        с <input type="date" name="starts_{{ s.profile.user_id }}"
+                                 class="form-control form-control-sm" style="width:9.5rem;"
+                                 value="{% if s.запись.starts_at %}{{ s.запись.starts_at|date:'Y-m-d' }}{% endif %}">
+                        по <input type="date" name="ends_{{ s.profile.user_id }}"
+                                  class="form-control form-control-sm" style="width:9.5rem;"
+                                  value="{% if s.запись.ends_at %}{{ s.запись.ends_at|date:'Y-m-d' }}{% endif %}">
+                    </span>
                 </label>
                 {% endfor %}
             </div>

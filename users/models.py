@@ -220,6 +220,14 @@ class Course(models.Model):
     cover_image = models.ImageField('Обложка курса', upload_to='courses/covers/', blank=True, null=True)
     is_active = models.BooleanField('Активен', default=False)
     order = models.IntegerField('Порядок отображения', default=0)
+    # Последовательный курс: следующий урок открывается, когда сдан предыдущий.
+    # Один переключатель вместо связывания уроков попарно вручную — иначе на
+    # курсе из тридцати уроков это тридцать нажатий и тридцать шансов ошибиться.
+    # Точечная связка (Lesson.unlock_after) остаётся для ветвлений вроде
+    # «повторение перед контрольной».
+    sequential = models.BooleanField(
+        'Последовательный курс', default=False,
+        help_text='Следующий урок открывается, когда пройден предыдущий.')
     tracking_mode = models.CharField(
         'Режим прогресса', max_length=10, choices=TRACKING_CHOICES, default=TRACKING_AUTO,
         help_text='manual — задачник, преподаватель сам отмечает решённые задачи',
@@ -310,6 +318,18 @@ class Lesson(models.Model):
         help_text='Например 7 — сдать в течение недели после записи на курс')
     cutoff_offset_days = models.PositiveSmallIntegerField(
         'Приём: дней от записи', null=True, blank=True)
+    # Когда урок ОТКРОЕТСЯ. Прежде у урока были только сроки сдачи — то есть
+    # когда закрыть; открыть позже было нечем, и весь курс лежал перед учеником
+    # целиком с первого дня.
+    available_from = models.DateField(
+        'Откроется с', null=True, blank=True,
+        help_text='Пусто — доступен сразу.')
+    # «Откроется, когда сдан вот тот урок». Ссылка на себя же: SET_NULL, а не
+    # CASCADE — удалили урок-предшественник, и зависимый просто открывается, а
+    # не исчезает вместе с ним.
+    unlock_after = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='unlocks', verbose_name='Откроется после урока')
 
     def accepts_submissions(self, today=None):
         """Можно ли ещё сдавать. Отсечка включительно: указан день — до
@@ -588,6 +608,16 @@ class Enrollment(models.Model):
     course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='enrollments')
     enrolled_at = models.DateTimeField('Дата записи', auto_now_add=True)
     is_active = models.BooleanField('Активна', default=True)
+    # Окно доступа. Галочки is_active мало: «оплачено до конца мая» и
+    # «записался в июне на сентябрьский курс» ею не выразить, и каждый раз
+    # приходится помнить про это самому и переключать руками — тридцать
+    # записей, двоих забыли, одному сняли по ошибке.
+    starts_at = models.DateField(
+        'Доступ с', null=True, blank=True, help_text='Пусто — сразу.')
+    ends_at = models.DateField(
+        'Доступ по', null=True, blank=True,
+        help_text='Пусто — без ограничения. День включительно.')
+
     progress = models.IntegerField('Прогресс (%)', default=0, help_text='Процент прохождения курса')
     last_accessed = models.DateTimeField('Последний доступ', auto_now=True)
     

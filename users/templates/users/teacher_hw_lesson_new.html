@@ -200,6 +200,32 @@
                 </div>
             </div>
 
+            {% comment %}
+            Когда урок ОТКРОЕТСЯ. Прежде задавать можно было только сроки сдачи —
+            то есть когда закрыть; открыть позже было нечем, и весь курс лежал
+            перед учеником целиком с первого дня.
+            {% endcomment %}
+            <div class="row g-3 mb-3">
+                <div class="col-md-3">
+                    <label class="form-label" for="available_from">Откроется с</label>
+                    <input type="date" name="available_from" id="available_from"
+                           class="form-control"
+                           value="{% if lesson.available_from %}{{ lesson.available_from|date:'Y-m-d' }}{% endif %}">
+                    <div class="form-text">пусто — доступен сразу</div>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label" for="unlock_after">…или после урока</label>
+                    <select name="unlock_after" id="unlock_after" class="form-select">
+                        <option value="">— не ждать ничего —</option>
+                        {% for u in соседи %}
+                        <option value="{{ u.id }}"
+                            {% if lesson.unlock_after_id == u.id %}selected{% endif %}>{{ u.title }}</option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text">откроется, когда тот урок пройден целиком</div>
+                </div>
+            </div>
+
             <div class="mb-3">
                 <label class="form-label">Краткая теория / напоминание (необязательно)</label>
                 <textarea name="lesson_intro" class="form-control" rows="3"

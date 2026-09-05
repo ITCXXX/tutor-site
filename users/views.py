@@ -1325,17 +1325,27 @@ def teacher_course_enroll(request, slug):
                 .select_related('user').order_by('display_name'))
     if request.method == 'POST':
         selected = {int(x) for x in request.POST.getlist('students') if x.isdigit()}
+        # Последовательный курс — свойство самого курса, а не записи: правило
+        # одно на всех, кто на нём учится.
+        course.sequential = bool(request.POST.get('sequential'))
+        course.save(update_fields=['sequential'])
+
         for sp in profiles:
             student = sp.user
             enr = Enrollment.objects.filter(course=course, student=student).first()
+            # Окно доступа у КАЖДОГО своё: один платит помесячно, другой взял
+            # летний интенсив, третий записан на сентябрь заранее.
+            с = _parse_due(request.POST.get('starts_%d' % student.id))
+            по = _parse_due(request.POST.get('ends_%d' % student.id))
             if student.id in selected:
                 if enr:
-                    if not enr.is_active:
-                        enr.is_active = True
-                        enr.save(update_fields=['is_active'])
+                    enr.is_active = True
+                    enr.starts_at, enr.ends_at = с, по
+                    enr.save(update_fields=['is_active', 'starts_at', 'ends_at'])
                 else:
                     Enrollment.objects.create(
-                        course=course, student=student, is_active=True)
+                        course=course, student=student, is_active=True,
+                        starts_at=с, ends_at=по)
             elif enr and enr.is_active:
                 enr.is_active = False
                 enr.save(update_fields=['is_active'])
@@ -1346,11 +1356,26 @@ def teacher_course_enroll(request, slug):
         Enrollment.objects.filter(course=course, is_active=True)
         .values_list('student_id', flat=True)
     )
-    students = [{'profile': p, 'enrolled': p.user_id in enrolled_ids} for p in profiles]
+    окна = {e.student_id: e for e in Enrollment.objects.filter(course=course)}
+    students = [{'profile': p, 'enrolled': p.user_id in enrolled_ids,
+                 'запись': окна.get(p.user_id)} for p in profiles]
     return render(request, 'users/teacher_course_enroll.html', {
         'title': f'Ученики курса: {course.title}',
         'course': course, 'students': students,
     })
+
+
+def _соседние_уроки(lesson):
+    """Уроки того же курса, кроме самого — для выбора «откроется после».
+
+    Сам себя урок в списке не видит: связка на себя заперла бы его навсегда,
+    и разбираться в этом пришлось бы долго.
+    """
+    return list(Lesson.objects
+                .filter(module__course=lesson.module.course)
+                .exclude(pk=lesson.pk)
+                .select_related('module')
+                .order_by('module__order', 'order'))
 
 
 def _parse_offset(raw):
@@ -1469,6 +1494,7 @@ def teacher_hw_lesson_new(request, slug):
                                       request.POST.get('due_date')),
             due_offset_days=_parse_offset(request.POST.get('due_offset_days')),
             cutoff_offset_days=_parse_offset(request.POST.get('cutoff_offset_days')),
+            available_from=_parse_due(request.POST.get('available_from')),
         )
         for i, t in enumerate(tasks, 1):
             Assignment.objects.create(
@@ -1523,6 +1549,7 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
                 'rows': raw_rows or [{'condition': '', 'answer': '', 'image_url': '', 'requires_review': False}],
                 'is_edit': True,
                 'lesson_intro': lesson.content,
+                'соседи': _соседние_уроки(lesson),
             })
 
         lesson.title = lesson_title
@@ -1532,8 +1559,18 @@ def teacher_hw_lesson_edit(request, slug, lesson_id):
                                            request.POST.get('due_date'))
         lesson.due_offset_days = _parse_offset(request.POST.get('due_offset_days'))
         lesson.cutoff_offset_days = _parse_offset(request.POST.get('cutoff_offset_days'))
+        lesson.available_from = _parse_due(request.POST.get('available_from'))
+        # «Откроется после» — только урок ИЗ ЭТОГО ЖЕ курса и не сам на себя:
+        # ссылка на чужой курс заперла бы урок навсегда, а на себя — навечно.
+        сырое = (request.POST.get('unlock_after') or '').strip()
+        предш = None
+        if сырое.isdigit() and int(сырое) != lesson.id:
+            предш = Lesson.objects.filter(
+                id=int(сырое), module__course=lesson.module.course).first()
+        lesson.unlock_after = предш
         lesson.save(update_fields=['title', 'content', 'due_date', 'cutoff_date',
-                                   'due_offset_days', 'cutoff_offset_days'])
+                                   'due_offset_days', 'cutoff_offset_days',
+                                   'available_from', 'unlock_after'])
 
         # Diff по стабильному id: задачу с тем же Assignment.id обновляем,
         # новые (без id) создаём, отсутствующие в форме — удаляем. Так прогресс
@@ -2321,19 +2358,29 @@ def unenroll_from_course(request, enrollment_id):
 # но нет Assignment'ов и TaskGroup. Прогресс — модель LessonProgress.
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _can_access_lesson(user, lesson):
-    """Доступ к уроку: бесплатный — всем; иначе нужен вход и активная запись
-    на курс (либо владелец курса / администратор)."""
+def _lesson_lock(user, lesson):
+    """Почему урок закрыт. None — открыт.
+
+    ЕДИНСТВЕННЫЕ ворота доступа к уроку: сюда же ходят страница задачи,
+    переписка и рассылка напоминаний. Сами правила живут в users/access.py —
+    здесь только исключения для тех, кому правила не адресованы.
+    """
+    from .access import lesson_lock_reason
     course = lesson.module.course
     if getattr(lesson, 'is_free', False):
-        return True
+        return None                       # витрина открыта всем
     if not user.is_authenticated:
-        return False
+        return 'Войдите, чтобы открыть урок.'
     if user.is_superuser or getattr(course, 'owner_id', None) == user.id:
-        return True
-    return Enrollment.objects.filter(
-        course=course, student=user, is_active=True
-    ).exists()
+        return None                       # автор курса видит свой курс целиком
+    if getattr(user, 'role', '') == 'teacher':
+        return None                       # преподаватель смотрит материал свободно
+    return lesson_lock_reason(lesson, user)
+
+
+def _can_access_lesson(user, lesson):
+    """Открыт ли урок. Причину закрытия даёт _lesson_lock."""
+    return _lesson_lock(user, lesson) is None
 
 
 def lesson_detail(request, lesson_id):
@@ -2341,8 +2388,12 @@ def lesson_detail(request, lesson_id):
     lesson = get_object_or_404(Lesson, id=lesson_id)
     course = lesson.module.course
 
-    if not _can_access_lesson(request.user, lesson):
-        messages.error(request, 'Этот урок доступен только записанным на курс.')
+    # Говорим ПРИЧИНУ, а не «нельзя». «Закрыто» без объяснения человек читает
+    # как поломку сайта и пишет преподавателю — а причина обычно понятная:
+    # откроется такого-то числа или после предыдущего урока.
+    причина = _lesson_lock(request.user, lesson)
+    if причина:
+        messages.error(request, причина)
         return redirect('course_detail', slug=course.slug)
 
     is_read = False

@@ -51,3 +51,26 @@ def needed_for(assignment, pool_size=None):
     if pool_size:
         нужно = min(нужно, pool_size)
     return max(1, нужно)
+
+def done_assignment_ids(student, assignment_ids, course):
+    """Какие из этих задач ученик уже прошёл. Одним запросом.
+
+    Правило «задача пройдена» у нас зависит от вида курса: в задачнике его
+    ставит преподаватель (ManualMark), в остальных считает система
+    (StudentProgress). Развилка записана ЗДЕСЬ, чтобы её не переписывали в
+    каждом новом месте.
+
+    Долг, который стоит помнить: ту же развилку до сих пор считают своими руками
+    _build_paragraphs в users/views.py и homework_for в users/homework.py. Их
+    надо перевести на эту функцию — тогда правило станет одним по-настоящему.
+    """
+    from .models import ManualMark, StudentProgress
+    ids = list(assignment_ids)
+    if not ids:
+        return set()
+    if getattr(course, 'is_manual', False):
+        return {m.assignment_id for m in ManualMark.objects.filter(
+            student=student, assignment_id__in=ids, is_completed=True)}
+    return set(StudentProgress.objects.filter(
+        student=student, assignment_id__in=ids, is_completed=True,
+    ).values_list('assignment_id', flat=True))

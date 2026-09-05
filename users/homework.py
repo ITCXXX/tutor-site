@@ -64,13 +64,15 @@ def homework_for(student, limit=None):
         на_проверке[урок_задачи[aid]] += 1
 
     сегодня = timezone.localdate()
+    # Внутри функции: access.py сам смотрит в progress.py, и импорт наверху
+    # свёл бы модули в кольцо.
+    from .access import lesson_done, lock_reason_with
     # Личные продления — одним запросом на весь список.
     продления = extensions_map(lesson_ids, [student.id])
     # Дни записи — тоже одним. Без этого сроки «от записи» вернули бы запрос на
     # каждый урок, и мы бы заново получили ту самую N+1, от которой уходили.
-    записи = dict(Enrollment.objects
-                  .filter(student=student, course_id__in=course_ids)
-                  .values_list('course_id', 'enrolled_at'))
+    записи = {e.course_id: e for e in Enrollment.objects
+              .filter(student=student, course_id__in=course_ids)}
     строки = []
     for l in lessons:
         n = всего.get(l.id, 0)
@@ -80,7 +82,22 @@ def homework_for(student, limit=None):
         if осталось <= 0:
             continue                       # всё сдано, показывать незачем
         ext = продления.get((l.id, student.id))
-        зап = записи.get(l.module.course_id)
+        запись = записи.get(l.module.course_id)
+        зап = запись.enrolled_at if запись else None
+
+        # Закрытый урок в сводку не попадает, и это не косметика: иначе ночная
+        # рассылка напомнит про домашку, которую ученик не может даже открыть,
+        # а он решит, что у него что-то сломалось. Правило спрашиваем у общей
+        # функции, передавая уже посчитанное, — своего кода про доступ здесь нет.
+        def _пройден(ур, _всего=всего, _сдано=сдано):
+            n_ = _всего.get(ур.id)
+            if n_ is None:      # урок вне этого списка (теория, другой курс)
+                return lesson_done(ур, student)
+            return _сдано.get(ур.id, 0) >= n_
+
+        if lock_reason_with(l, запись, сегодня, _пройден):
+            continue
+
         срок, приём_до = dates_for(l, student, ext, зап)
         строки.append({
             'lesson': l,
