@@ -146,6 +146,11 @@ sudo -u tutor venv/bin/python manage.py collectstatic --noinput
 ```bash
 cd /opt/tutor
 
+# СНАЧАЛА сам курс. Все остальные команды ищут его по slug и без него молча
+# отказываются работать: «Курс ОГЭ (slug=oge-maths) не найден».
+# Запускать можно сколько угодно раз: существующий курс не трогается.
+sudo -u tutor venv/bin/python manage.py seed_oge_course
+
 # Все 35 групп заданий 1-5 (Шины/Дороги/План/Печи/Форматы/Квартира)
 sudo -u tutor venv/bin/python manage.py populate_oge15_run_all
 
@@ -154,6 +159,11 @@ sudo -u tutor venv/bin/python manage.py seed_oge16
 sudo -u tutor venv/bin/python manage.py seed_oge17
 sudo -u tutor venv/bin/python manage.py seed_oge18
 sudo -u tutor venv/bin/python manage.py seed_oge19
+
+# Вторая часть: №20-25 (122 задания с генераторами)
+for n in 20 21 22 23 24 25; do
+  sudo -u tutor venv/bin/python manage.py seed_oge$n
+done
 
 # Прочие seed-скрипты, если нужны:
 # sudo -u tutor venv/bin/python manage.py seed_oge6

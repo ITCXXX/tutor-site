@@ -776,3 +776,71 @@ class PWATests(TestCase):
         self.assertContains(r, 'rel="manifest"')
         self.assertContains(r, 'apple-touch-icon')
         self.assertContains(r, 'serviceWorker')
+
+
+class SeedOgeCourseTests(TestCase):
+    """Курс ОГЭ описан кодом, а не заводится руками в админке.
+
+    Раньше все seed-команды начинались с поиска курса по slug и на новом
+    сервере молча отказывались работать: «Курс ОГЭ (slug=oge-maths) не найден».
+    """
+
+    def _запустить(self, *аргументы):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        вывод = StringIO()
+        call_command('seed_oge_course', *аргументы, stdout=вывод)
+        return вывод.getvalue()
+
+    def test_создаёт_курс_и_три_модуля(self):
+        from users.models import Course
+
+        вывод = self._запустить()
+        курс = Course.objects.get(slug='oge-maths')
+        self.assertTrue(курс.is_public)
+        self.assertEqual(курс.tracking_mode, Course.TRACKING_AUTO)
+        self.assertEqual(
+            sorted(курс.modules.values_list('title', flat=True)),
+            sorted(['Задания 1-5', 'Первая часть', 'Вторая часть']),
+        )
+        self.assertIn('создан', вывод)
+
+    def test_повторный_запуск_ничего_не_ломает(self):
+        from users.models import Course
+
+        self._запустить()
+        курс = Course.objects.get(slug='oge-maths')
+        курс.title = 'ОГЭ по математике, 9 класс'
+        курс.save()
+
+        вывод = self._запустить()
+        курс.refresh_from_db()
+        # Название, поправленное в админке, повторный запуск не затирает.
+        self.assertEqual(курс.title, 'ОГЭ по математике, 9 класс')
+        self.assertEqual(Course.objects.filter(slug='oge-maths').count(), 1)
+        self.assertEqual(курс.modules.count(), 3)
+        self.assertIn('уже есть', вывод)
+
+    def test_после_курса_сид_второй_части_отрабатывает(self):
+        """Ради этого всё и затевалось: seed_oge22 больше не упирается в курс."""
+        from io import StringIO
+
+        from django.core.management import call_command
+        from users.models import Assignment
+
+        self._запустить()
+        вывод = StringIO()
+        call_command('seed_oge22', stdout=вывод)
+        self.assertNotIn('не найден', вывод.getvalue())
+        self.assertEqual(
+            Assignment.objects.filter(lesson__title__startswith='№22').count(), 17)
+
+    def test_список_курсов_показывается_и_ничего_не_создаёт(self):
+        from users.models import Course
+
+        вывод = self._запустить('--list')
+        self.assertIn('Курсов нет вообще', вывод)
+        self.assertEqual(Course.objects.count(), 0)
+
