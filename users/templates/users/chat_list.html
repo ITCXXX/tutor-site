@@ -11,7 +11,7 @@
           background: transparent; border-radius: 10px; padding: .4rem .85rem;
           font-size: .88rem; font-weight: 600; text-decoration: none; }
 .ch-new:hover { background: var(--c-primary-600); color: #fff; }
-.ch-list { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-lg); overflow: hidden; }
+
 .ch-row { display: flex; align-items: center; gap: .85rem; padding: .9rem 1.1rem;
           border-bottom: 1px solid var(--c-border); text-decoration: none; color: inherit; }
 .ch-row:last-child { border-bottom: none; }
@@ -42,7 +42,7 @@
     </div>
 
     {% if threads %}
-      <div class="ch-list">
+      <div class="app-list">
         {% for t in threads %}
           <a class="ch-row" href="{% url 'chat_thread' t.id %}">
             <span class="ch-name">{{ t.заголовок }}</span>
@@ -55,7 +55,7 @@
 
     {% if новые %}
       <div class="ch-sec">Ещё не писали</div>
-      <div class="ch-list">
+      <div class="app-list">
         {% for s in новые %}
           <a class="ch-row" href="{% url 'chat_start' s.id %}">
             <span class="ch-name">{{ s.display }}</span>

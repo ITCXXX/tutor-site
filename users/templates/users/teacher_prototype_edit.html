@@ -6,8 +6,8 @@
 <style>
 .btn-back { color: var(--c-text-muted); text-decoration: none; font-size: .9rem; margin-bottom: 1rem; display: inline-block; }
 .btn-back:hover { color: var(--c-primary-600); }
-.form-card { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: .5rem; padding: 1.5rem; }
-.form-card label { font-weight: 500; font-size: .85rem; color: var(--c-text-soft); }
+
+.app-form-card label { font-weight: 500; font-size: .85rem; color: var(--c-text-soft); }
 .q-row { border: 1px solid var(--c-border); border-radius: .5rem; padding: .85rem; margin-bottom: .85rem; background: var(--c-bg); }
 .q-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; }
 .q-idx { font-weight: 600; font-size: .9rem; color: var(--c-text-soft); }
@@ -28,7 +28,7 @@
             <div class="meta">Тема: {{ lesson.title }}. Вопросы: число или выбор из вариантов, автопроверка.</div>
         </div>
 
-        <form method="post" class="form-card" enctype="multipart/form-data">
+        <form method="post" class="app-form-card" enctype="multipart/form-data">
             {% csrf_token %}
 
             <div class="mb-3">

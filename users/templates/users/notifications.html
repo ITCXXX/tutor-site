@@ -6,7 +6,7 @@
 <style>
 .nt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .nt-head h1 { font-size: 1.5rem; font-weight: 700; margin: 0; }
-.nt-list { background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--r-lg); overflow: hidden; }
+
 .nt-item { display: flex; gap: .85rem; padding: .85rem 1.1rem; border-bottom: 1px solid var(--c-border); text-decoration: none; color: inherit; }
 .nt-item:last-child { border-bottom: none; }
 .nt-item:hover { background: var(--c-bg-soft); color: inherit; }
@@ -20,7 +20,7 @@
 .nt-item.unread .nt-dot { background: var(--c-primary-600); }
 /* Список ограничен сотней записей — браузеру проще не размечать то, что за
    краем экрана. */
-.nt-list { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+.app-list { content-visibility: auto; contain-intrinsic-size: auto 600px; }
 .nt-body { flex: 1; min-width: 0; }
 .nt-text { font-size: .95rem; line-height: 1.35; overflow-wrap: break-word; }
 .nt-meta { font-size: .78rem; color: var(--c-text-muted); margin-top: .2rem; }
@@ -42,7 +42,7 @@
             {% endif %}
         </div>
 
-        <div class="nt-list">
+        <div class="app-list">
             {% for n in items %}
             {# Без адреса это не ссылка, а строка текста: якорь на «#» выглядел
                бы кликабельным, ловил фокус с клавиатуры и никуда не вёл. #}
