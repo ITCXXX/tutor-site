@@ -263,7 +263,14 @@ def _от_записи(lesson, student, enrolled_at):
         enrolled_at = зап
     if not enrolled_at:
         return None, None
-    начало = enrolled_at.date() if hasattr(enrolled_at, 'date') else enrolled_at
+    # ЧЕРЕЗ localtime, а не .date() напрямую. Время записи хранится в UTC, а
+    # «сегодня» везде берётся по местному (localdate). Для записи, сделанной
+    # ночью с 00:00 до 03:00 по Москве, дата UTC на сутки раньше — и все личные
+    # сроки такого ученика уезжали на день назад: «срок вышел» приходил раньше,
+    # а приём закрывался в тот день, который ученик считал своим.
+    начало = (timezone.localtime(enrolled_at).date()
+              if hasattr(enrolled_at, 'tzinfo') and enrolled_at.tzinfo is not None
+              else (enrolled_at.date() if hasattr(enrolled_at, 'date') else enrolled_at))
     due = (начало + timedelta(days=lesson.due_offset_days)
            if lesson.due_offset_days is not None else None)
     cut = (начало + timedelta(days=lesson.cutoff_offset_days)

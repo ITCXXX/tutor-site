@@ -15,8 +15,9 @@ import datetime
 from django.utils import timezone
 
 from .access import lesson_lock_reason, lesson_open, lesson_done
-from .homework import homework_for
-from .models import Enrollment, LessonProgress, ManualMark, StudentProgress
+from .homework import dates_for, homework_for
+from .models import (Enrollment, LessonProgress, ManualMark,
+                     StudentProgress, StudentSubmission)
 from .tests_base import (КабинетTestCase, записать, сделать_задачу,
                          сделать_курс, сделать_преподавателя, сделать_ученика,
                          сделать_урок)
@@ -207,3 +208,99 @@ class СводкаНеЗовётВЗакрытоеTests(КабинетTestCase):
 
         уроки = {r['lesson'].id for r in homework_for(self.ученик)}
         self.assertIn(урок2.id, уроки)
+
+
+class ЗамокДержитИНеЧерезСтраницуTests(КабинетTestCase):
+    """Замок на двери бесполезен, если окна открыты.
+
+    Аудит нашёл ровно это: показ страницы я закрыл, а приём работы, приём
+    ответа и отметку «прочитано» — нет. Отправку легко повторить мимо страницы,
+    а отметка «прочитано» в последовательном курсе ОТПИРАЕТ следующий урок —
+    то есть ученик открывал себе курс сам.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.курс.sequential = True
+        self.курс.tracking_mode = 'homework'
+        self.курс.save(update_fields=['sequential', 'tracking_mode'])
+        self.теория = сделать_урок(self.курс, 'Теория', order=0)
+        self.client.force_login(self.ученик)
+
+    def test_прочитано_не_ставится_на_запертый_урок(self):
+        """Урок заперт датой — отметка не проходит и следующий не отпирается."""
+        self.теория.available_from = дата(7)
+        self.теория.save(update_fields=['available_from'])
+
+        r = self.client.post('/lesson/%d/mark-read/' % self.теория.id)
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(LessonProgress.objects.filter(
+            student=self.ученик, lesson=self.теория, is_read=True).exists())
+        self.assertFalse(lesson_open(self.урок, self.ученик))
+
+    def test_прочитано_ставится_на_открытый(self):
+        r = self.client.post('/lesson/%d/mark-read/' % self.теория.id)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(lesson_open(self.урок, self.ученик))
+
+    def test_прочитано_чужого_курса_не_ставится(self):
+        чужой_препод = сделать_преподавателя(username='chuzhoy_prepod',
+                                             display='Чужой')
+        чужой_курс = сделать_курс(чужой_препод, title='Чужой', slug='chuzhoy')
+        чужой_урок = сделать_урок(чужой_курс, 'Не мой', order=1)
+
+        r = self.client.post('/lesson/%d/mark-read/' % чужой_урок.id)
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(LessonProgress.objects.filter(
+            student=self.ученик, lesson=чужой_урок).exists())
+
+    def test_сдача_не_проходит_после_конца_доступа(self):
+        """Окно записи кончилось: страница закрыта — и отправка тоже."""
+        Enrollment.objects.filter(student=self.ученик, course=self.курс).update(
+            ends_at=дата(-1))
+        r = self.client.post('/exam/hw-submit/%d/' % self.задача1.id,
+                             {'text': 'решение'})
+        self.assertEqual(r.status_code, 302)          # увели со страницы
+        self.assertFalse(StudentSubmission.objects.filter(
+            student=self.ученик, assignment=self.задача1).exists())
+
+    def test_короткий_ответ_не_принимается_из_запертого_урока(self):
+        """Задача именно с коротким ответом: иначе её отклонят раньше ворот,
+        и тест окажется зелёным по чужой причине — так и вышло с первой
+        попытки."""
+        быстрая = сделать_задачу(self.урок, 'Короткий ответ', order=9,
+                                 requires_review=False)
+        # Курс здесь последовательный, и урок ждёт теорию — сначала откроем его
+        # честным путём, иначе первое же утверждение упрётся в замок.
+        LessonProgress.objects.create(student=self.ученик, lesson=self.теория,
+                                      is_read=True)
+        # Теперь убеждаемся, что на ОТКРЫТОМ уроке ворота пропускают.
+        r = self.client.post('/exam/hw-check/%d/' % быстрая.id, {'answer': '5'})
+        self.assertNotEqual(r.status_code, 403, 'ворота не пускают на открытом уроке')
+
+        self.урок.available_from = дата(5)
+        self.урок.save(update_fields=['available_from'])
+        r = self.client.post('/exam/hw-check/%d/' % быстрая.id, {'answer': '5'})
+        self.assertEqual(r.status_code, 403)
+
+
+class ДеньЗаписиВМестномВремениTests(КабинетTestCase):
+    """Сроки «от записи» считались по дате UTC, а «сегодня» — по местному.
+
+    Для записи, сделанной ночью с 00:00 до 03:00 по Москве, дата UTC на сутки
+    раньше — и все личные сроки такого ученика уезжали на день назад.
+    """
+
+    def test_ночная_запись_не_сдвигает_срок(self):
+        полвторого_ночи = timezone.make_aware(
+            datetime.datetime.combine(timezone.localdate(),
+                                      datetime.time(1, 30)),
+            timezone.get_current_timezone())
+        Enrollment.objects.filter(student=self.ученик, course=self.курс).update(
+            enrolled_at=полвторого_ночи)
+        self.урок.due_offset_days = 7
+        self.урок.save(update_fields=['due_offset_days'])
+
+        срок, _ = dates_for(self.урок, self.ученик)
+        self.assertEqual(срок, дата(7),
+                         'срок уехал: дата записи взята не в местном времени')

@@ -1858,10 +1858,13 @@ def submit_hw_solution(request, assignment_id):
     if not course.is_homework:
         messages.error(request, 'Это не курс с ДЗ.')
         return redirect('student_courses')
-    if not Enrollment.objects.filter(
-        course=course, student=request.user, is_active=True
-    ).exists():
-        messages.error(request, 'Вы не записаны на этот курс.')
+    # Полные ворота, а не одна галочка «записан». Раньше здесь проверялась
+    # только активность записи — то есть окно доступа и замок урока сдачу не
+    # останавливали: страница не открывается, а отправка проходит. Спрятать
+    # форму мало, отправку легко повторить в обход страницы.
+    причина = _lesson_lock(request.user, assignment.lesson)
+    if причина:
+        messages.error(request, причина)
         return redirect('student_courses')
 
     # Отсечка. Проверка серверная и это принципиально: спрятать форму мало,
@@ -2071,11 +2074,14 @@ def check_hw_answer(request, assignment_id):
 
     # Курс с ДЗ приватный — проверять ответ может только владелец или записанный ученик
     u = request.user
-    if not (u.is_authenticated and (
-            course.owner_id == u.id
-            or Enrollment.objects.filter(
-                course=course, student=u, is_active=True).exists())):
+    if not u.is_authenticated:
         return JsonResponse({'error': 'forbidden'}, status=403)
+    # Те же ворота, что у страницы и у развёрнутого решения. Тракта приёма два,
+    # а правило одно — держать его надо в обоих, иначе запертый урок всё равно
+    # засчитывается и открывает следующий.
+    причина = _lesson_lock(u, assignment.lesson)
+    if причина:
+        return JsonResponse({'error': причина}, status=403)
 
     # Та же отсечка, что и у развёрнутых решений: тракта приёма два, а
     # правило одно, и держать его надо в обоих.
@@ -2424,8 +2430,18 @@ def lesson_detail(request, lesson_id):
 @student_required
 @require_POST
 def mark_lesson_read(request, lesson_id):
-    """AJAX: отметить теоретический урок как прочитанный."""
+    """AJAX: отметить теоретический урок как прочитанный.
+
+    Проверка доступа здесь ОБЯЗАТЕЛЬНА, и это не формальность. В
+    последовательном курсе урок без задач считается пройденным именно по этой
+    отметке (users/access.py, lesson_done), а пройденный урок отпирает
+    следующий. Без проверки ученик открывал себе курс сам: достаточно послать
+    сюда номер запертого урока, ни разу его не открыв.
+    """
     lesson = get_object_or_404(Lesson, id=lesson_id)
+    причина = _lesson_lock(request.user, lesson)
+    if причина:
+        return JsonResponse({'error': причина}, status=403)
     progress, _ = LessonProgress.objects.get_or_create(
         student=request.user, lesson=lesson,
     )
