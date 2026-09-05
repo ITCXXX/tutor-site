@@ -5,8 +5,10 @@
 работает с моделями CardState и CardReview, поэтому планировщик можно заменить
 или увезти внутрь проекта, не трогая ни вьюхи, ни шаблоны.
 
-Библиотека — fsrs 6.3.2, лицензия MIT, 1180 строк чистого Python; из
-зависимостей только typing-extensions. torch нужен единственно оптимизатору
+Библиотека — fsrs 6.3.2, лицензия MIT, 1180 строк чистого Python. Лежит прямо
+в репозитории (cards/vendor/fsrs/, см. там ОТКУДА.md), а не ставится с PyPI:
+раздел считает по ней сроки повторений, и зависеть в этом от доступности
+чужого сервиса при выкладке незачем. torch нужен единственно оптимизатору
 весов, который подключается лениво и здесь не используется.
 
 Что настраиваем и почему:
@@ -28,7 +30,7 @@ from datetime import timedelta, timezone as dt_timezone
 
 from django.utils import timezone
 
-from fsrs import Card as FSRSCard, Rating, Scheduler, State
+from .vendor.fsrs import Card as FSRSCard, Rating, Scheduler, State
 
 from .models import CardReview, CardState, SchedulerWeights
 

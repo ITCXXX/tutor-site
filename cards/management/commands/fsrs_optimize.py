@@ -103,7 +103,7 @@ class Command(BaseCommand):
     def _оптимизатор(self):
         """Класс оптимизатора или None, если torch не установлен."""
         try:
-            from fsrs import Optimizer
+            from cards.vendor.fsrs import Optimizer
         except ImportError:
             return None
         try:
@@ -120,7 +120,7 @@ class Command(BaseCommand):
 
     def _посчитать(self, Optimizer, ученик):
         """Собрать журнал ученика в вид, понятный библиотеке, и обучить веса."""
-        from fsrs import Rating, ReviewLog
+        from cards.vendor.fsrs import Rating, ReviewLog
 
         # Прямое и обратное направления — для оптимизатора разные карточки:
         # у них своя история и своя прочность. Склеив их под одним номером, мы
