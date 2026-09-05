@@ -95,6 +95,16 @@
 .answer-field .remove-answer:hover { color: var(--c-danger); border-color: var(--c-danger); }
 #add-answer-btn { white-space: nowrap; }
 .answer-row .feedback { font-size: .9rem; }
+.math-keys { display: flex; gap: .3rem; }
+.math-keys button { font: inherit; font-size: 1rem; line-height: 1; min-width: 2.4rem;
+                    padding: .4rem .5rem; border: 1px solid #cbd5e1; border-radius: .35rem;
+                    background: #fff; color: #334155; cursor: pointer; }
+.math-keys button:hover { background: #f1f5f9; }
+.math-keys button:active { background: #e2e8f0; }
+.answer-format-hint { flex-basis: 100%; margin-top: .4rem; font-size: .82rem;
+                      color: #64748b; line-height: 1.45; }
+.answer-format-hint code { background: #f1f5f9; padding: .05rem .3rem;
+                           border-radius: .2rem; color: #334155; }
 .answer-row .feedback.correct { color: var(--c-success); font-weight: 600; }
 .answer-row .feedback.wrong { color: var(--c-danger); font-weight: 500; }
 
@@ -138,6 +148,22 @@
     border-color: #c62828;
     background: #ffebee;
 }
+.proof-row { margin: .75rem 0; display: flex; flex-direction: column; gap: .6rem; }
+.proof-hint { color: #6c757d; margin: 0; font-size: .95rem; }
+.proof-ask { margin-right: .5rem; }
+#proof-step-2 { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+
+.solution-box {
+    margin-top: 1.25rem;
+    padding: 1rem 1.15rem;
+    border: 1px solid var(--border, #dee2e6);
+    border-left: 4px solid #6c8cff;
+    border-radius: .5rem;
+    background: rgba(108, 140, 255, .06);
+}
+.solution-title { font-weight: 600; margin-bottom: .5rem; }
+.solution-box .math-content { overflow-x: auto; }
+
 .choice-btn.choice-reveal {
     border-color: #1565c0;
     background: #e3f2fd;
@@ -295,6 +321,23 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     <button type="button" id="reveal-btn" class="btn btn-outline-secondary btn-sm">Узнать ответ</button>
                     {% endif %}
                     <span class="feedback" id="feedback"></span>
+                    {% comment %} Клавиши для того, что с клавиатуры не набрать. Показываем
+                       их на всех задачах второй части, а не только там, где
+                       корень действительно есть: иначе сама кнопка выдавала бы
+                       ответ. {% endcomment %}
+                    <div class="math-keys" id="math-keys"
+                         {% if not task_data.math_input %}hidden{% endif %}>
+                        <button type="button" data-ins="√()" data-back="1"
+                                title="Корень: √(20) или просто √5">√</button>
+                        <button type="button" data-ins="-∞" title="Минус бесконечность">−∞</button>
+                        <button type="button" data-ins="+∞" title="Плюс бесконечность">+∞</button>
+                    </div>
+                    <div class="answer-format-hint" id="interval-hint"
+                         {% if not task_data.interval_answer %}style="display:none"{% endif %}>
+                        Ответ — промежуток. Скобки: <b>[</b> — конец входит,
+                        <b>(</b> — не входит. Объединение пишите плюсом,
+                        например: <code>(-∞; -7] + (0; 7]</code>
+                    </div>
                 </div>
 
                 <div class="choices-row" id="answer-row-choices"
@@ -315,9 +358,43 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     <span class="feedback" id="feedback-choices"></span>
                 </div>
 
+                {% comment %}
+                Задача на доказательство (№24): поля ввода нет, есть три шага —
+                показать доказательство, отметить результат, идти дальше.
+                Блок включает setProofMode(), когда у задачи answer_kind = 'proof'.
+                {% endcomment %}
+                <div class="proof-row" id="proof-row" hidden>
+                    <p class="proof-hint">
+                        Запишите доказательство на бумаге, затем сверьтесь с разбором
+                        и честно отметьте результат.
+                    </p>
+                    <div id="proof-step-1">
+                        <button type="button" id="reveal-proof-btn" class="btn btn-primary">
+                            Показать доказательство
+                        </button>
+                    </div>
+                    <div id="proof-step-2" hidden>
+                        <span class="proof-ask">Как справились?</span>
+                        <button type="button" class="btn btn-success js-self-mark" data-mark="solved">Доказал</button>
+                        <button type="button" class="btn btn-outline-danger js-self-mark" data-mark="failed">Не справился</button>
+                    </div>
+                    <span class="feedback" id="feedback-proof"></span>
+                </div>
+
                 <button type="button" id="next-btn" class="btn btn-outline-primary btn-next">
                     Следующая задача →
                 </button>
+
+                {% comment %}
+                Разбор задачи. Прячется до ответа: раскрывается вместе с
+                правильным ответом — сам, когда ответ верный, и по кнопке
+                «Узнать ответ». В №22 внутри разбора лежит график.
+                {% endcomment %}
+                <div class="solution-box" id="solution-card" hidden>
+                    <div class="solution-title">Разбор</div>
+                    <div id="solution-body" class="math-content"></div>
+                </div>
+                <input type="hidden" id="solution-html" value="{{ task_data.solution_html|default:'' }}">
 
                 {% if problem %}
                 <input type="hidden" id="problem-id" value="{{ problem.id }}">
@@ -449,6 +526,99 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 input.value = '';
                 input.dispatchEvent(new Event('input'));   // спрятать LaTeX-превью
             }
+            const intervalHint = document.getElementById('interval-hint');
+
+            // Промежуток вводится одной строкой: кнопка «+ корень» тут ни к
+            // чему, а вот напоминание про скобки — наоборот.
+            // Вставка в поле ответа: знак ставится там, где стоит курсор, а
+            // не в конец строки, и фокус остаётся в поле — иначе после каждой
+            // кнопки пришлось бы возвращаться в поле пальцем.
+            const mathKeys = document.getElementById('math-keys');
+            if (mathKeys) {
+                mathKeys.addEventListener('click', (e) => {
+                    const btn = e.target.closest('button[data-ins]');
+                    if (!btn) return;
+                    const ins = btn.dataset.ins;
+                    const back = parseInt(btn.dataset.back || '0', 10);
+                    const el = document.activeElement === input ? input : input;
+                    const start = el.selectionStart ?? el.value.length;
+                    const end = el.selectionEnd ?? el.value.length;
+                    const selected = el.value.slice(start, end);
+                    // Выделенное берём внутрь скобок: выделил «20», нажал √ —
+                    // получилось √(20), а не √() рядом с числом.
+                    const text = (back && selected)
+                        ? ins.slice(0, -back) + selected + ins.slice(-back)
+                        : ins;
+                    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+                    const caret = start + text.length - (selected ? 0 : back);
+                    el.focus();
+                    el.setSelectionRange(caret, caret);
+                });
+            }
+
+            // ── Режим доказательства (№24) ─────────────────────────────────
+            const proofRow = document.getElementById('proof-row');
+            const proofStep1 = document.getElementById('proof-step-1');
+            const proofStep2 = document.getElementById('proof-step-2');
+            const feedbackProof = document.getElementById('feedback-proof');
+            let isProof = false;
+
+            function setProofMode(flag) {
+                isProof = !!flag;
+                if (!proofRow) return;
+                proofRow.hidden = !isProof;
+                if (isProof) {
+                    // Поля ввода и подсказки к ним в этом режиме не нужны.
+                    inputRow.style.display = 'none';
+                    choicesRow.style.display = 'none';
+                    proofStep1.hidden = false;
+                    proofStep2.hidden = true;
+                    feedbackProof.textContent = '';
+                    feedbackProof.className = 'feedback';
+                    document.querySelectorAll('.js-self-mark').forEach(b => b.disabled = false);
+                }
+            }
+
+            const revealProofBtn = document.getElementById('reveal-proof-btn');
+            if (revealProofBtn) {
+                revealProofBtn.addEventListener('click', () => {
+                    showSolution();
+                    proofStep1.hidden = true;
+                    proofStep2.hidden = false;
+                    const card = document.getElementById('solution-card');
+                    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            }
+
+            document.querySelectorAll('.js-self-mark').forEach(btn => btn.addEventListener('click', async () => {
+                const mark = btn.dataset.mark;
+                document.querySelectorAll('.js-self-mark').forEach(b => b.disabled = true);
+                const ok = (mark === 'solved');
+                // Ученику отметка пишется как обычный ответ; гостю — только в счётчик.
+                if (problemIdEl.value) {
+                    try {
+                        await fetch(checkUrl + problemIdEl.value + '/', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
+                            body: JSON.stringify({ answer: mark })
+                        });
+                    } catch (e) { /* статистика сессии всё равно обновится ниже */ }
+                }
+                if (!alreadyCounted) { bumpStats(ok); alreadyCounted = true; }
+                feedbackProof.textContent = ok ? 'Засчитано.' : 'Отмечено — вернитесь к этому сюжету позже.';
+                feedbackProof.className = ok ? 'feedback correct' : 'feedback wrong';
+                nextBtn.classList.add('show');
+                nextBtn.focus();
+            }));
+
+            function setMathKeys(flag) {
+                if (mathKeys) mathKeys.hidden = !flag;
+            }
+
+            function setIntervalMode(flag) {
+                if (intervalHint) intervalHint.style.display = flag ? '' : 'none';
+            }
+
             function setMultiMode(flag) {
                 isMultiAnswer = !!flag;
                 addAnswerBtn.style.display = isMultiAnswer ? '' : 'none';
@@ -592,9 +762,14 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     qCondition.innerHTML = data.condition_text || '';
                     correctAnswerEl.value = data.correct_answer;
                     problemIdEl.value = data.problem_id || '';
+                    if (solutionHtmlEl) solutionHtmlEl.value = data.solution_html || '';
+                    hideSolution();
 
                     renderUIForAnswerType(data.answer_type, data.choices);
                     setMultiMode(data.multi_answer);
+                    setIntervalMode(data.interval_answer);
+                    setMathKeys(data.math_input);
+                    setProofMode(data.answer_kind === 'proof');
 
                     if (window.MathJax && MathJax.typesetPromise) {
                         MathJax.typesetPromise([qType, qCondition, choicesContainer]);
@@ -606,9 +781,46 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 }
             }
             nextBtn.addEventListener('click', loadNext);
+            setProofMode({% if task_data.answer_kind == 'proof' %}true{% else %}false{% endif %});
 
             // ── Проверка ответа ────────────────────────────────────────────
+            // Ответ-множество: «(-∞; -7] + (0; 7]». Настоящая проверка — на
+            // сервере (users/answer_check.py), она понимает разные написания и
+            // сравнивает множества после склейки. Здесь, на странице без
+            // problem_id (гость, предпросмотр преподавателя), считать то же
+            // самое второй раз значило бы завести вторую реализацию, которая
+            // однажды разойдётся с первой. Поэтому тут нарочно строгое
+            // сравнение записи: оно может забраковать верный ответ, записанный
+            // иначе, но никогда не подтвердит неверный. А вот пускать такой
+            // ответ в проверку набора корней нельзя вовсе: она режет строку по
+            // «;» и читает «7)» и «7]» как одно и то же число 7 — то есть
+            // подтверждает ответ с перепутанной скобкой.
+            function looksLikeInterval(text) {
+                const t = String(text || '');
+                if (t.includes('\\')) return false;
+                return /[\[(][^;\[\]()]*;[^;\[\]()]*[\])]/.test(t)
+                    || /∞|\binf\b|\boo\b|бесконечн/i.test(t)
+                    || /^\s*\{\s*[-+−–—]?[\d.,\s]+\}\s*$/.test(t);
+            }
+
+            function normalizeInterval(text) {
+                return String(text || '')
+                    .replace(/[−–—]/g, '-')
+                    .replace(/^\s*[xх]\s*(?:∈|in)\s*/i, '')
+                    .replace(/∪|⋃/g, '+')
+                    .replace(/\bu\b/gi, '+')
+                    .replace(/\bили\b/gi, '+')
+                    .replace(/inf(inity|ty)?|\boo\b|бесконечность/gi, '∞')
+                    .replace(/\s+/g, '')
+                    .replace(/\.$/, '')
+                    .toLowerCase();
+            }
+
             function localCheck(userVal, correctVal) {
+                if (looksLikeInterval(correctVal)) {
+                    const same = normalizeInterval(userVal) === normalizeInterval(correctVal);
+                    return {correct: same, message: null};
+                }
                 // Мульти-ответ: эталон содержит «;» — сравниваем как множества.
                 if (String(correctVal || '').includes(';')) {
                     const corrParts = String(correctVal).split(';').map(s => s.trim()).filter(Boolean);
@@ -710,6 +922,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 if (isCorrect) {
                     feedback.textContent = 'Правильно!';
                     feedback.className = 'feedback correct';
+                    showSolution();
                     getAnswerInputs().forEach(i => i.disabled = true);
                     addAnswerBtn.disabled = true;
                     checkBtn.disabled = true;
@@ -782,6 +995,28 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                 btn.addEventListener('click', () => onChoiceClick(btn));
             });
 
+            // ── Разбор ─────────────────────────────────────────────────────
+            const solutionCard = document.getElementById('solution-card');
+            const solutionBody = document.getElementById('solution-body');
+            const solutionHtmlEl = document.getElementById('solution-html');
+
+            function showSolution() {
+                if (!solutionCard || !solutionBody) return;
+                const html = solutionHtmlEl ? solutionHtmlEl.value : '';
+                if (!html) return;
+                solutionBody.innerHTML = html;
+                solutionCard.hidden = false;
+                if (window.MathJax && MathJax.typesetPromise) {
+                    MathJax.typesetPromise([solutionBody]);
+                }
+            }
+
+            function hideSolution() {
+                if (!solutionCard || !solutionBody) return;
+                solutionCard.hidden = true;
+                solutionBody.innerHTML = '';
+            }
+
             // ── «Узнать ответ» (только для ОГЭ) ────────────────────────────
             const revealBtn = document.getElementById('reveal-btn');
             if (revealBtn) {
@@ -796,6 +1031,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     input.disabled = true;
                     checkBtn.disabled = true;
                     revealBtn.disabled = true;
+                    showSolution();
                     nextBtn.classList.add('show');
                     nextBtn.focus();
                 });
@@ -811,6 +1047,7 @@ details[open] > .sidebar-summary::before { transform: rotate(90deg); }
                     if (!alreadyCounted) { bumpStats(false); alreadyCounted = true; }
                     choicesContainer.querySelectorAll('.choice-btn').forEach(b => b.disabled = true);
                     revealBtnChoices.disabled = true;
+                    showSolution();
                     nextBtn.classList.add('show');
                     nextBtn.focus();
                 });

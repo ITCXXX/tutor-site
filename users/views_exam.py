@@ -18,7 +18,7 @@ from .models import (
     StudentProgress, Enrollment, TestQuestion, Lesson,
     ExamVariant, ExamVariantSlot, ExamVariantAnswer, TaskGroup,
 )
-from .answer_check import check_answer
+from .answer_check import check_answer, looks_like_interval
 
 
 def _assignment_access_ok(request, course):
@@ -129,9 +129,22 @@ def assignment_practice(request, assignment_id):
 
     nav_items, prev_assignment, next_assignment = _build_lesson_nav(request.user, assignment)
 
+    # Что за ответ у задачи — чтобы страница показала клавиши √ и ∞ и
+    # напомнила формат. Считается там же, где и для JSON-ответа, чтобы обе
+    # страницы решали одинаково.
+    _td = (problem.task_data or {}) if problem else {}
+    _interval = looks_like_interval(_td.get('correct_answer', ''))
+    view_task_data = {
+        'answer_kind': _td.get('answer_kind'),
+        'interval_answer': _interval,
+        'math_input': bool(_td.get('multi_answer')) or _interval
+                      or _td.get('answer_kind') == 'pairs',
+    }
+
     return render(request, 'users/assignment_practice.html', {
         'assignment': assignment,
         'problem': problem,
+        'task_data': view_task_data,
         'progress': progress,
         'is_practice': is_practice,
         'is_db_mode': False,
@@ -405,17 +418,30 @@ def check_problem_answer(request, problem_id):
     correct_answer = problem.correct_answer
     answer_type = problem.assignment.answer_type
     message = None
+    task_data = problem.task_data or {}
 
-    if answer_type == 'single_choice':
+    if task_data.get('answer_kind') == 'proof':
+        # Задача на доказательство (№24). Проверить доказательство машина не
+        # может, поэтому «ответ» здесь — самооценка ученика после разбора:
+        # «solved» — справился, всё остальное — нет. Разбор при этом отдаём
+        # всегда: ученик его уже видел, оценивать себя без него нельзя.
+        is_correct = (user_answer == 'solved')
+    elif answer_type == 'single_choice':
         try:
             is_correct = (int(user_answer) == int(correct_answer))
         except (ValueError, TypeError):
             is_correct = False
     else:
         course = problem.assignment.lesson.module.course
+        # Запрет обыкновенных дробей в ОГЭ-курсе — правило первой части.
+        # Во второй части дробный корень встречается штатно (тип 11: x = b/a),
+        # поэтому генератор может снять запрет для своей задачи.
         allow_fracs = not (course.slug or '').startswith('oge')
+        if task_data.get('allow_fractions'):
+            allow_fracs = True
         is_correct, message = check_answer(
             user_answer, correct_answer, allow_fractions=allow_fracs,
+            kind=task_data.get('answer_kind'),
         )
 
     ProblemAttempt.objects.create(
@@ -460,6 +486,13 @@ def check_problem_answer(request, problem_id):
             'is_completed': progress.is_completed,
         }
 
+    # Разбор задачи отдаём тогда же, когда открывается сам ответ: после верного
+    # решения или после трёх попыток. Раньше нельзя — в разборе стоит ответ.
+    # Для №22 без разбора задача бессмысленна: график ученик иначе не увидит.
+    solution_html = ''
+    if is_correct or problem.attempts_count >= 3 or task_data.get('answer_kind') == 'proof':
+        solution_html = task_data.get('solution_html') or ''
+
     return JsonResponse({
         'correct': is_correct,
         'message': message,
@@ -467,8 +500,27 @@ def check_problem_answer(request, problem_id):
         'attempts_count': problem.attempts_count,
         'problem_correct_attempts': problem.correct_attempts,
         'is_practice': is_practice,
+        'solution_html': solution_html,
         **progress_data,
     })
+
+
+@login_required
+def problem_solution(request, problem_id):
+    """
+    Разбор задачи на доказательство — до ответа и без записи попытки.
+
+    Только для answer_kind = 'proof': там ученик обязан прочитать разбор
+    ДО того, как отметит результат, и ответа-числа, который можно было бы
+    подсмотреть, не существует. Для всех остальных задач разбор выдаёт
+    check_problem_answer — после верного ответа или трёх попыток.
+    """
+    problem = get_object_or_404(GeneratedProblem, id=problem_id, student=request.user)
+    _require_course_access(request, problem.assignment.lesson.module.course)
+    task_data = problem.task_data or {}
+    if task_data.get('answer_kind') != 'proof':
+        return JsonResponse({'error': 'Разбор откроется после ответа'}, status=403)
+    return JsonResponse({'solution_html': task_data.get('solution_html') or ''})
 
 
 @login_required
@@ -1029,4 +1081,19 @@ def lesson_next_problem(request, lesson_id):
         'answer_type': chosen.answer_type,
         'problem_id': problem_id,
         'multi_answer': bool(task_data.get('multi_answer')),
+        # Ответ-множество (неравенства №20): у него своя запись, и подсказать
+        # её надо до ввода, а не после первой неудачной попытки.
+        'interval_answer': looks_like_interval(task_data.get('correct_answer', '')),
+        # Клавиши √ и ∞ — на всех задачах второй части. Привязывать их к тому,
+        # есть ли корень в этом конкретном ответе, нельзя: кнопка выдала бы его.
+        'math_input': bool(task_data.get('multi_answer'))
+                      or looks_like_interval(task_data.get('correct_answer', '')),
+        # Разбор. На этой странице ответ и так лежит в разметке (страница
+        # умеет проверять ответ без сервера — для гостя), поэтому разбор
+        # рядом с ним ничего дополнительно не открывает. Показывается он
+        # только после ответа или после кнопки «Узнать ответ».
+        'solution_html': task_data.get('solution_html', ''),
+        # Задачи на доказательство (№24) страница показывает иначе: без поля
+        # ввода, с кнопкой «показать доказательство» и самооценкой.
+        'answer_kind': task_data.get('answer_kind'),
     })

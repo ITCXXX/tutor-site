@@ -1,163 +1,200 @@
 # -*- coding: utf-8 -*-
 """
-Management command: создаёт ProblemGenerator-ы и Assignment-ы под урок
-«Задание 20» (вторая часть) курса ОГЭ. Типы задач — по каталогу Школково
-(3.shkolkovo.online/catalog/7230), который повторяет открытый банк ФИПИ.
-Справочник всех 25 типов: OGE_PART2_NO20_TYPES.md в корне проекта.
+Наполняет урок №20 курса ОГЭ генераторами всех 25 типов.
 
-Особенность второй части: у уравнения несколько корней, поэтому генераторы
-возвращают correct_answer вида "-5;-2;2" и флаг multi_answer=True.
-Проверку набора корней делает answer_check._check_answer_multi (порядок
-ввода не важен), фронтенд lesson_practice.html показывает кнопку «+ корень».
+Почему генераторы, а не готовые задачи
+--------------------------------------
+Так устроена вся первая часть курса: задание — это прототип, числа новые при
+каждом заходе, и решать его можно бесконечно. У готовых задач второй части
+было бы 25 × 5 = 125 штук на весь год, и они запоминаются наизусть за неделю.
+Плюс только на генераторном пути работает разбор ответов второй части: пары
+для систем, промежутки для неравенств, клавиши √ и ∞ на странице.
 
-Usage:
-    python manage.py seed_oge20
-    python manage.py seed_oge20 --clear   # снести и пересоздать
+Как это устроено
+----------------
+Платформа исполняет не код из базы, а файл users/generators/g<id>.py — так
+сделано нарочно, чтобы не звать exec() на содержимое БД. Значит id генератора
+обязан совпадать на всех машинах, иначе на сервере подтянется чужой файл.
+Поэтому номера фиксированные: 900 + номер типа (901 … 925), а сама математика
+живёт в users/oge20_generators.py и проверяется самотестами оттуда.
+
+Запуск:
+    python manage.py seed_oge20                 # создать/обновить 25 заданий
+    python manage.py seed_oge20 --drop-static   # и убрать старые статичные задачи
+    python manage.py seed_oge20 --clear         # снести всё, что создала команда
 """
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from users.models import Course, Module, Lesson, ProblemGenerator, Assignment
+from users.models import (
+    Assignment, Course, GroupSubQuestion, Lesson, Module, ProblemGenerator,
+    TaskGroup,
+)
 
+COURSE_SLUG = 'oge-maths'
+MODULE_TITLE = 'Вторая часть'
+GENERATOR_BASE = 900          # id генератора = GENERATOR_BASE + номер типа
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Генераторы
-# ──────────────────────────────────────────────────────────────────────────────
-
-GEN_T1 = r'''
-def generate_task():
-    """
-    №20 ОГЭ, Тип 1 (по Школково/ФИПИ): кубическое уравнение, решаемое
-    группировкой.
-
-    Все задачи банка ФИПИ этого типа имеют вид
-
-        x^3 + a*x^2 - b*x - a*b = 0,   b = k^2 (полный квадрат)
-
-    (примеры ФИПИ: a=5,b=4; a=4,b=1; a=3,b=4; a=2,b=1).
-
-    Решение: x^2(x + a) - b(x + a) = (x + a)(x^2 - b) = 0
-        → корни: -a, -k, k — все целые.
-
-    Ограничения генерации:
-        a ∈ [2..10];
-        k ∈ {1,2,3,4,5}, k ≠ a — чтобы все три корня были различны.
-    """
-    a = random.randint(2, 10)
-    k = random.choice([kk for kk in (1, 2, 3, 4, 5) if kk != a])
-    b = k * k
-    ab = a * b
-
-    bx = "x" if b == 1 else f"{b}x"
-    equation = f"x^{{3}} + {a}x^{{2}} - {bx} - {ab} = 0"
-
-    roots = sorted([-a, -k, k])
-    return {
-        "condition_text": (
-            rf"Решите уравнение $ {equation} $. "
-            "Если корней несколько, укажите все."
-        ),
-        "correct_answer": ";".join(str(r) for r in roots),
-        "multi_answer": True,
-    }
-'''
-
-
-PROTOTYPES = [
-    # (order, code, gen_name, assignment_title)
-    (1, GEN_T1, 'OGE20: Тип 1 — кубическое, группировка',
-     'Кубическое уравнение (группировка)'),
+# (номер типа, название задания)
+TYPES = [
+    (1, 'Кубическое уравнение: группировка'),
+    (2, 'Кубическое уравнение: слагаемые по обе стороны'),
+    (3, 'Вынесение общего множителя'),
+    (4, 'x⁴ = (ax − b)²: разность квадратов'),
+    (5, 'Сумма квадратов равна нулю'),
+    (6, 'Иррациональное уравнение: отбор корней по ОДЗ'),
+    (7, 'Замена t = 1/x'),
+    (8, 'Замена t = 1/(x − a)'),
+    (9, 'Замена t = (x − a)²'),
+    (10, 'Система: сложение уравнений'),
+    (11, 'Система: нельзя делить на скобку'),
+    (12, 'Система: пропорциональные левые части'),
+    (13, 'Значение выражения по пропорции'),
+    (14, 'Неравенство: корень из квадрата'),
+    (15, 'Неравенство: дробь с квадратом в знаменателе'),
+    (16, 'Неравенство: x ≤ k²/x'),
+    (17, 'Неравенство: x²/(x − a) ≤ x'),
+    (18, 'Неравенство: 1/x ≥ 1/(x − a)'),
+    (19, 'Неравенство: сокращение с выколотой точкой'),
+    (20, 'Неравенство: полный квадрат в числителе'),
+    (21, 'Неравенство: кратный корень в произведении'),
+    (22, 'Неравенство: кратный корень в трёхчлене'),
+    (23, 'Неравенство: замена t = x² + x'),
+    (24, 'Неравенство: два трёхчлена с общим корнем'),
+    (25, 'Неравенство: два трёхчлена с общим корнем, обратный знак'),
 ]
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Команда
-# ──────────────────────────────────────────────────────────────────────────────
+BACKUP_CODE = (
+    '# Исполняется не этот текст, а users/generators/g{gid}.py.\n'
+    '# Поле python_code оставлено как справка для админки.\n'
+    'from users.oge20_generators import as_task\n'
+    '\n'
+    'def generate_task():\n'
+    '    return as_task({num})\n'
+)
 
 
 class Command(BaseCommand):
-    help = 'Создаёт ProblemGenerator-ы и Assignment-ы под урок «Задание 20» (вторая часть) курса ОГЭ.'
+    help = 'Создаёт генераторы и задания №20 (вторая часть) курса ОГЭ.'
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--clear', action='store_true',
-            help='Удалить существующее «Задание 20» и пересоздать.',
+            '--drop-static', action='store_true',
+            help='удалить статичные задачи (TaskGroup) из этого урока',
         )
+        parser.add_argument(
+            '--clear', action='store_true',
+            help='удалить задания и генераторы, созданные этой командой',
+        )
+
+    def find_lesson(self, module):
+        """
+        Урок №20. Ищем существующий, а не создаём свой.
+
+        Второй урок с тем же смыслом — худший исход: ученик видит в модуле два
+        одинаковых пункта и не понимает, какой из них настоящий.
+        """
+        lesson = Lesson.objects.filter(module=module, title__startswith='№20').first()
+        if lesson:
+            return lesson, False
+        lesson = Lesson.objects.filter(module=module, title__icontains='20').first()
+        if lesson:
+            return lesson, False
+        lesson = Lesson.objects.create(
+            module=module, title='№20. Алгебраические выражения, уравнения, неравенства',
+            order=20, lesson_type='practice',
+        )
+        return lesson, True
 
     @transaction.atomic
     def handle(self, *args, **opts):
-        course = Course.objects.filter(slug='oge-maths').first()
+        course = Course.objects.filter(slug=COURSE_SLUG).first()
         if not course:
             self.stdout.write(self.style.ERROR(
-                'Курс ОГЭ (slug=oge-maths) не найден.'
-            ))
+                'Курс ОГЭ (slug=%s) не найден.' % COURSE_SLUG))
             return
 
-        module, mod_created = Module.objects.get_or_create(
-            course=course, title='Вторая часть',
-            defaults={'order': 2, 'description': ''},
+        module, created_module = Module.objects.get_or_create(
+            course=course, title=MODULE_TITLE, defaults={'order': 2, 'description': ''},
         )
-        if mod_created:
-            self.stdout.write(self.style.SUCCESS('Модуль создан: Вторая часть'))
+        if created_module:
+            self.stdout.write(self.style.SUCCESS('Модуль создан: %s' % MODULE_TITLE))
+
+        lesson, created_lesson = self.find_lesson(module)
+        self.stdout.write('Урок: «%s»%s'
+                          % (lesson.title, ' (создан)' if created_lesson else ''))
 
         if opts['clear']:
-            old = Lesson.objects.filter(module=module, title='Задание 20').first()
-            if old:
-                ProblemGenerator.objects.filter(assignments__lesson=old).delete()
-                old.delete()
-                self.stdout.write(self.style.WARNING('Старое «Задание 20» удалено.'))
+            ids = [GENERATOR_BASE + n for n, _ in TYPES]
+            удалено = Assignment.objects.filter(
+                lesson=lesson, problem_generator_id__in=ids).delete()[0]
+            ProblemGenerator.objects.filter(id__in=ids).delete()
+            self.stdout.write(self.style.WARNING(
+                'Удалено заданий: %d, генераторов: %d' % (удалено, len(ids))))
+            return
 
-        lesson, created = Lesson.objects.get_or_create(
-            module=module, title='Задание 20',
-            defaults={'order': 20, 'lesson_type': 'practice'},
-        )
-        if not created and lesson.order != 20:
-            lesson.order = 20
-            lesson.save(update_fields=['order'])
-        if created:
-            self.stdout.write(self.style.SUCCESS(f'Урок создан: {lesson.title}'))
+        if opts['drop_static']:
+            groups = TaskGroup.objects.filter(lesson=lesson)
+            подзадач = GroupSubQuestion.objects.filter(group__in=groups).count()
+            групп = groups.count()
+            if групп:
+                groups.delete()
+                self.stdout.write(self.style.WARNING(
+                    'Удалены статичные задачи: групп %d, задач %d'
+                    % (групп, подзадач)))
+            else:
+                self.stdout.write('Статичных задач в уроке нет.')
 
-        # Поиск Assignment по (lesson, order) — title мог быть переименован
-        # вручную, поэтому по нему искать нельзя (иначе плодим дубли).
-        existing_by_order = {a.order: a for a in lesson.assignments.all()}
+        # Номера 901…925 зарезервированы за №20. Если на этой машине под таким
+        # номером уже лежит чужой генератор, молча затирать его нельзя: к нему
+        # привязаны чьи-то задания.
+        занято = ProblemGenerator.objects.filter(
+            id__gte=GENERATOR_BASE + 1, id__lte=GENERATOR_BASE + len(TYPES),
+        ).exclude(name__startswith='OGE20:')
+        if занято.exists():
+            self.stdout.write(self.style.ERROR(
+                'Номера %d…%d заняты чужими генераторами: %s. Заливка отменена.'
+                % (GENERATOR_BASE + 1, GENERATOR_BASE + len(TYPES),
+                   ', '.join('%d (%s)' % (g.id, g.name) for g in занято[:5]))))
+            raise SystemExit(1)
 
-        for order, code, gen_name, asg_title in PROTOTYPES:
+        for num, title in TYPES:
+            gid = GENERATOR_BASE + num
             generator, _ = ProblemGenerator.objects.update_or_create(
-                name=gen_name,
+                id=gid,
                 defaults={
+                    'name': 'OGE20: Тип %d — %s' % (num, title),
                     'generator_type': 'python_function',
-                    'python_code': code,
+                    'python_code': BACKUP_CODE.format(gid=gid, num=num),
                     'config': {},
                 },
             )
 
-            assign = existing_by_order.get(order)
-            if assign:
-                # title не перезаписываем — мог быть переименован.
-                assign.problem_generator = generator
-                assign.assignment_type = 'test'
-                assign.answer_type = 'decimal_input'
-                assign.required_correct = 3
-                assign.points = 2
-                assign.save()
-                shown_title = assign.title
-            else:
-                Assignment.objects.create(
-                    lesson=lesson,
-                    order=order,
-                    title=asg_title,
-                    description='',
-                    assignment_type='test',
-                    answer_type='decimal_input',
-                    required_correct=3,
-                    points=2,
-                    problem_generator=generator,
-                )
-                shown_title = asg_title
+            assignment = Assignment.objects.filter(
+                lesson=lesson, problem_generator=generator).first()
+            if assignment is None:
+                assignment = Assignment.objects.filter(lesson=lesson, order=num).first()
 
-            self.stdout.write(self.style.SUCCESS(f'  [{order}] {shown_title} → {gen_name}'))
+            fields = {
+                'title': 'Тип %d. %s' % (num, title),
+                'assignment_type': 'test',
+                'answer_type': 'decimal_input',
+                'required_correct': 3,
+                'points': 2,
+                'problem_generator': generator,
+                'order': num,
+            }
+            if assignment:
+                # Название не перезаписываем: его могли поправить руками.
+                fields.pop('title')
+                for key, value in fields.items():
+                    setattr(assignment, key, value)
+                assignment.save()
+            else:
+                Assignment.objects.create(lesson=lesson, description='', **fields)
 
         self.stdout.write(self.style.SUCCESS(
-            f'\nГотово: «Задание 20» курса ОГЭ — {len(PROTOTYPES)} прототипов.'
-        ))
+            '\nГотово: %d типов в уроке «%s».' % (len(TYPES), lesson.title)))
+        self.stdout.write('Проверить: /courses/%s/ → %s → %s'
+                          % (COURSE_SLUG, MODULE_TITLE, lesson.title))
