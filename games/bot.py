@@ -204,27 +204,40 @@ class Position:
 
 # ────────────────────────── оценка ──────────────────────────
 
-def _line_score(values, me, foe, two, one):
-    """Сколько стоят линии из трёх значений: пара с открытым третьим и одиночки."""
+def _line_score(values, me, foe, two, one, ничья_губит=False):
+    """Сколько стоят линии из трёх значений: пара с открытым третьим и одиночки.
+
+    Линия живёт для игрока, только пока в ней нет ничего чужого. Для БОЛЬШОГО
+    поля «чужое» — это не только поля соперника, но и сыгранные вничью: такую
+    линию уже не достроит никто, и платить за пару в ней не за что. Внутри
+    малого поля ничьих не бывает, поэтому там переключатель не нужен.
+
+    Ветки взаимоисключающие: линия, где есть и мои значения, и чужие, мертва
+    для обоих — поэтому elif, а не второй проход.
+    """
     total = 0
     for a, b, c in WINNING_LINES:
         va, vb, vc = values[a], values[b], values[c]
-        if va == foe or vb == foe or vc == foe:
-            mine = 0
+        if ничья_губит:
+            моя = ((va == EMPTY or va == me) and (vb == EMPTY or vb == me)
+                   and (vc == EMPTY or vc == me))
+            чужая = ((va == EMPTY or va == foe) and (vb == EMPTY or vb == foe)
+                     and (vc == EMPTY or vc == foe))
         else:
+            моя = not (va == foe or vb == foe or vc == foe)
+            чужая = not (va == me or vb == me or vc == me)
+        if моя:
             mine = (va == me) + (vb == me) + (vc == me)
-        if va == me or vb == me or vc == me:
-            theirs = 0
-        else:
+            if mine == 2:
+                total += two
+            elif mine == 1:
+                total += one
+        elif чужая:
             theirs = (va == foe) + (vb == foe) + (vc == foe)
-        if mine == 2:
-            total += two
-        elif mine == 1:
-            total += one
-        if theirs == 2:
-            total -= two
-        elif theirs == 1:
-            total -= one
+            if theirs == 2:
+                total -= two
+            elif theirs == 1:
+                total -= one
     return total
 
 
@@ -286,7 +299,8 @@ def evaluate(pos, me, веса=None):
 
     # Пары в большом поле стоят дорого: это уже угроза выиграть партию.
     total += _line_score(boards, me, foe,
-                         two=в['большая_пара'], one=в['большая_одна'])
+                         two=в['большая_пара'], one=в['большая_одна'],
+                         ничья_губит=True)
 
     # Внутри незакрытых полей считаем то же, но дешевле, и добавляем центр.
     cells = pos.cells
