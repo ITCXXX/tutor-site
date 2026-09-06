@@ -13,6 +13,7 @@
 """
 
 import json
+import os
 import random
 import time
 
@@ -20,7 +21,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from games import arena, bot, engine
+from games import arena, bot, engine, features, selfplay
 from games.engine import VARIANT_CLASSIC
 from games.models import Game, SiteSetting
 
@@ -109,6 +110,14 @@ class PositionMirrorsEngineTests(TestCase):
 
 class BotPlayTests(TestCase):
 
+    # Предел полуходов. В классике партия укладывается полусотню (замер по 25
+    # зёрнам: в среднем 48-51, самая длинная 62), а «долгая дорога» стирает
+    # незакрытые поля и идёт втрое дольше — в среднем 93-113, самая длинная 164.
+    # Прежний предел в 120 проходил только по везению зерна и падал от любой
+    # мелочи, вплоть до порядка сложения в оценке. Тест проверяет законность
+    # ходов и то, что партия вообще кончается, а не её длину.
+    ПРЕДЕЛ = {engine.VARIANT_CLASSIC: 150, engine.VARIANT_LONG: 400}
+
     def test_bot_moves_are_always_legal(self):
         """Ход бота проходит через настоящие правила без единой ошибки."""
         for variant in (engine.VARIANT_CLASSIC, engine.VARIANT_LONG):
@@ -116,15 +125,17 @@ class BotPlayTests(TestCase):
                 rng = random.Random(5)
                 state = engine.initial_state()
                 plies = 0
-                while state['status'] == 'active' and plies < 120:
+                while state['status'] == 'active' and plies < self.ПРЕДЕЛ[variant]:
                     move = bot.choose_move(state, variant, level, rng)
                     self.assertIsNotNone(move, 'бот не нашёл хода (%s)' % level)
                     state, err = engine.apply_move(
                         state, state['current'], move[0], move[1], variant=variant)
                     self.assertIsNone(err, '%s: %s' % (level, err))
                     plies += 1
-                self.assertEqual(state['status'], 'finished',
-                                 'партия %s/%s не закончилась' % (variant, level))
+                self.assertEqual(
+                    state['status'], 'finished',
+                    'партия %s/%s не кончилась за %d полуходов'
+                    % (variant, level, plies))
 
     def test_bot_takes_a_win_in_one(self):
         """
@@ -414,3 +425,184 @@ class ТурнирныйСтенд(TestCase):
         self.assertEqual(len(итоги), 1)
         self.assertGreater(общая, 0.5)
 
+
+
+def _позиция(доски='', клетки=None, next_local=None, current='X'):
+    """Позиция из короткой записи — чтобы тесты читались, а не расшифровывались.
+
+    `доски` — девять символов состояния малых полей: точка пусто, X/O выиграно,
+    D ничья. `клетки` — словарь {номер поля: девять символов}.
+    """
+    состояние = engine.initial_state()
+    состояние['big_board'] = ['' if с == '.' else с for с in доски.ljust(9, '.')]
+    for поле, строка in (клетки or {}).items():
+        состояние['board'][поле] = ['' if с == '.' else с
+                                    for с in строка.ljust(9, '.')]
+    состояние['next_local'] = next_local
+    состояние['current'] = current
+    return bot.Position(состояние, VARIANT_CLASSIC)
+
+
+class ПризнакиПозиции(TestCase):
+    """Признаки — единственное, что оценка знает о доске.
+
+    Два свойства здесь важнее любого отдельного числа. Первое: признаки
+    антисимметричны, иначе негамакс сходит с ума незаметно. Второе: оценка —
+    это ровно скалярное произведение признаков на веса, потому что обучение
+    подгоняет веса именно к этим числам.
+    """
+
+    def _разные_позиции(self, сколько=40):
+        rng = random.Random(17)
+        из = []
+        for k in range(сколько):
+            поз = bot.Position(arena._случайный_дебют(k), VARIANT_CLASSIC)
+            for _ in range(rng.randrange(0, 40)):
+                if поз.winner != bot.EMPTY:
+                    break
+                ходы = поз.moves()
+                if not ходы:
+                    break
+                поз.play(*ходы[rng.randrange(len(ходы))])
+            if поз.winner == bot.EMPTY:
+                из.append(поз)
+        self.assertGreater(len(из), 10)
+        return из
+
+    def test_признаки_антисимметричны(self):
+        """вектор(поз, X) == -вектор(поз, O) — условие правильности негамакса."""
+        for поз in self._разные_позиции():
+            за_x = features.вектор(поз, bot.X)
+            за_o = features.вектор(поз, bot.O)
+            for имя, a, b in zip(features.ПРИЗНАКИ, за_x, за_o):
+                self.assertEqual(a, -b, 'признак «%s» не переворачивается' % имя)
+
+    def test_оценка_это_произведение_признаков_на_веса(self):
+        for поз in self._разные_позиции():
+            for me in (bot.X, bot.O):
+                self.assertAlmostEqual(features.оценка(поз, me, bot.ВЕСА),
+                                       bot.evaluate(поз, me), places=9)
+
+    def test_у_каждого_признака_есть_имя_и_вес(self):
+        """Молчаливый признак без веса не участвовал бы в игре, а в обучении
+        участвовал — и подобранные веса оказались бы враньём."""
+        self.assertEqual(len(features.ПРИЗНАКИ), features.ЧИСЛО_ПРИЗНАКОВ)
+        self.assertEqual(len(set(features.ПРИЗНАКИ)), features.ЧИСЛО_ПРИЗНАКОВ)
+        for имя in features.ПРИЗНАКИ:
+            self.assertIn(имя, bot.ВЕСА, 'признак «%s» без веса' % имя)
+        for имя in bot.ВЕСА:
+            self.assertIn(имя, features.ПРИЗНАКИ, 'вес «%s» без признака' % имя)
+
+    def test_ничейное_поле_убивает_линию_большого_поля(self):
+        """Линию, где чужая ничья, уже не достроит никто — платить не за что."""
+        живая = _позиция('XX.......')
+        мёртвая = _позиция('XXD......')
+        i = features.ПРИЗНАКИ.index('большая_пара')
+        self.assertEqual(features.вектор(живая, bot.X)[i], 1)
+        self.assertEqual(features.вектор(мёртвая, bot.X)[i], 0)
+
+    def test_решающая_пара_замечена(self):
+        """Пара внутри поля, взятие которого выигрывает партию, — не то же,
+        что пара где угодно."""
+        # X держит поля 0 и 1; в поле 2 у него пара с открытым третьим.
+        поз = _позиция('XX.......', клетки={2: 'XX.......'})
+        i = features.ПРИЗНАКИ.index('решающая_пара')
+        j = features.ПРИЗНАКИ.index('угроза_пары')
+        self.assertEqual(features.вектор(поз, bot.X)[i], 1)
+        self.assertEqual(features.вектор(поз, bot.X)[j], 0)
+
+        # То же поле, но большой линии за ним нет: пара обычная.
+        обычная = _позиция('.........', клетки={2: 'XX.......'})
+        self.assertEqual(features.вектор(обычная, bot.X)[i], 0)
+
+    def test_целевое_поле_отличается_от_остальных(self):
+        """Пара в поле, куда обязан ходить игрок, — это ход прямо сейчас."""
+        i = features.ПРИЗНАКИ.index('цель_моя_пара')
+        послали = _позиция(клетки={4: 'XX.......'}, next_local=4, current='X')
+        self.assertEqual(features.вектор(послали, bot.X)[i], 1)
+        мимо = _позиция(клетки={4: 'XX.......'}, next_local=0, current='X')
+        self.assertEqual(features.вектор(мимо, bot.X)[i], 0)
+
+
+class СамоиграИДанные(TestCase):
+    """Данные для обучения. Ошибка здесь не падает, а тихо портит веса.
+
+    Самая дорогая из возможных ошибок — метка не с той стороны: тогда бот
+    прилежно обучится проигрывать. Поэтому перспектива проверяется отдельно.
+    """
+
+    def test_метка_глазами_ходящего(self):
+        строки = selfplay.партия(seed=1, уровень='easy')
+        self.assertTrue(строки)
+        for вектор, метка in строки:
+            self.assertIn(метка, (0.0, 0.5, 1.0))
+            self.assertEqual(len(вектор), features.ЧИСЛО_ПРИЗНАКОВ)
+
+        # Соседние позиции идут по очереди разным игрокам, поэтому их метки
+        # обязаны быть зеркальными — кроме ничьей, которая зеркальна себе.
+        метки = [м for _, м in строки]
+        for a, b in zip(метки, метки[1:]):
+            self.assertAlmostEqual(a + b, 1.0)
+
+    def test_дебют_пропускается(self):
+        """В первых ходах исход ещё не определён, и метка там — шум."""
+        строки = selfplay.партия(seed=2, уровень='easy')
+        полная = selfplay.партия(seed=2, уровень='easy')
+        self.assertEqual(len(строки), len(полная))
+        self.assertGreater(selfplay.ПРОПУСК_ДЕБЮТА, 0)
+
+    def test_csv_читается_обратно(self):
+        import tempfile
+        строки = selfplay.набрать(партий=3, уровень='easy', ядер=1, seed=4)
+        self.assertTrue(строки)
+        with tempfile.TemporaryDirectory() as папка:
+            путь = os.path.join(папка, 'd.csv')
+            selfplay.записать(строки, путь)
+            имена, X, y = selfplay.прочитать(путь)
+            self.assertEqual(имена, features.ПРИЗНАКИ)
+            self.assertEqual(X.shape, (len(строки), features.ЧИСЛО_ПРИЗНАКОВ))
+            self.assertEqual(list(y), [м for _, м in строки])
+            self.assertEqual([int(з) for з in X[0]], list(строки[0][0]))
+
+    def test_файл_с_другими_признаками_отвергается(self):
+        """Молча обучиться на устаревшем файле — значит получить веса не от
+        тех признаков и не понять, почему бот стал хуже."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as папка:
+            путь = os.path.join(папка, 'd.csv')
+            with open(путь, 'w', encoding='utf-8') as файл:
+                файл.write('поле,что_то_ещё,метка\n1,2,1.0\n')
+            with self.assertRaises(ValueError):
+                selfplay.прочитать(путь)
+
+
+class ОбучениеВесов(TestCase):
+
+    def test_ньютон_находит_известные_веса(self):
+        """Проверка на данных, для которых ответ известен заранее."""
+        import numpy as np
+        from games.management.commands.learn_eval import _обучить
+
+        rng = np.random.default_rng(5)
+        истина = np.array([2.0, -1.0, 0.5])
+        X = rng.normal(size=(20000, 3))
+        p = 1.0 / (1.0 + np.exp(-(X @ истина)))
+        y = (rng.random(20000) < p).astype(float)
+
+        найдено = _обучить(X, y, l2=1e-8)
+        for было, стало in zip(истина, найдено):
+            self.assertAlmostEqual(было, стало, delta=0.1)
+
+    def test_масштаб_подгоняется(self):
+        """Прежние веса подобраны матчами, их величина случайна: сравнивать
+        логпотери без подгонки множителя значило бы наказать их зря."""
+        import numpy as np
+        from games.management.commands.learn_eval import (_логпотери,
+                                                          _подогнать_масштаб)
+
+        rng = np.random.default_rng(6)
+        z = rng.normal(size=5000) * 0.5
+        y = (rng.random(5000) < 1 / (1 + np.exp(-3 * z))).astype(float)
+        a = _подогнать_масштаб(z, y)
+        self.assertGreater(a, 1.0)
+        self.assertLess(_логпотери(a * z, y), _логпотери(z, y))
