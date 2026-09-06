@@ -9,7 +9,9 @@
 import json
 from datetime import timedelta
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -1339,3 +1341,48 @@ class ЗабытаяПометкаВарианта(TestCase):
         self.assertEqual(len(карточки), 1)
         self.assertTrue(замечания)
 
+
+
+class ЦенаСтраницы(TestCase):
+    """Сколько запросов к базе стоит страница повторения.
+
+    Проверка не на скорость, а на УСТРОЙСТВО: число запросов не должно расти
+    вместе с колодой. Такое ломается тихо — на десяти карточках незаметно, а у
+    ученика с двумя сотнями страница встаёт, и модульные тесты этого не видят,
+    потому что содержимое-то верное.
+
+    Так уже было: предпросмотр кнопок строил планировщик по четыре раза на
+    карточку, и каждый лез в базу за личными весами ученика. Десять карточек
+    стоили 51 запроса, двести — 91.
+    """
+
+    ПРЕДЕЛ = 25
+
+    def setUp(self):
+        self.ученик = User.objects.create_user('ученик', 'пароль')
+        self.client.force_login(self.ученик)
+
+    def _колода(self, сколько, название):
+        колода = Deck.objects.create(title=название, owner=self.ученик)
+        Card.objects.bulk_create([
+            Card(deck=колода, front='Вопрос %d' % i, back='Ответ %d' % i)
+            for i in range(сколько)
+        ])
+        return колода
+
+    def _сколько_запросов(self, колода):
+        адрес = reverse('cards:study', args=[колода.pk])
+        with CaptureQueriesContext(connection) as запросы:
+            ответ = self.client.get(адрес)
+        self.assertEqual(ответ.status_code, 200)
+        return len(запросы)
+
+    def test_число_запросов_не_растёт_с_колодой(self):
+        мало = self._сколько_запросов(self._колода(5, 'Маленькая'))
+        много = self._сколько_запросов(self._колода(60, 'Большая'))
+        self.assertEqual(
+            мало, много,
+            'страница повторения делает %d запросов на 5 карточках и %d на 60 — '
+            'значит, запрос уходит в цикле' % (мало, много))
+        self.assertLess(мало, self.ПРЕДЕЛ,
+                        'запросов и так многовато: %d' % мало)
