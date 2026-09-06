@@ -81,5 +81,5 @@ games/learned*.json
 # Данные самоигры для обучения оценки: сотни мегабайт, пересоздаются командой
 # `manage.py selfplay` за минуты. Держать их в истории незачем, а вот сломать
 # ими клонирование — очень легко.
-games/selfplay_positions*.txt
+games/selfplay_*.txt
 games/selfplay_data*.csv
