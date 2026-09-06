@@ -534,9 +534,9 @@ class СамоиграИДанные(TestCase):
     def test_метка_глазами_ходящего(self):
         строки = selfplay.партия(seed=1, уровень='easy')
         self.assertTrue(строки)
-        for вектор, метка in строки:
+        for упаковка, метка in строки:
             self.assertIn(метка, (0.0, 0.5, 1.0))
-            self.assertEqual(len(вектор), features.ЧИСЛО_ПРИЗНАКОВ)
+            self.assertEqual(len(упаковка), selfplay.ДЛИНА_УПАКОВКИ)
 
         # Соседние позиции идут по очереди разным игрокам, поэтому их метки
         # обязаны быть зеркальными — кроме ничьей, которая зеркальна себе.
@@ -551,29 +551,39 @@ class СамоиграИДанные(TestCase):
         self.assertEqual(len(строки), len(полная))
         self.assertGreater(selfplay.ПРОПУСК_ДЕБЮТА, 0)
 
-    def test_csv_читается_обратно(self):
+    def test_позиция_переживает_запись_и_чтение(self):
         import tempfile
         строки = selfplay.набрать(партий=3, уровень='easy', ядер=1, seed=4)
         self.assertTrue(строки)
         with tempfile.TemporaryDirectory() as папка:
-            путь = os.path.join(папка, 'd.csv')
+            путь = os.path.join(папка, 'd.txt')
             selfplay.записать(строки, путь)
-            имена, X, y = selfplay.прочитать(путь)
-            self.assertEqual(имена, features.ПРИЗНАКИ)
-            self.assertEqual(X.shape, (len(строки), features.ЧИСЛО_ПРИЗНАКОВ))
-            self.assertEqual(list(y), [м for _, м in строки])
-            self.assertEqual([int(з) for з in X[0]], list(строки[0][0]))
+            пары = selfplay.читать(путь)
+            self.assertEqual(len(пары), len(строки))
+            self.assertEqual([м for _, м in пары], [м for _, м in строки])
+            for поз, (упаковка, _) in zip(пары, строки):
+                self.assertEqual(selfplay.упаковать(поз[0]), упаковка)
 
-    def test_файл_с_другими_признаками_отвергается(self):
-        """Молча обучиться на устаревшем файле — значит получить веса не от
-        тех признаков и не понять, почему бот стал хуже."""
+    def test_признаки_из_позиции_те_же_что_из_доски(self):
+        """Распакованная позиция обязана давать те же признаки, что живая:
+        иначе обучение шло бы по одному, а игра по другому."""
+        поз = bot.Position(arena._случайный_дебют(9), VARIANT_CLASSIC)
+        for _ in range(12):
+            поз.play(*поз.moves()[0])
+        свёрнутая = selfplay.распаковать(selfplay.упаковать(поз))
+        self.assertEqual(features.вектор(свёрнутая, bot.X),
+                         features.вектор(поз, bot.X))
+
+    def test_файл_другого_формата_отвергается(self):
+        """Молча обучиться на устаревшем файле — значит получить веса
+        неизвестно от чего и не понять, почему бот стал хуже."""
         import tempfile
         with tempfile.TemporaryDirectory() as папка:
-            путь = os.path.join(папка, 'd.csv')
+            путь = os.path.join(папка, 'd.txt')
             with open(путь, 'w', encoding='utf-8') as файл:
                 файл.write('поле,что_то_ещё,метка\n1,2,1.0\n')
             with self.assertRaises(ValueError):
-                selfplay.прочитать(путь)
+                selfplay.читать(путь)
 
 
 class ОбучениеВесов(TestCase):

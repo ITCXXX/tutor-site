@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Подобрать веса оценки по данным самоигры.
 
-    manage.py learn_eval --data games/selfplay_data.csv
+    manage.py learn_eval --data games/selfplay_positions.txt
 
 Чем это отличается от arena_tune. Там веса подбирались матчами: потомок против
 чемпиона, двести партий, кто убедительно лучше. Способ честный, но слепой и
@@ -108,12 +108,14 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--data', dest='данные',
-                            default='games/selfplay_data.csv')
+                            default='games/selfplay_positions.txt')
         parser.add_argument('--out', dest='файл', default=ФАЙЛ_ВЕСОВ)
         parser.add_argument('--l2', dest='l2', type=float, default=1e-6,
                             help='штраф за большие веса')
         parser.add_argument('--holdout', dest='отложить', type=float,
                             default=0.2, help='доля данных на проверку')
+        parser.add_argument('--phases', dest='стадий', type=int, default=1,
+                            help='на сколько стадий партии делить веса')
         parser.add_argument('--scale', dest='масштаб', type=float,
                             default=РАЗБРОС_ОЦЕНКИ,
                             help='к какому разбросу привести оценку')
@@ -127,14 +129,25 @@ class Command(BaseCommand):
                 '-r requirements-dev.txt')
 
         try:
-            имена, X, y = selfplay.прочитать(п['данные'])
+            пары = selfplay.читать(п['данные'])
         except OSError as беда:
             raise CommandError('не читается %s: %s' % (п['данные'], беда))
         except ValueError as беда:
             raise CommandError(str(беда))
+        имена, X, y = selfplay.в_числа(пары, п['стадий'])
 
         n = X.shape[0]
-        self.stdout.write('Данных: %d позиций, признаков %d' % (n, X.shape[1]))
+        self.stdout.write('Данных: %d позиций, столбцов %d (признаков %d, '
+                          'стадий %d)'
+                          % (n, X.shape[1], features.ЧИСЛО_ПРИЗНАКОВ,
+                             п['стадий']))
+        if п['стадий'] > 1:
+            какие = np.array([features.стадия(поз, п['стадий'])
+                              for поз, _ in пары])
+            self.stdout.write(
+                '  по стадиям: %s'
+                % ', '.join('%d — %d' % (с, int((какие == с).sum()))
+                            for с in range(п['стадий'])))
 
         # Разделение по порядку не годится: строки идут партиями, и в конце
         # файла лежат позиции тех же партий, что в начале. Перемешиваем.
@@ -160,8 +173,13 @@ class Command(BaseCommand):
         w_масшт = _обучить(Xтр / ско, yтр, п['l2'])
         w = w_масшт / ско
 
-        # Что было до обучения — с честно подогнанным множителем.
-        w_старые = np.array([bot.ВЕСА.get(имя, 0.0) for имя in имена])
+        # Что было до обучения — с честно подогнанным множителем. Если
+        # столбцы разбиты по стадиям, а нынешние веса плоские, один и тот же
+        # вес ставится в каждую стадию: это и есть «то же самое, но без
+        # разделения», с чем и надо сравнивать.
+        w_старые = np.array([
+            bot.ВЕСА.get(имя, bot.ВЕСА.get(имя.rsplit('@', 1)[0], 0.0))
+            for имя in имена])
         a = _подогнать_масштаб(Xтр @ w_старые, yтр)
 
         было = _логпотери(a * (Xпр @ w_старые), yпр)
@@ -202,8 +220,17 @@ class Command(BaseCommand):
 
         self.stdout.write('')
         self.stdout.write('Веса:')
-        for имя in features.ПРИЗНАКИ:
-            self.stdout.write('  %-18s %10.3f' % (имя, готовые[имя]))
+        if п['стадий'] <= 1:
+            for имя in features.ПРИЗНАКИ:
+                self.stdout.write('  %-18s %10.3f' % (имя, готовые[имя]))
+        else:
+            шапка = ''.join('%12s' % ('стадия %d' % с)
+                            for с in range(п['стадий']))
+            self.stdout.write('  %-18s%s' % ('', шапка))
+            for имя in features.ПРИЗНАКИ:
+                числа = ''.join('%12.1f' % готовые['%s@%d' % (имя, с)]
+                                for с in range(п['стадий']))
+                self.stdout.write('  %-18s%s' % (имя, числа))
 
         self.stdout.write('')
         self.stdout.write(self.style.SUCCESS('Записано: %s' % п['файл']))

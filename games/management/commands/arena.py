@@ -24,7 +24,7 @@ import time
 
 from django.core.management.base import BaseCommand, CommandError
 
-from games import arena, bot
+from games import arena, bot, features
 
 
 class Command(BaseCommand):
@@ -92,11 +92,15 @@ class Command(BaseCommand):
             raise CommandError('не читается файл весов %s: %s'
                                % (путь_к_весам, беда))
 
-        лишние = set(свои) - set(bot.ВЕСА)
+        # Имя признака можно снабдить суффиксом «@номер» — это его вес на
+        # соответствующей стадии партии. Проверяем основу имени, а не всё
+        # целиком: иначе набор весов по стадиям стенд бы не принял.
+        лишние = {имя for имя in свои
+                  if имя.rsplit('@', 1)[0] not in features.ПРИЗНАКИ}
         if лишние:
             raise CommandError('в файле весов лишние ключи: %s. Допустимые: %s'
                                % (', '.join(sorted(лишние)),
-                                  ', '.join(sorted(bot.ВЕСА))))
+                                  ', '.join(features.ПРИЗНАКИ)))
         полные = dict(bot.ВЕСА)
         полные.update(свои)
         имя = '%s (%s, %s)' % (метка, уровень, os.path.basename(путь_к_весам))

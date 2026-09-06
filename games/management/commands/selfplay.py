@@ -3,7 +3,9 @@
 
     manage.py selfplay --games 20000
 
-Кладёт CSV рядом с ботом. Дальше его читает `manage.py learn_eval`.
+Кладёт файл рядом с ботом. В нём лежат ПОЗИЦИИ, а не признаки: набор
+признаков меняется часто, а позиция не устаревает никогда, и новый набор
+обходится без переигрывания партий. Дальше файл читает `manage.py learn_eval`.
 """
 
 import os
@@ -13,7 +15,7 @@ from django.core.management.base import BaseCommand
 
 from games import features, selfplay
 
-ФАЙЛ = 'games/selfplay_data.csv'
+ФАЙЛ = 'games/selfplay_positions.txt'
 
 
 class Command(BaseCommand):
@@ -64,6 +66,8 @@ class Command(BaseCommand):
             % (100 * выиграл / max(1, len(строки)),
                100 * ничья / max(1, len(строки)),
                100 * (len(строки) - выиграл - ничья) / max(1, len(строки))))
-        self.stdout.write('Признаков в строке: %d' % len(features.ПРИЗНАКИ))
+        self.stdout.write('В строке — позиция и метка; признаки считаются '
+                          'при обучении (сейчас их %d)'
+                          % len(features.ПРИЗНАКИ))
         self.stdout.write('')
         self.stdout.write('Дальше: manage.py learn_eval --data %s' % п['файл'])
