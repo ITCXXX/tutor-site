@@ -37,7 +37,7 @@ import os
 import random
 import time
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from games import arena, bot
 
@@ -66,6 +66,9 @@ class Command(BaseCommand):
                             type=int, default=5)
 
     def handle(self, *args, **п):
+        if п['уровень'] not in bot.ALL_LEVELS:
+            raise CommandError('неизвестный уровень «%s». Есть: %s'
+                               % (п['уровень'], ', '.join(bot.ALL_LEVELS)))
         ядер = п['ядер'] or max(1, (os.cpu_count() or 2) - 1)
         rng = random.Random(20260906)
         конец = time.time() + п['часов'] * 3600

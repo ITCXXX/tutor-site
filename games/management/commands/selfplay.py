@@ -11,9 +11,9 @@
 import os
 import time
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
-from games import features, selfplay
+from games import bot, features, selfplay
 
 ФАЙЛ = 'games/selfplay_positions.txt'
 
@@ -33,6 +33,9 @@ class Command(BaseCommand):
         parser.add_argument('--out', dest='файл', default=ФАЙЛ)
 
     def handle(self, *args, **п):
+        if п['уровень'] not in bot.ALL_LEVELS:
+            raise CommandError('неизвестный уровень «%s». Есть: %s'
+                               % (п['уровень'], ', '.join(bot.ALL_LEVELS)))
         ядер = п['ядер'] or max(1, (os.cpu_count() or 2) - 1)
         self.stdout.write(
             'Самоигра: %d партий на уровне «%s», ядер %d, наугад %.0f%% ходов'
