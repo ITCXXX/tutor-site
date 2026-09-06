@@ -76,7 +76,7 @@ deploy_data.json
 # нужны только между запуском и проверкой.
 games/tuned_weights.log
 games/tuned_weights.json
-games/learned_weights.json
+games/learned*.json
 
 # Данные самоигры для обучения оценки: сотни мегабайт, пересоздаются командой
 # `manage.py selfplay` за минуты. Держать их в истории незачем, а вот сломать
