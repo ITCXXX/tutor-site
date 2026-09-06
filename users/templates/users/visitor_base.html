@@ -17,6 +17,10 @@
          сайта: service worker управляет только тем, что «ниже» него по адресу,
          и из /static/ он видел бы одну лишь статику. -->
     <link rel="manifest" href="{% url 'manifest' %}">
+    <!-- Цвет строки браузера на телефоне. Здесь ТОЛЬКО жёсткое значение:
+         это мета-тег, а не CSS, и var(--…) браузер тут не понимает —
+         подставится пустота, и полоса станет белой. Значение то же, что
+         --c-primary-900 в tokens.css. -->
     <meta name="theme-color" content="#4c1d95">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

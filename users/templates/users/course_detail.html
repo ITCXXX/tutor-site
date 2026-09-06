@@ -352,7 +352,7 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
         .exam-constructor {
             max-width: 860px;
             margin-left: auto; margin-right: auto;
-            border: 1px solid var(--c-border, #e5e7eb);
+            border: 1px solid var(--c-border, var(--c-border));
             border-radius: .5rem;
             background: var(--c-surface, #fff);
             padding: 0;
@@ -372,7 +372,7 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
             border-radius: .5rem;
         }
         .exam-constructor[open] > .ec-top-summary {
-            border-bottom: 1px solid var(--c-border, #e5e7eb);
+            border-bottom: 1px solid var(--c-border, var(--c-border));
             border-radius: .5rem .5rem 0 0;
             margin: 0 -1.25rem 0 -1.25rem;
             padding-left: 1.25rem;
@@ -381,7 +381,7 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
         .ec-top-summary::-webkit-details-marker { display: none; }
         .ec-top-summary::before {
             content: "▸";
-            color: var(--c-text-muted, #6b7280);
+            color: var(--c-text-muted, var(--c-text-muted));
             font-size: 1rem;
             transition: transform .15s;
             flex: 0 0 auto;
@@ -392,17 +392,17 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
         .ec-top-title {
             font-size: 1.35rem;
             font-weight: 700;
-            color: var(--c-text, #1f2937);
+            color: var(--c-text, var(--c-gray-800));
             flex: 1;
         }
         .ec-top-hint {
             font-size: .85rem;
-            color: var(--c-text-muted, #6b7280);
+            color: var(--c-text-muted, var(--c-text-muted));
         }
         .exam-constructor[open] > .ec-top-summary .ec-top-hint { display: none; }
         .ec-form { display: flex; flex-direction: column; gap: .5rem; }
         .ec-row {
-            border: 1px solid var(--c-border, #e5e7eb);
+            border: 1px solid var(--c-border, var(--c-border));
             border-radius: .375rem;
             background: var(--c-surface, #fff);
         }
@@ -420,19 +420,19 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
         }
         .ec-summary::-webkit-details-marker { display: none; }
         .ec-row[open] > .ec-summary {
-            border-bottom: 1px solid var(--c-border, #e5e7eb);
+            border-bottom: 1px solid var(--c-border, var(--c-border));
             border-radius: .375rem .375rem 0 0;
         }
-        .ec-title { font-weight: 600; color: var(--c-text, #1f2937); flex: 1; }
+        .ec-title { font-weight: 600; color: var(--c-text, var(--c-gray-800)); flex: 1; }
         .ec-meta {
-            font-size: .8rem; color: var(--c-text-muted, #6b7280);
+            font-size: .8rem; color: var(--c-text-muted, var(--c-text-muted));
         }
         .ec-counter {
             display: inline-flex; align-items: center; gap: .25rem;
         }
         .ec-counter button {
             width: 28px; height: 28px;
-            border: 1px solid var(--c-border, #d1d5db);
+            border: 1px solid var(--c-border, var(--c-border-strong));
             background: #fff;
             border-radius: .25rem; cursor: pointer;
             font-weight: 700; line-height: 1;
@@ -440,23 +440,23 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
         .ec-counter button:hover { background: #eef2ff; }
         .ec-count-input {
             width: 56px; text-align: center;
-            border: 1px solid var(--c-border, #d1d5db);
+            border: 1px solid var(--c-border, var(--c-border-strong));
             border-radius: .25rem; padding: .25rem;
         }
         .ec-body { padding: .85rem .9rem; }
         .ec-pill {
             display: inline-flex; align-items: center; gap: .35rem;
             padding: .25rem .65rem;
-            border: 1px solid var(--c-border, #e5e7eb);
+            border: 1px solid var(--c-border, var(--c-border));
             border-radius: 999px;
             font-size: .85rem;
             background: #fff;
             margin: 0 .35rem .35rem 0;
             cursor: pointer;
         }
-        .ec-pill input[type=checkbox] { accent-color: #2563eb; }
+        .ec-pill input[type=checkbox] { accent-color: var(--c-primary-600); }
         .ec-pill-count {
-            font-size: .7rem; color: var(--c-text-muted, #6b7280);
+            font-size: .7rem; color: var(--c-text-muted, var(--c-text-muted));
             margin-left: .15rem;
         }
         .ec-submit-row { margin-top: 1rem; }

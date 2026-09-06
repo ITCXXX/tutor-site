@@ -12,13 +12,13 @@
     box-shadow: 0 1px 3px rgba(0,0,0,.06);
     line-height: 1.65;
     font-size: 1.02rem;
-    color: var(--c-text, #1f2937);
+    color: var(--c-text, var(--c-gray-800));
 }
 .lesson-article h2 {
     margin-top: 1.5rem;
     font-weight: 600;
     font-size: 1.4rem;
-    border-bottom: 1px solid var(--c-border, #e5e7eb);
+    border-bottom: 1px solid var(--c-border, var(--c-border));
     padding-bottom: .4rem;
 }
 .lesson-article h3 {
@@ -34,7 +34,7 @@
 }
 .lesson-article th,
 .lesson-article td {
-    border: 1px solid var(--c-border, #e5e7eb);
+    border: 1px solid var(--c-border, var(--c-border));
     padding: .4rem .65rem;
     text-align: left;
     vertical-align: top;
@@ -46,30 +46,30 @@
 .lesson-article code,
 .lesson-article .pinyin {
     font-family: "JetBrains Mono", Consolas, monospace;
-    background: #f1f5f9;
+    background: var(--c-gray-100);
     padding: .05rem .35rem;
     border-radius: .2rem;
     font-size: .92em;
 }
-.lesson-article .arrow { color: #94a3b8; padding: 0 .25rem; }
-.lesson-article .pld { color: #1d4ed8; font-weight: 600; }
+.lesson-article .arrow { color: var(--c-gray-400); padding: 0 .25rem; }
+.lesson-article .pld { color: var(--c-primary-700); font-weight: 600; }
 .lesson-article .ex {
-    background: #fffbeb;
-    border-left: 3px solid #f59e0b;
+    background: var(--c-warning-soft);
+    border-left: 3px solid var(--c-warning);
     padding: .65rem .9rem;
     margin: .75rem 0;
     border-radius: .25rem;
 }
 .lesson-article .note {
-    background: #eff6ff;
-    border-left: 3px solid #3b82f6;
+    background: var(--c-primary-50);
+    border-left: 3px solid var(--c-primary-400);
     padding: .65rem .9rem;
     margin: .75rem 0;
     border-radius: .25rem;
 }
 .lesson-article .warn {
-    background: #fef2f2;
-    border-left: 3px solid #ef4444;
+    background: var(--c-danger-soft);
+    border-left: 3px solid var(--c-danger);
     padding: .65rem .9rem;
     margin: .75rem 0;
     border-radius: .25rem;
@@ -87,15 +87,15 @@
     border-radius: .375rem;
     text-decoration: none;
     background: var(--c-bg-soft, #f3f4f6);
-    color: var(--c-text, #1f2937);
-    border: 1px solid var(--c-border, #e5e7eb);
+    color: var(--c-text, var(--c-gray-800));
+    border: 1px solid var(--c-border, var(--c-border));
 }
-.lesson-nav a:hover { background: #e5e7eb; }
+.lesson-nav a:hover { background: var(--c-border); }
 .lesson-nav .placeholder { visibility: hidden; }
 .lesson-nav .nav-next { text-align: right; }
 
 .read-btn {
-    background: var(--c-primary-600, #2563eb);
+    background: var(--c-primary-600, var(--c-primary-600));
     color: #fff;
     border: none;
     padding: .6rem 1.4rem;
@@ -104,14 +104,14 @@
     cursor: pointer;
     transition: background .15s;
 }
-.read-btn:hover { background: var(--c-primary-700, #1d4ed8); }
+.read-btn:hover { background: var(--c-primary-700, var(--c-primary-700)); }
 .read-btn[disabled] {
-    background: #10b981;
+    background: var(--c-success);
     cursor: default;
     opacity: 1;
 }
 .read-status {
-    color: #10b981;
+    color: var(--c-success);
     font-weight: 600;
     margin-left: .75rem;
 }
@@ -163,7 +163,7 @@
 
             <a href="{% url 'course_detail' course.slug %}"
                style="flex:0 0 auto; padding:.65rem 1rem; text-decoration:none;
-                      color:var(--c-text-muted, #6b7280);">
+                      color:var(--c-text-muted, var(--c-text-muted));">
                 К содержанию курса
             </a>
 

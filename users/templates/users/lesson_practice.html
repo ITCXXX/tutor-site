@@ -79,8 +79,8 @@
 .answer-field .remove-answer {
     position: absolute; top: -9px; right: -9px;
     width: 20px; height: 20px; line-height: 18px;
-    border-radius: 50%; border: 1px solid #cbd5e1;
-    background: #fff; color: #64748b;
+    border-radius: 50%; border: 1px solid var(--c-border-strong);
+    background: #fff; color: var(--c-text-muted);
     font-size: .8rem; text-align: center; cursor: pointer; padding: 0;
 }
 .answer-field .remove-answer:hover { color: var(--c-danger); border-color: var(--c-danger); }
@@ -88,14 +88,14 @@
 .answer-row .feedback { font-size: .9rem; }
 .math-keys { display: flex; gap: .3rem; }
 .math-keys button { font: inherit; font-size: 1rem; line-height: 1; min-width: 2.4rem;
-                    padding: .4rem .5rem; border: 1px solid #cbd5e1; border-radius: .35rem;
-                    background: #fff; color: #334155; cursor: pointer; }
-.math-keys button:hover { background: #f1f5f9; }
-.math-keys button:active { background: #e2e8f0; }
+                    padding: .4rem .5rem; border: 1px solid var(--c-border-strong); border-radius: .35rem;
+                    background: #fff; color: var(--c-gray-700); cursor: pointer; }
+.math-keys button:hover { background: var(--c-gray-100); }
+.math-keys button:active { background: var(--c-border); }
 .answer-format-hint { flex-basis: 100%; margin-top: .4rem; font-size: .82rem;
-                      color: #64748b; line-height: 1.45; }
-.answer-format-hint code { background: #f1f5f9; padding: .05rem .3rem;
-                           border-radius: .2rem; color: #334155; }
+                      color: var(--c-text-muted); line-height: 1.45; }
+.answer-format-hint code { background: var(--c-gray-100); padding: .05rem .3rem;
+                           border-radius: .2rem; color: var(--c-gray-700); }
 .answer-row .feedback.correct { color: var(--c-success); font-weight: 600; }
 .answer-row .feedback.wrong { color: var(--c-danger); font-weight: 500; }
 
