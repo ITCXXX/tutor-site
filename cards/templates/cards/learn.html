@@ -11,14 +11,7 @@
         gap: 1rem; margin-bottom: .75rem;
         font-size: .85rem; color: var(--c-text-muted);
     }
-    .progress-line {
-        height: 8px; border-radius: var(--r-pill);
-        background: var(--c-gray-200); overflow: hidden; margin-bottom: 1.25rem;
-    }
-    .progress-line span {
-        display: block; height: 100%; width: 0;
-        background: var(--c-primary-600); transition: width .3s;
-    }
+    .app-bar { margin-bottom: 1.25rem; }
 
     .ask-card {
         background: var(--c-surface); border: 1px solid var(--c-border);
@@ -66,7 +59,7 @@
         <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
         <div>Выучено <span id="счётчик">0</span> из <span id="всего">0</span></div>
     </div>
-    <div class="progress-line"><span id="полоса"></span></div>
+    <div class="app-bar"><span id="полоса"></span></div>
 
     {% if not хватает %}
     <div class="app-empty-state">

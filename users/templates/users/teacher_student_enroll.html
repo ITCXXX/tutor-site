@@ -31,15 +31,6 @@
 .course-row .info { flex: 1; min-width: 0; }
 .course-row .title { font-weight: 600; color: var(--c-text); }
 .course-row .desc { font-size: .82rem; color: var(--c-text-muted); margin-top: .15rem; }
-.course-row .badge-manual {
-    display: inline-block;
-    font-size: .7rem; font-weight: 600;
-    padding: .12rem .45rem;
-    border-radius: .25rem;
-    background: var(--c-warning-soft);
-    color: var(--c-warning-text);
-    margin-left: .3rem;
-}
 .course-row.checked { border-color: var(--c-primary-600); background: var(--c-primary-50); }
 
 .empty-state {
@@ -76,7 +67,7 @@
                 <div class="info">
                     <div class="title">
                         {{ c.title }}
-                        {% if c.is_manual %}<span class="badge-manual">задачник</span>{% endif %}
+                        {% if c.is_manual %}<span class="app-badge warning">задачник</span>{% endif %}
                     </div>
                     {% if c.short_description %}
                     <div class="desc">{{ c.short_description }}</div>

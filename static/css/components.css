@@ -229,7 +229,10 @@
     background: var(--c-gray-200);
     overflow: hidden;
 }
-.app-bar > i {
+/* Заливка — ЛЮБОЙ вложенный элемент, а не только <i>. В шаблонах там div, span
+   и i вперемешку, и требовать один тег значило бы править разметку ради
+   селектора. Ширину ставит сам шаблон инлайном по проценту выполнения. */
+.app-bar > * {
     display: block;
     height: 100%;
     width: 0;
@@ -237,7 +240,7 @@
     background: var(--c-primary-600);
     transition: width .3s ease;
 }
-.app-bar.done > i { background: var(--c-success); }
+.app-bar.done > * { background: var(--c-success); }
 .app-bar.thin { height: 5px; }
 
 /* ══ Плитка со счётчиком ═════════════════════════════════════════════════ */

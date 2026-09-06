@@ -67,8 +67,7 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
 }
 .proto-num { font-weight: 600; color: var(--c-text); flex: 0 0 auto; }
 .proto-bar-wrap { flex: 0 0 90px; margin-left: auto; }
-.proto-bar { height: 4px; border-radius: 2px; background: var(--c-border); overflow: hidden; }
-.proto-bar-fill { height: 100%; border-radius: 2px; background: var(--c-primary-600); }
+.proto-bar-fill { background: var(--c-primary-600); }
 .proto-card.has-progress .proto-bar-fill { background: var(--c-success); }
 .proto-count { font-size: .72rem; color: var(--c-text-muted); white-space: nowrap; flex: 0 0 auto; }
 .proto-lock { font-size: .85rem; color: var(--c-text-muted); flex: 0 0 auto; margin-left: auto; }
@@ -219,7 +218,7 @@ details[open] > .lesson-summary::before { transform: rotate(90deg); }
                                             <span class="proto-num">Тип {{ assignment.order }}</span>
                                             {% if prog %}
                                             <div class="proto-bar-wrap">
-                                                <div class="proto-bar">
+                                                <div class="app-bar thin">
                                                     <div class="proto-bar-fill" style="width:{% widthratio prog.0 prog.1 100 %}%"></div>
                                                 </div>
                                             </div>

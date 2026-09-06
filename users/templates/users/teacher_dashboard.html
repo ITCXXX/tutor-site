@@ -44,17 +44,7 @@
 }
 .progress-row .label { color: var(--c-text-soft); flex: 0 0 130px; }
 .progress-row .bar-wrap { flex: 1; }
-.progress-row .bar {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--c-border);
-    overflow: hidden;
-}
-.progress-row .bar-fill {
-    height: 100%;
-    border-radius: 3px;
-    background: var(--c-primary-600);
-}
+.progress-row .bar-fill { background: var(--c-primary-600); }
 .progress-row .bar-fill.green { background: var(--c-success); }
 .progress-row .num { color: var(--c-text-soft); font-weight: 600; flex: 0 0 auto; min-width: 60px; text-align: right; }
 
@@ -86,16 +76,6 @@
     font-weight: 600;
     color: var(--c-text);
     margin-bottom: .25rem;
-}
-.course-card .badge-manual {
-    display: inline-block;
-    font-size: .7rem;
-    font-weight: 600;
-    padding: .15rem .45rem;
-    border-radius: .25rem;
-    background: var(--c-warning-soft);
-    color: var(--c-warning-text);
-    margin-left: .25rem;
 }
 .course-card .course-meta {
     font-size: .82rem;
@@ -208,7 +188,7 @@
                         <div class="progress-row">
                             <span class="label">Прогресс группы:</span>
                             <div class="bar-wrap">
-                                <div class="bar"><div class="bar-fill green" style="width: {{ c.avg_progress }}%"></div></div>
+                                <div class="app-bar"><div class="bar-fill green" style="width: {{ c.avg_progress }}%"></div></div>
                             </div>
                             <span class="num">{{ c.avg_progress }}%</span>
                         </div>
@@ -246,7 +226,7 @@
                     <a class="course-card" href="{% if c.is_oge %}{% url 'teacher_course_edit' c.course.slug %}{% else %}{% url 'teacher_course_progress' c.course.slug %}{% endif %}">
                         <div class="course-title">
                             {{ c.course.title }}
-                            <span class="badge-manual"{% if c.is_homework %} style="background: var(--c-primary-100); color: var(--c-primary-800);"{% endif %}>{{ c.kind }}</span>
+                            <span class="app-badge {% if c.is_homework %}primary{% else %}warning{% endif %}">{{ c.kind }}</span>
                         </div>
                         <div class="course-meta">
                             {% if c.students_count == 0 %}
@@ -259,7 +239,7 @@
                         <div class="progress-row">
                             <span class="label">Решено задач:</span>
                             <div class="bar-wrap">
-                                <div class="bar"><div class="bar-fill green" style="width: {{ c.avg_progress }}%"></div></div>
+                                <div class="app-bar"><div class="bar-fill green" style="width: {{ c.avg_progress }}%"></div></div>
                             </div>
                             <span class="num">{{ c.avg_progress }}%</span>
                         </div>
@@ -305,14 +285,14 @@
                     <div class="progress-row">
                         <span class="label">Средний прогресс:</span>
                         <div class="bar-wrap">
-                            <div class="bar"><div class="bar-fill" style="width: {{ s.average_progress }}%"></div></div>
+                            <div class="app-bar"><div class="bar-fill" style="width: {{ s.average_progress }}%"></div></div>
                         </div>
                         <span class="num">{{ s.average_progress }}%</span>
                     </div>
                     <div class="progress-row">
                         <span class="label">Задач решено:</span>
                         <div class="bar-wrap">
-                            <div class="bar">
+                            <div class="app-bar">
                                 {% if s.total_proto > 0 %}
                                 <div class="bar-fill green"
                                      style="width: {% widthratio s.completed_proto s.total_proto 100 %}%"></div>

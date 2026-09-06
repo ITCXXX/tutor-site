@@ -26,7 +26,6 @@
 .summary-line .num { font-size: 1.4rem; font-weight: 700; color: var(--c-success); }
 .summary-line .lbl { font-size: .85rem; color: var(--c-text-muted); }
 .summary-line .bar-wrap { flex: 1; max-width: 400px; }
-.summary-line .bar { height: 8px; border-radius: 4px; background: var(--c-border); overflow: hidden; }
 .summary-line .bar-fill { height: 100%; background: var(--c-success); }
 
 /* Параграфы */
@@ -132,7 +131,7 @@
             <span class="num">{{ total_done }}</span>
             <span class="lbl">из {{ total_all }} {% if is_manual %}задач{% else %}прототипов{% endif %} решено</span>
             <div class="bar-wrap">
-                <div class="bar"><div class="bar-fill" style="width: {{ overall_percent }}%"></div></div>
+                <div class="app-bar done"><div class="bar-fill" style="width: {{ overall_percent }}%"></div></div>
             </div>
             <span class="lbl"><strong>{{ overall_percent }}%</strong></span>
         </div>
