@@ -94,19 +94,11 @@
 .lesson-nav .placeholder { visibility: hidden; }
 .lesson-nav .nav-next { text-align: right; }
 
-.read-btn {
-    background: var(--c-primary-600, var(--c-primary-600));
-    color: #fff;
-    border: none;
-    padding: .6rem 1.4rem;
-    border-radius: .375rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background .15s;
-}
-.read-btn:hover { background: var(--c-primary-700, var(--c-primary-700)); }
-.read-btn[disabled] {
+/* Отмеченный урок — зелёная кнопка. Это не «нельзя нажать», а «уже сделано»,
+   поэтому гасить её по-бутстраповски нельзя. */
+#read-btn[disabled] {
     background: var(--c-success);
+    border-color: var(--c-success);
     cursor: default;
     opacity: 1;
 }
@@ -141,7 +133,7 @@
 
         {% if user.is_authenticated and user.role == 'student' %}
         <div class="text-center mt-4">
-            <button id="read-btn" class="read-btn"
+            <button id="read-btn" class="btn btn-primary app-lg"
                     data-url="{% url 'mark_lesson_read' lesson.id %}"
                     {% if is_read %}disabled{% endif %}>
                 {% if is_read %}Прочитано ✓{% else %}Отметить как прочитанное{% endif %}

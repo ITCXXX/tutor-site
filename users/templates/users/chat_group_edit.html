@@ -19,10 +19,6 @@
 .gw-p input { width: 17px; height: 17px; }
 .gw-role { font-size: .76rem; color: var(--c-text-muted, #6b6b76); margin-left: auto; }
 .gw-act { display: flex; gap: .6rem; margin-top: 1.3rem; }
-.gw-go { border: none; border-radius: 10px; padding: .6rem 1.2rem; font-weight: 600;
-         background: var(--c-primary-600); color: #fff; cursor: pointer; }
-.gw-cancel { border: 1px solid var(--c-border); border-radius: 10px; padding: .6rem 1.2rem;
-             text-decoration: none; color: inherit; }
 .gw-note { color: var(--c-text-muted, #6b6b76); font-size: .87rem; margin: .4rem 0 0; }
 </style>
 {% endblock %}
@@ -68,8 +64,8 @@
         {% endif %}
 
         <div class="gw-act">
-          <button class="gw-go" type="submit">Сохранить</button>
-          <a class="gw-cancel" href="{% url 'chat_thread' thread.id %}">Назад</a>
+          <button class="btn btn-primary app-lg" type="submit">Сохранить</button>
+          <a class="btn btn-outline-secondary app-lg" href="{% url 'chat_thread' thread.id %}">Назад</a>
         </div>
       </form>
     </div>
