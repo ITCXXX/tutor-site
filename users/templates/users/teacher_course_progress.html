@@ -111,7 +111,7 @@
             {% for hw in hw_lessons %}
             <div class="hw-lesson-row">
                 <span class="title">{{ hw.lesson.title }}</span>
-                <span class="meta">{{ hw.tasks_count }} задач{% if hw.due %} · до {{ hw.due|date:"j E" }}{% if hw.overdue and not hw.closed %} <b style="color:#8a6212">срок вышел</b>{% endif %}{% endif %}{% if hw.closed %} · <b style="color:#b23a3a">приём закрыт</b>{% elif hw.cutoff %} · приём до {{ hw.cutoff|date:"j E" }}{% endif %}</span>
+                <span class="meta">{{ hw.tasks_count }} задач{% if hw.due %} · до {{ hw.due|date:"j E" }}{% if hw.overdue and not hw.closed %} <b style="color:var(--c-warning-text)">срок вышел</b>{% endif %}{% endif %}{% if hw.closed %} · <b style="color:var(--c-danger-text)">приём закрыт</b>{% elif hw.cutoff %} · приём до {{ hw.cutoff|date:"j E" }}{% endif %}</span>
                 <div class="actions">
                     <a href="{% url 'teacher_hw_lesson_report' course.slug hw.lesson.id %}"
                        class="btn btn-sm btn-primary">Сводка</a>

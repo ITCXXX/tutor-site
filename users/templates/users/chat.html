@@ -16,7 +16,7 @@
              text-overflow: ellipsis; white-space: nowrap; }
 .cw-people a { color: inherit; }
 .cw-state { font-size: .8rem; color: var(--c-text-muted, #6b6b76); flex: none; }
-.cw-state.off { color: #c0392b; }
+.cw-state.off { color: var(--c-danger-text); }
 
 .cw-feed { flex: 1; overflow-y: auto; background: var(--c-surface);
            border: 1px solid var(--c-border); border-radius: var(--r-lg);
@@ -47,8 +47,8 @@
 /* Пометка «это вопрос» */
 .msg.q-open { box-shadow: inset 0 0 0 2px #e8a33d; }
 .tag { font-size: .7rem; padding: .05rem .4rem; border-radius: 7px; font-weight: 700; }
-.tag-q { background: #e8a33d; color: #3a2a06; }
-.tag-done { background: #2e9e5b; color: #fff; }
+.tag-q { background: var(--c-warning); color: var(--c-warning-text); }
+.tag-done { background: var(--c-success); color: #fff; }
 
 .msg-act { position: absolute; top: -9px; right: 6px; display: none; gap: .25rem; }
 .msg:hover .msg-act, .msg.touched .msg-act { display: flex; }
@@ -76,7 +76,7 @@
 .cw-input:focus { outline: none; border-color: var(--c-primary-600); }
 .cw-q { flex: none; border: 1px solid var(--c-border); background: var(--c-surface); color: inherit;
         border-radius: 12px; width: 42px; height: 42px; font-size: 1.1rem; font-weight: 700; cursor: pointer; }
-.cw-q.on { background: #e8a33d; border-color: #e8a33d; color: #3a2a06; }
+.cw-q.on { background: var(--c-warning); border-color: var(--c-warning); color: var(--c-warning-text); }
 .cw-send { flex: none; border: none; border-radius: 12px; padding: 0 1.15rem; height: 42px;
            background: var(--c-primary-600); color: #fff; font-weight: 600; cursor: pointer; }
 .cw-send:disabled { opacity: .5; cursor: default; }
