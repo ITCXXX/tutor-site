@@ -5,6 +5,8 @@ from django.core.exceptions import ValidationError
 from django.db.models import Avg, Count, Q, Max, F
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
+
+from .auth_backends import сколько_подходит
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.utils import timezone
@@ -37,6 +39,16 @@ from collections import defaultdict
 def home_view(request):
     """Главная страница"""
     return render(request, 'users/home.html')
+
+def _пара_занята(username, password):
+    u"""Есть ли уже человек ровно с такой парой «логин + пароль».
+
+    Сверяем именно паролем, а не полем plaintext_password: у старых записей оно
+    может быть пустым, и проверка молча пропускала бы столкновение.
+    """
+    return any(u.check_password(password)
+               for u in User.objects.filter(username=username))
+
 
 def login_view(request):
     """Страница входа.
@@ -72,21 +84,17 @@ def login_view(request):
         if not username or not password:
             error = "Пожалуйста, заполните все поля"
         else:
+            # Разбор логина целиком живёт в users/auth_backends.py: там и
+            # повторяющиеся логины, и вторая попытка без учёта регистра. Здесь
+            # только страница, и это нарочно — правило входа должно быть в одном
+            # месте, иначе оно разъедется между сайтом и, скажем, приложением.
             user = authenticate(request, username=username, password=password)
-            if user is None:
-                # Вторая попытка — без учёта регистра (телефон делает первую
-                # букву заглавной). Только если такой логин РОВНО ОДИН: если в
-                # базе есть и «аня», и «Аня», угадывать за человека нельзя.
-                # Сравниваем в Python, а не через __iexact: SQLite приводит
-                # регистр только у латиницы, и локально логин «Полина» вёл бы
-                # себя не так, как на боевом PostgreSQL. Перебор недорог —
-                # учеников на таком сайте десятки, и только при неудачном входе.
-                folded = username.casefold()
-                same = [u for u in User.objects.only('id', 'username')
-                        if u.username.casefold() == folded]
-                if len(same) == 1:
-                    user = authenticate(request, username=same[0].username, password=password)
-            if user is not None:
+            if user is None and сколько_подходит(username, password) > 1:
+                # Пара «логин + пароль» подошла нескольким. Это не опечатка, и
+                # человеку надо сказать другое: сам он это не починит.
+                error = ('Такой логин и пароль сразу у нескольких человек — '
+                         'войти нельзя. Попросите преподавателя сменить вам пароль.')
+            elif user is not None:
                 if user.is_active:
                     login(request, user)
                     return _redirect_after(user)
@@ -698,8 +706,15 @@ def teacher_student_new(request):
         errors = []
         if not username:
             errors.append('Введите логин ученика.')
-        elif User.objects.filter(username=username).exists():
-            errors.append(f'Логин «{username}» уже занят.')
+        elif _пара_занята(username, password):
+            # Одинаковые логины разрешены — но не вместе с одинаковым паролем:
+            # тогда вход не сможет различить людей и не пустит НИ ОДНОГО из них
+            # (users/auth_backends.py). Ловим это здесь, пока ошибку ещё дёшево
+            # исправить: сменить пароль на другой.
+            errors.append(
+                f'У другого человека уже есть такой логин «{username}» И такой же '
+                f'пароль. Логин повторять можно, а пароль нужен другой — иначе '
+                f'войти не сможет ни один из них.')
         if not password or len(password) < 4:
             errors.append('Пароль должен быть не короче 4 символов.')
 
