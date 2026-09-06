@@ -3566,8 +3566,11 @@
   const widgetItems = new Map();
   const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card', 'embed', 'poll', 'screen', 'comment'];
 
-  function repositionWidgets() {
-    if (typeof recomputeConnectors === 'function') recomputeConnectors(); // стрелки к DOM-объектам
+  // Только переложить DOM-объекты по текущему виду доски — и ничего больше.
+  // Вынесено отдельно, потому что зовётся на КАЖДОМ кадре панорамы и зума
+  // (scheduleViewRedraw). Всё тяжёлое — пересчёт стрелок и якорей — осталось в
+  // repositionWidgets ниже: во время движения оно не нужно.
+  function положитьВиджеты() {
     const s = stage.scaleX();
     widgetItems.forEach((it) => {
       const d = it.el.data;
@@ -3576,6 +3579,11 @@
     if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
     if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
     if (typeof positionStickyPanel === 'function') positionStickyPanel();
+  }
+
+  function repositionWidgets() {
+    if (typeof recomputeConnectors === 'function') recomputeConnectors(); // стрелки к DOM-объектам
+    положитьВиджеты();
     // У текста, стикеров и таблиц угловых ручек нет, значит через
     // positionHandles их якоря не обновятся — двигаем здесь.
     if (typeof renderAnchors === 'function') renderAnchors();
@@ -12237,8 +12245,22 @@
       panVX = panVY = 0; panRAF = null; lastPanT = 0; return; // остановились
     }
     stage.position({ x: stage.x() + panVX * dt, y: stage.y() + panVY * dt });
+    // ВСЁ РИСУЕМ В ОДНОМ КАДРЕ, и это исправление «плавающего» текста.
+    //
+    // Было так: сетка рисовалась здесь же и сразу (gridLayer.draw), текст и
+    // стикеры тоже переставлялись сразу (repositionCursors зовёт
+    // repositionWidgets), а ГЛАВНЫЙ слой с чертежом Konva перерисовывала сама,
+    // отложенно — следующим кадром. Получалось, что подписи и стикеры уезжают
+    // на кадр вперёд, а рисунок догоняет. При скорости 750 пикселей в секунду
+    // это заметный зазор, и со стороны выглядит как плавающие объекты.
+    //
+    // Заодно возвращаем отсечение невидимого: без applyCull объекты, въезжающие
+    // в окно во время панорамы, оставались скрытыми до её конца.
+    applyCull();
     redrawGrid();
+    layer.draw();          // синхронно, а не через batchDraw: тот отложит на кадр
     repositionCursors();
+    positionHandles();
     panRAF = requestAnimationFrame(panLoop);
   }
   function ensurePanLoop() {
@@ -12677,6 +12699,29 @@
     }
     if (!el.closest || !el.closest('#board-toolbar')) return;
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+
+    // ЛИСТАЕМ ПАНЕЛЬ ТОЛЬКО ТОГДА, КОГДА ЧЕЛОВЕК ПРИШЁЛ СЮДА КЛАВИШАМИ.
+    //
+    // Жалоба была такая: на ноутбуке выбрал инструмент мышью, нажал стрелку
+    // вправо, чтобы отъехать по доске, — а вместо доски поехал выбор по панели.
+    // Причина в том, что кнопка инструмента после щелчка остаётся
+    // сфокусированной, и стрелки достаются ей, а не холсту. setTool фокус
+    // отпускает, но путей выбора инструмента много (группа, выпадающее меню,
+    // мобильный лист, горячая клавиша), и хоть один да оставит фокус на панели.
+    //
+    // Поэтому не гоняемся за путями, а спрашиваем сам браузер: :focus-visible
+    // истинно, когда фокус пришёл с клавиатуры, и ложно, когда мышью. Пришёл
+    // мышью — панель стрелки не берёт, они уходят холсту, как человек и ждёт.
+    // Клавиатурная навигация по панели при этом цела: Tab внутрь, стрелки по
+    // кнопкам, Enter — выбрать.
+    let сКлавиатуры = true;
+    try { сКлавиатуры = el.matches(':focus-visible'); } catch (err) { /* старый браузер — оставляем как было */ }
+    if (!сКлавиатуры) {
+      // Заодно снимаем фокус совсем: иначе следующая стрелка снова придёт сюда.
+      if (el.blur) el.blur();
+      return;
+    }
+
     const список = панельныеКнопки();
     const i = список.indexOf(el); if (i < 0) return;
     const шаг = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : -1;
