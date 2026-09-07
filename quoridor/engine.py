@@ -24,9 +24,34 @@ quoridor/engine.py — правила «Заборов» на Python. Без Dja
 
 from collections import deque
 
-N = 9
+N = 9                        # сторона поля по умолчанию — стандартные «Заборы»
 W = N - 1                    # 8 — размер сетки якорей забора
 WALLS_PER_PLAYER = 10
+
+# Поле может быть и меньше — это нужно для разбора игры, а не для сайта.
+# Размер лежит В САМОМ СОСТОЯНИИ, а не в модуле: иначе две партии разного
+# размера нельзя было бы считать в одном процессе, а стенду именно это и надо.
+# Старые состояния — из базы и из браузера — поля не имеют и получают девятку,
+# поэтому для боевых партий ничего не меняется.
+
+
+def размер(state):
+    return state.get('n', N) if isinstance(state, dict) else N
+
+
+def сетка_заборов(n):
+    """Сторона сетки якорей: заборов на единицу меньше, чем клеток."""
+    return n - 1
+
+
+def заборов_на_игрока(n):
+    """Сколько заборов выдать на поле стороной n.
+
+    Пропорционально площади, чтобы «плотность» заборов была сопоставимой:
+    на девятке это ровно стандартные десять, на семёрке шесть, на пятёрке три.
+    Без такой поправки на маленьком поле десять заборов перекрыли бы всё.
+    """
+    return max(1, round(WALLS_PER_PLAYER * (n / N) ** 2))
 
 RED = 'red'
 BLUE = 'blue'
@@ -45,8 +70,8 @@ def _key(r, c):
     return f'{r},{c}'
 
 
-def _in_board(r, c):
-    return 0 <= r < N and 0 <= c < N
+def _in_board(r, c, n=N):
+    return 0 <= r < n and 0 <= c < n
 
 
 def other(side):
@@ -55,11 +80,15 @@ def other(side):
 
 # ─────────────────────────── состояние ───────────────────────────
 
-def initial_state():
+def initial_state(n=N, walls=None):
+    """Начальная позиция. По умолчанию — стандартное поле 9x9 и десять заборов."""
+    сколько = заборов_на_игрока(n) if walls is None else walls
+    середина = (n - 1) // 2
     return {
-        'pawns': {RED: {'r': N - 1, 'c': 4}, BLUE: {'r': 0, 'c': 4}},
-        'goalRow': {RED: 0, BLUE: N - 1},
-        'wallsLeft': {RED: WALLS_PER_PLAYER, BLUE: WALLS_PER_PLAYER},
+        'n': n,
+        'pawns': {RED: {'r': n - 1, 'c': середина}, BLUE: {'r': 0, 'c': середина}},
+        'goalRow': {RED: 0, BLUE: n - 1},
+        'wallsLeft': {RED: сколько, BLUE: сколько},
         'walls': {},
         'turn': RED,
         'winner': None,
@@ -69,6 +98,7 @@ def initial_state():
 
 def clone_state(s):
     return {
+        'n': размер(s),
         'pawns': {RED: dict(s['pawns'][RED]), BLUE: dict(s['pawns'][BLUE])},
         'goalRow': dict(s['goalRow']),
         'wallsLeft': dict(s['wallsLeft']),
@@ -101,6 +131,7 @@ def pawn_moves(state, side):
     me = state['pawns'][side]
     foe = state['pawns'][other(side)]
     walls = state['walls']
+    n = размер(state)
     out = []
 
     def add(r, c):
@@ -109,7 +140,7 @@ def pawn_moves(state, side):
 
     for dr, dc in DIRS:
         nr, nc = me['r'] + dr, me['c'] + dc
-        if not _in_board(nr, nc):
+        if not _in_board(nr, nc, n):
             continue
         if blocked(walls, me['r'], me['c'], nr, nc):
             continue
@@ -119,13 +150,13 @@ def pawn_moves(state, side):
             continue
 
         jr, jc = nr + dr, nc + dc
-        if _in_board(jr, jc) and not blocked(walls, nr, nc, jr, jc):
+        if _in_board(jr, jc, n) and not blocked(walls, nr, nc, jr, jc):
             add(jr, jc)
             continue
 
         for pr, pc in PERP[(dr, dc)]:
             sr, sc = nr + pr, nc + pc
-            if not _in_board(sr, sc):
+            if not _in_board(sr, sc, n):
                 continue
             if blocked(walls, nr, nc, sr, sc):
                 continue
@@ -135,7 +166,7 @@ def pawn_moves(state, side):
 
 # ─────────────────── путь до своей стороны ───────────────────
 
-def shortest_path(walls, frm, goal_row):
+def shortest_path(walls, frm, goal_row, n=N):
     """Длина кратчайшего пути в шагах или None, если пути нет."""
     start = (frm['r'], frm['c'])
     seen = {start}
@@ -148,7 +179,7 @@ def shortest_path(walls, frm, goal_row):
                 return dist
             for dr, dc in DIRS:
                 nr, nc = r + dr, c + dc
-                if not _in_board(nr, nc) or (nr, nc) in seen:
+                if not _in_board(nr, nc, n) or (nr, nc) in seen:
                     continue
                 if blocked(walls, r, c, nr, nc):
                     continue
@@ -159,8 +190,49 @@ def shortest_path(walls, frm, goal_row):
     return None
 
 
-def has_path(walls, frm, goal_row):
-    return shortest_path(walls, frm, goal_row) is not None
+def path_to(walls, frm, goal_row, n=N):
+    """Сам кратчайший путь списком клеток [{'r','c'}, ...] или None.
+
+    Зачем отдельно от shortest_path: боту нужна не длина, а дорога — забор
+    имеет смысл ставить только поперёк неё. Всё, что дальше от дороги,
+    соперник обойдёт не заметив.
+
+    Обход повторяет rules.js/pathTo клетка в клетку: тот же порядок
+    направлений, та же волна по уровням, та же запись «откуда пришли». Это не
+    педантизм — путь определяет, какие заборы бот вообще рассмотрит, и
+    разойдись обходы, браузерный и серверный боты выбирали бы разные ходы.
+    """
+    prev = {}
+    start = (frm['r'], frm['c'])
+    seen = {start}
+    frontier = [start]
+
+    while frontier:
+        nxt = []
+        for (r, c) in frontier:
+            if r == goal_row:
+                путь = []
+                at = (r, c)
+                while at is not None:
+                    путь.append({'r': at[0], 'c': at[1]})
+                    at = prev.get(at)
+                путь.reverse()
+                return путь
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if not _in_board(nr, nc, n) or (nr, nc) in seen:
+                    continue
+                if blocked(walls, r, c, nr, nc):
+                    continue
+                seen.add((nr, nc))
+                prev[(nr, nc)] = (r, c)
+                nxt.append((nr, nc))
+        frontier = nxt
+    return None
+
+
+def has_path(walls, frm, goal_row, n=N):
+    return shortest_path(walls, frm, goal_row, n) is not None
 
 
 # ───────────────────────── заборы ─────────────────────────
@@ -175,7 +247,8 @@ def wall_problem(state, side, wr, wc, kind):
         return 'Заборы закончились.'
     if kind not in ('h', 'v'):
         return 'Неизвестный вид забора.'
-    if wr < 0 or wr >= W or wc < 0 or wc >= W:
+    сетка = сетка_заборов(размер(state))
+    if wr < 0 or wr >= сетка or wc < 0 or wc >= сетка:
         return 'Забор не помещается: он занимает две клетки.'
     if state['walls'].get(_key(wr, wc)):
         return 'Здесь уже есть забор.'
@@ -191,7 +264,8 @@ def wall_problem(state, side, wr, wc, kind):
     probe = dict(walls)
     probe[_key(wr, wc)] = kind
     for p in (RED, BLUE):
-        if not has_path(probe, state['pawns'][p], state['goalRow'][p]):
+        if not has_path(probe, state['pawns'][p], state['goalRow'][p],
+                        размер(state)):
             return 'Так нельзя: этот забор полностью отрезает путь.'
     return None
 
@@ -233,12 +307,12 @@ def apply_wall(state, side, wr, wc, kind):
 
 # ─────────────────────────── запись ───────────────────────────
 
-def cell_name(r, c):
-    return f'{FILES[c]}{N - r}'
+def cell_name(r, c, n=N):
+    return f'{FILES[c]}{n - r}'
 
 
-def wall_name(wr, wc, kind):
-    return f"{FILES[wc]}{N - wr - 1}{'г' if kind == 'h' else 'в'}"
+def wall_name(wr, wc, kind, n=N):
+    return f"{FILES[wc]}{n - wr - 1}{'г' if kind == 'h' else 'в'}"
 
 
 # ────────────────── отпечаток позиции для перекрёстной проверки ──────────────────
@@ -287,10 +361,11 @@ def legal_wall_count(state, side):
     """Сколько заборов сторона вправе поставить прямо сейчас."""
     if state['wallsLeft'][side] <= 0:
         return 0
-    n = 0
-    for wr in range(W):
-        for wc in range(W):
+    сколько = 0
+    сетка = сетка_заборов(размер(state))
+    for wr in range(сетка):
+        for wc in range(сетка):
             for kind in ('h', 'v'):
                 if wall_problem(state, side, wr, wc, kind) is None:
-                    n += 1
-    return n
+                    сколько += 1
+    return сколько

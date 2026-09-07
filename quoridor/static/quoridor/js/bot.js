@@ -239,12 +239,46 @@ export function botMove(state, side, levelName = DEFAULT_LEVEL) {
   if (level.blunder && scored.length > 1 && Math.random() < level.blunder) {
     choice = scored[1 + Math.floor(Math.random() * (scored.length - 1))];
   } else {
-    // при равенстве выбираем случайно — чтобы партии не повторялись
+    // При равенстве оценок выбираем случайно — чтобы партии не повторялись, —
+    // но сначала отсеиваем те, что уводят от собственной цели. Это лечение
+    // буриданова осла: замер на сервере (quoridor/arena.py) показал, что на
+    // среднем уровне в 2-6% решений первое место делят ходы, ведущие в РАЗНЫЕ
+    // стороны, и бот бросал между ними монетку. Партию он всё равно выигрывал,
+    // поэтому в самоигре беда не видна — она портит не результат, а
+    // впечатление: со стороны это шаг вперёд, шаг назад.
     const top = scored.filter((s) => s.score === scored[0].score);
-    choice = top[Math.floor(Math.random() * top.length)];
+    const forward = closerToGoal(state, side, top.map((s) => s.mv));
+    choice = { mv: forward[Math.floor(Math.random() * forward.length)] };
   }
 
   return finish(state, side, choice.mv);
+}
+
+/**
+ * Из равных по оценке ходов оставить те, что ближе подводят к своему краю.
+ *
+ * Случайность не теряется: выбор остаётся случайным среди одинаково хороших
+ * И по оценке, И по продвижению. Заборы фишку не двигают и попадают в ту же
+ * корзину, что шаги, не меняющие расстояния.
+ */
+function closerToGoal(state, side, moves) {
+  if (moves.length < 2) return moves;
+  const goal = state.goalRow[side];
+  const now = shortestPath(state.walls, state.pawns[side], goal);
+  if (now == null) return moves;
+
+  const scored = [];
+  let best = Infinity;
+  for (const mv of moves) {
+    const next = apply(state, side, mv);
+    if (!next) continue;
+    const after = shortestPath(next.walls, next.pawns[side], goal);
+    if (after == null) continue;
+    scored.push({ mv, after });
+    if (after < best) best = after;
+  }
+  if (!scored.length) return moves;
+  return scored.filter((s) => s.after === best).map((s) => s.mv);
 }
 
 function finish(state, side, mv) {
