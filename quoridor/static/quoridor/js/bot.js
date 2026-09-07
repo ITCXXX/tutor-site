@@ -193,6 +193,51 @@ function search(state, side, depth, alpha, beta, level, budget) {
   return best === -Infinity ? evaluate(state, side) : best;
 }
 
+/* ─────────────────────── сверка с сервером ─────────────────────── */
+
+/** Имя хода в той же записи, что и ходы следа. */
+export function moveName(mv) {
+  return mv.kind === 'move'
+    ? `m,${mv.r},${mv.c}`
+    : `w,${mv.wr},${mv.wc},${mv.orient}`;
+}
+
+/**
+ * Как бот видит позицию: оценка каждого хода и что остаётся после ничьих.
+ *
+ * Существует ради `tracecheck.js`. Правил в проекте два, и они уже сверяются
+ * по следу; ботов теперь тоже два — этот и `quoridor/bot.py`, — и разойдись
+ * они, игрок увидел бы одно, а сервер посчитал бы другое.
+ *
+ * Срок здесь снят намеренно: у боевых уровней он есть, но истекает в браузере
+ * и на сервере в разных местах, и сравнивать ход в ход было бы нечего.
+ * Сравнивается устройство, а не то, чей процессор быстрее.
+ */
+export function botView(state, side, depth = 2, limit = 14) {
+  const level = { depth, candidates: limit, budget: Infinity,
+                  blunder: 0, wallNeed: 1 };
+  const budget = { out: () => false };
+  const scored = [];
+
+  for (const mv of candidates(state, side, level.candidates)) {
+    const next = apply(state, side, mv);
+    if (!next) continue;
+    const score = -search(next, other(side), depth - 1,
+                          -Infinity, Infinity, level, budget);
+    scored.push({ mv, score });
+  }
+  if (!scored.length) return { scores: [], top: [] };
+
+  const best = Math.max(...scored.map((s) => s.score));
+  let top = scored.filter((s) => s.score === best).map((s) => s.mv);
+  if (top.length > 1) top = closerToGoal(state, side, top);
+
+  return {
+    scores: scored.map((s) => `${moveName(s.mv)}=${Math.round(s.score)}`),
+    top: top.map(moveName).sort(),
+  };
+}
+
 /* ────────────────────────── ход бота ────────────────────────── */
 
 /**

@@ -169,3 +169,60 @@ class Стенд(SimpleTestCase):
                           arena.Игрок('слабый', 'easy'),
                           партий=30, ядер=1, seed=5, n=5)
         self.assertGreater(итог.доля, 0.5)
+
+
+class СледСверкиБотов(SimpleTestCase):
+    """След несёт не только правила, но и выбор бота.
+
+    Зачем. Ботов в проекте два: браузерный (js/bot.js) играет с человеком,
+    серверный (quoridor/bot.py) нужен стенду для замеров. Разойдись они —
+    настроенное на стенде не имело бы отношения к тому, с кем играют.
+
+    Этот тест проверяет свою половину: что записанное в следе всё ещё
+    соответствует нынешнему серверному боту. Без него правка бота молча
+    рассогласовала бы файл, и браузерная проверка стала бы жаловаться на
+    расхождение, которого нет, — а верить ей после этого перестали бы.
+    """
+
+    def setUp(self):
+        import json
+        import os
+        путь = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'static', 'quoridor', 'data', 'rules_trace.json')
+        with open(путь, encoding='utf-8') as файл:
+            self.след = json.load(файл)
+
+    def test_в_следе_есть_выбор_бота(self):
+        игра = self.след['games'][0]
+        self.assertIn('botScores', игра)
+        self.assertIn('botTop', игра)
+        self.assertEqual(len(игра['botScores']), len(игра['moves']))
+        self.assertTrue(all(игра['botTop']), 'где-то пустой список ходов')
+
+    def test_след_соответствует_нынешнему_боту(self):
+        from quoridor.management.commands.quoridor_trace import _bot_view
+
+        проверено = 0
+        for номер, игра in enumerate(self.след['games'][:2], 1):
+            s = engine.initial_state()
+            for i, запись in enumerate(игра['moves']):
+                сторона = s['turn']
+                оценки, верхние = _bot_view(s, сторона)
+                где = 'партия %d, полуход %d' % (номер, i + 1)
+                self.assertEqual(оценки, игра['botScores'][i],
+                                 'оценки бота разошлись со следом: %s. '
+                                 'Пересоберите: manage.py quoridor_trace' % где)
+                self.assertEqual(верхние, игра['botTop'][i],
+                                 'выбор бота разошёлся со следом: %s' % где)
+                проверено += 1
+
+                части = запись.split(',')
+                if части[0] == 'm':
+                    s, ошибка = engine.apply_move(s, сторона, int(части[1]),
+                                                  int(части[2]))
+                else:
+                    s, ошибка = engine.apply_wall(s, сторона, int(части[1]),
+                                                  int(части[2]), части[3])
+                self.assertIsNone(ошибка, где)
+        self.assertGreater(проверено, 40)

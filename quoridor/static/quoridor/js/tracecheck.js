@@ -22,6 +22,7 @@ import {
   RED, BLUE, W, initialState, pawnMoves, shortestPath, wallProblem,
   applyMove, applyWall,
 } from './rules.js';
+import { botView } from './bot.js';
 
 const TRACE_URL = '/static/quoridor/data/rules_trace.json';
 
@@ -72,6 +73,9 @@ function legalWallCount(state, side) {
 
 /**
  * Проиграть след и вернуть отчёт.
+ *
+ * Проверяются и правила, и бот: след несёт оценку каждого хода и то, какие
+ * ходы остаются после разрешения ничьих.
  * @returns {{ok: boolean, games: number, plies: number, problems: string[]}}
  */
 export async function checkTrace(url = TRACE_URL) {
@@ -104,6 +108,20 @@ export async function checkTrace(url = TRACE_URL) {
       ];
       if (JSON.stringify(paths) !== JSON.stringify(game.paths[i])) {
         problems.push(`кратчайшие пути: ${where} — здесь ${JSON.stringify(paths)}, на сервере ${JSON.stringify(game.paths[i])}`);
+      }
+
+      // Сверка БОТОВ, а не только правил. Ботов в проекте тоже два: этот и
+      // quoridor/bot.py, который нужен стенду для замеров. Разойдись они —
+      // настроенное на стенде не имело бы отношения к тому, с кем играет
+      // человек.
+      if (game.botScores) {
+        const view = botView(st, side, trace.botDepth || 2,
+                             trace.botCandidates || 14);
+        if (view.scores.join(' ') !== game.botScores[i].join(' ')) {
+          problems.push(`оценки бота: ${where} — здесь «${view.scores.join(' ')}», на сервере «${game.botScores[i].join(' ')}»`);
+        } else if (view.top.join(' ') !== game.botTop[i].join(' ')) {
+          problems.push(`выбор бота: ${where} — здесь «${view.top.join(' ')}», на сервере «${game.botTop[i].join(' ')}»`);
+        }
       }
 
       const parts = raw.split(',');
