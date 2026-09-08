@@ -52,7 +52,11 @@ class Command(BaseCommand):
         parser.add_argument('--cores', dest='ядер', type=int, default=None)
         parser.add_argument('--out', dest='файл', default='quoridor/study.txt')
         parser.add_argument('--only', dest='только', default='',
-                            help='какие части считать: ladder,first,sweep,shape')
+                            help='какие части считать: ladder,first,sweep,shape,depth')
+        parser.add_argument('--wall-prices', dest='цены', default='',
+                            help='свой набор цен забора через запятую')
+        parser.add_argument('--level', dest='уровень', default='medium',
+                            help='на каком уровне сравнивать цены забора')
 
     # ── вывод ──────────────────────────────────────────────────────────────
 
@@ -107,14 +111,16 @@ class Command(BaseCommand):
                           % (уровень, 100 * доля, 100 * погр, сыграно,
                              time.perf_counter() - t))
 
-    def цена_забора(self, n, партий, ядер):
+    def цена_забора(self, n, партий, ядер, цены=None, уровень='medium'):
         """Сколько на самом деле стоит забор относительно шага."""
-        self._сказать('  Цена забора (шаг = 10, против нынешних 10 и 2):')
-        нынешний = arena.игрок_из_весов('нынешний', dict(bot.ВЕСА), 'medium')
-        for цена in ЦЕНЫ_ЗАБОРА:
+        цены = цены or ЦЕНЫ_ЗАБОРА
+        self._сказать('  Цена забора (шаг = 10, уровень %s, против нынешних '
+                      '10 и %g):' % (уровень, bot.ВЕСА['забор']))
+        нынешний = arena.игрок_из_весов('нынешний', dict(bot.ВЕСА), уровень)
+        for цена in цены:
             веса = dict(bot.ВЕСА)
             веса['забор'] = цена
-            кандидат = arena.игрок_из_весов('забор=%g' % цена, веса, 'medium')
+            кандидат = arena.игрок_из_весов('забор=%g' % цена, веса, уровень)
             t = time.perf_counter()
             итог = arena.матч(кандидат, нынешний, партий=партий, ядер=ядер,
                               seed=23, n=n)
@@ -189,7 +195,9 @@ class Command(BaseCommand):
             if 'first' in части:
                 self.выступка(n, п['партий'], ядер)
             if 'sweep' in части:
-                self.цена_забора(n, п['партий'], ядер)
+                свои = [float(x) for x in п['цены'].split(',') if x.strip()]
+                self.цена_забора(n, п['партий'], ядер, свои or None,
+                                 п['уровень'])
             if 'depth' in части:
                 self.глубина(n, п['партий_сильных'], ядер)
             if 'shape' in части:
