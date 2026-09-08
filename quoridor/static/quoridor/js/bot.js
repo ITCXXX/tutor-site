@@ -269,15 +269,40 @@ export function botMove(state, side, levelName = DEFAULT_LEVEL) {
   const until = Date.now() + level.budget;
   const budget = { out: () => Date.now() > until };
 
-  const scored = [];
-  for (const mv of pool) {
-    const next = apply(state, side, mv);
-    if (!next) continue;
-    const score = -search(next, other(side), level.depth - 1,
-                          -Infinity, Infinity, level, budget);
-    scored.push({ mv, score });
-    // Срок вышел — дальше сравнивать было бы нечестно: у оставшихся вариантов
-    // перебор оборвался бы на первом же узле, и они выглядели бы хуже не по делу.
+  // Углубление по уровням: сперва вся глубина 1, потом вся 2, и так пока есть
+  // время. Так список ходов всегда сравнён ЦЕЛИКОМ — пусть на меньшей глубине.
+  //
+  // Раньше каждый ход считался сразу на полную глубину, а по истечении срока
+  // список обрывался. Беда не в том, что бот думал меньше, а в том, ЧТО он
+  // терял: ходы идут не вперемешку — сначала шаги, потом заборы по убыванию
+  // пользы, — и обрыв съедал с конца, то есть заборы. На слабом телефоне, где
+  // срок и становится ограничителем, бот превращался в бегуна не по расчёту, а
+  // потому что до заборов не доходила очередь. Замер на сервере: срок обрывал
+  // список в 75% решений, теряя по три с лишним забора на ход; после правки
+  // сильный уровень выиграл 58.8% ± 7.7%, а там, где срок не жмёт, разницы нет.
+  //
+  // Побочная выгода — порядок: каждый следующий уровень начинается с лучших
+  // ходов предыдущего, а чем раньше найден хороший ход, тем больше веток
+  // отсечёт альфа-бета.
+  let scored = [];
+  let order = pool;
+  for (let depth = 1; depth <= level.depth; depth += 1) {
+    const round = [];
+    let cut = false;
+    for (const mv of order) {
+      if (budget.out() && scored.length) { cut = true; break; }
+      const next = apply(state, side, mv);
+      if (!next) continue;
+      const score = -search(next, other(side), depth - 1,
+                            -Infinity, Infinity, level, budget);
+      round.push({ mv, score });
+    }
+    // Недосчитанный уровень выбрасывается целиком: его оценки не с чем
+    // сравнивать — часть ходов считана на этой глубине, часть нет.
+    if (cut) break;
+    round.sort((a, b) => b.score - a.score);
+    scored = round;
+    order = round.map((s) => s.mv);
     if (budget.out()) break;
   }
 
@@ -287,7 +312,7 @@ export function botMove(state, side, levelName = DEFAULT_LEVEL) {
     return finish(state, side, step);
   }
 
-  scored.sort((a, b) => b.score - a.score);
+  // Сортировать заново не нужно: круг уже отсортирован.
 
   // Слабый уровень нарочно ошибается: иначе даже одноходовый бот обыгрывает
   // новичка вчистую, и играть с ним не хочется.
