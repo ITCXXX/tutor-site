@@ -3714,7 +3714,9 @@
     // созданием объекта успевает открыться диалог).
     const p = at || worldPoint() || { x: -stage.x() / stage.scaleX() + 200, y: -stage.y() / stage.scaleX() + 200 };
     const el = { id: uuid(), type, z: 0, data: Object.assign({ x: p.x, y: p.y }, data) };
-    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    upsertNode(el);
+    пометитьНоситель(el.id);   // поставили на картинку — значит к ней и относится
+    send({ action: 'element_add', element: el }); histAdd(el);
     setTool('select');
   }
   function insertTable() {
@@ -3952,7 +3954,9 @@
   function insertTextbox() {
     const p = worldPoint() || viewportCenterWorld();
     const el = { id: uuid(), type: 'textbox', z: 0, data: { x: p.x, y: p.y, html: '', color: strokeColor, fontSize: 20, font: TEXT_FONT, align: 'left', _new: true } };
-    upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el);
+    upsertNode(el);
+    пометитьНоситель(el.id);   // подпись, поставленная на картинку, — её подпись
+    send({ action: 'element_add', element: el }); histAdd(el);
     setTool('select');
   }
   // — Плавающая панель форматирования обычного текста (.tbox) —
@@ -6678,6 +6682,9 @@
     // Штрих мог быть нарисован внутри математического окна — тогда и фигура
     // принадлежит ему, иначе она отвяжется от окна при его перемещении.
     if (el && d.frame) el.data.frame = d.frame;
+    // То же и с картинкой: узнанная фигура остаётся на том же носителе, что и
+    // штрих, из которого она получилась.
+    if (el && d.carrier) el.data.carrier = d.carrier;
     return el;
   }
 
@@ -6908,6 +6915,10 @@
       // непрозрачную рамку — не то, чего человек хотел.
       if (drawing.data.marker !== true && smartЗаменить(drawing)) { drawing = null; return; }
     }
+    // Нарисовали поверх картинки — значит рисунок её. Записываем это здесь и
+    // навсегда: потом картинку можно возить куда угодно, и разбор поедет с ней,
+    // а вот случайно оказавшееся под ней чужое — нет.
+    пометитьНоситель(drawing.id);
     send({ action: 'element_update', element: stripPrivate(drawing) });
     histAdd(stripPrivate(drawing));
     drawing = null;
@@ -7505,6 +7516,44 @@
     return ((el && el.z) || 0) > (carrierEl.z || 0);
   }
 
+  // Найти картинку или PDF, НА которой создан этот объект. Зовётся один раз —
+  // в миг создания, — и результат оседает в data.carrier навсегда.
+  function найтиНоситель(eid) {
+    const el = elements.get(eid);
+    if (!el || CARRY_SKIP[el.type]) return null;
+    if (el.data && el.data.frame) return null;      // живёт внутри матокна
+    if (isPointBound(el)) return null;              // следует за своими точками
+    let cx, cy;
+    const w = widgetItems.get(eid);
+    if (w && w.wrapper) {
+      cx = (el.data.x || 0) + (w.wrapper.offsetWidth || 0) / 2;
+      cy = (el.data.y || 0) + (w.wrapper.offsetHeight || 0) / 2;
+    } else {
+      const n = nodes.get(eid);
+      if (!n || typeof n.getClientRect !== 'function') return null;
+      const b = n.getClientRect({ relativeTo: layer });
+      if (!b || (!b.width && !b.height)) return null;
+      cx = b.x + b.width / 2; cy = b.y + b.height / 2;
+    }
+    let лучший = null;
+    elements.forEach((c, cid) => {
+      if (cid === eid || (c.type !== 'image' && c.type !== 'pdf')) return;
+      const d = c.data, ib = { x: d.x || 0, y: d.y || 0, w: d.width || 0, h: d.height || 0 };
+      if (ib.w <= 0 || ib.h <= 0) return;
+      if (cx < ib.x || cx > ib.x + ib.w || cy < ib.y || cy > ib.y + ib.h) return;
+      if (!рисуетсяВыше(eid, c)) return;            // рисуем ПОВЕРХ, а не под
+      if (!лучший || (c.z || 0) > (лучший.z || 0)) лучший = c;  // из наложенных — верхняя
+    });
+    return лучший ? лучший.id : null;
+  }
+  // Пометить объект носителем. Ставится ДО отправки соседям, чтобы пометка
+  // ушла вместе с объектом и была одинаковой у всех.
+  function пометитьНоситель(eid) {
+    const el = elements.get(eid); if (!el || !el.data) return;
+    const cid = найтиНоситель(eid);
+    if (cid) el.data.carrier = cid;
+  }
+
   function objectsOnCarrier(imgEl) {
     const d = imgEl.data, ib = { x: d.x || 0, y: d.y || 0, w: d.width || 0, h: d.height || 0 };
     if (ib.w <= 0 || ib.h <= 0) return [];
@@ -7512,11 +7561,17 @@
     const res = [];
     elements.forEach((el, eid) => {
       if (eid === imgEl.id || CARRY_SKIP[el.type]) return;
-      // Только то, что НАД картинкой. Разбор, написанный поверх неё, к ней и
-      // относится — он обязан ехать следом. А записи, сделанные раньше и
-      // лежащие ПОД картинкой, к ней отношения не имеют: картинку на них
-      // просто положили сверху. Раньше уезжало и то и другое, потому что
-      // смотрели только на попадание центра в рамку.
+      // ГЛАВНОЕ УСЛОВИЕ: объект НА ЭТОЙ картинке и создан ИМЕННО НА НЕЙ.
+      //
+      // Раньше условия не было вовсе: принадлежность вычислялась заново на
+      // каждое перетаскивание, по одному попаданию центра в рамку. Значит
+      // картинка, поставленная на чужой чертёж хоть на секунду, тут же его
+      // усыновляла и увозила следующим движением. Принадлежность — факт из
+      // прошлого, а не наблюдение в настоящем, поэтому она записывается один
+      // раз, при создании (см. пометитьНоситель).
+      if (!el.data || el.data.carrier !== imgEl.id) return;
+      // Второе условие прежнее — то, что НАД картинкой. Оставлено на случай,
+      // когда картинку подняли выше своей же надписи.
       if (!рисуетсяВыше(eid, imgEl)) return;
       if (el.data && el.data.frame) return;          // геометрия внутри матокна
       if (isPointBound(el)) return;                  // следует за своими точками
