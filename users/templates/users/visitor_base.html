@@ -95,11 +95,16 @@
             display: flex; align-items: center; justify-content: center;
             cursor: pointer;
             opacity: 0;
+            /* Прозрачное — не значит несуществующее. Без этой строки невидимый
+               круг 50 на 50 висел в правом нижнем углу КАЖДОЙ страницы и ловил
+               нажатия: на телефоне палец попадал в него вместо кнопки под ним,
+               и вместо ответа страница молча прокручивалась наверх. */
+            pointer-events: none;
             transition: opacity 0.3s ease;
             z-index: 1000;
             box-shadow: var(--shadow-primary);
         }
-        .back-to-top.show { opacity: 1; }
+        .back-to-top.show { opacity: 1; pointer-events: auto; }
     </style>
     <!-- MathJax для отображения LaTeX формул -->
     <script>
