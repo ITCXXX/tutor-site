@@ -364,15 +364,52 @@
   const undoStack = [], redoStack = [];
   const TYPE_NAMES = { frame: 'окно', point: 'точка', segment: 'отрезок', ray: 'луч', gline: 'прямая', perp: 'перпендикуляр', parallel: 'параллель', perpbis: 'сер. перпендикуляр', bisector: 'биссектриса', circ: 'окружность', circle: 'окружность', angle: 'угол', func: 'функция', implicit: 'кривая', region: 'область', ftangent: 'касательная', farea: 'площадь', fintersect: 'пересечение', vector: 'вектор', rect: 'прямоугольник', ellipse: 'эллипс', line: 'линия', arrow: 'стрелка', freehand: 'рисунок', text: 'текст', latex: 'формула', shape: 'фигура', comment: 'комментарий', image: 'картинка', pdf: 'PDF', measure: 'измерение', polygon: 'многоугольник', regpoly: 'многоугольник', table: 'таблица', kanban: 'канбан', timer: 'таймер', wheel: 'колесо', slider: 'ползунок', sticky: 'стикер', geogebra: 'ГеоГебра' };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
-  function histAdd(el) { undoStack.push({ kind: 'add', el: clone(el) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
-  function histDel(el) { undoStack.push({ kind: 'del', el: clone(el) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
+
+  // ── ОДНО ДЕЙСТВИЕ — ОДИН ШАГ НАЗАД ───────────────────────────────────
+  // Пока сделка открыта, записи в историю не ложатся в стопку по одной, а
+  // копятся здесь и на выходе становятся одним шагом.
+  //
+  // Зачем так, а не переписывать каждое групповое действие на histBatch.
+  // Групповых действий девять (удаление, перемещение, дублирование, вставка,
+  // скрытие, замок, слои, группировка, оформление нескольких штрихов), и
+  // завтра будет десятое. Переписывать по месту — значит каждый раз помнить
+  // про историю. Со сделкой помнить надо одно: действие, которое трогает
+  // больше одного объекта, оборачивается в одинШаг — а что там внутри пишет в
+  // историю, уже неважно.
+  let сделка = null;
+  // Вернуть true, если запись перехвачена сделкой и в стопку класть не надо.
+  function вСделку(op) { if (!сделка) return false; сделка.push(op); return true; }
+  function одинШаг(действие) {
+    // Вложенная сделка — часть внешней, своего шага не заводит. Иначе
+    // «удалить выделенное» внутри «вставить взамен» дало бы два шага.
+    if (сделка) return действие();
+    сделка = [];
+    try {
+      return действие();
+    } finally {
+      const ops = сделка; сделка = null;
+      // Один объект — обычный шаг: незачем заворачивать одиночку в пакет.
+      if (ops.length === 1) { undoStack.push(ops[0]); redoStack.length = 0; trimHist(); syncAlgebra(); }
+      else if (ops.length > 1) histBatch(ops);
+    }
+  }
+
+  function histAdd(el) { const op = { kind: 'add', el: clone(el) }; if (вСделку(op)) return; undoStack.push(op); redoStack.length = 0; trimHist(); syncAlgebra(); }
+  function histDel(el) { const op = { kind: 'del', el: clone(el) }; if (вСделку(op)) return; undoStack.push(op); redoStack.length = 0; trimHist(); syncAlgebra(); }
   function histUpd(before, after) {
     if (JSON.stringify(before) === JSON.stringify(after)) return;
-    undoStack.push({ kind: 'upd', before: clone(before), after: clone(after) }); redoStack.length = 0; trimHist();
+    const op = { kind: 'upd', before: clone(before), after: clone(after) };
+    if (вСделку(op)) return;
+    undoStack.push(op); redoStack.length = 0; trimHist();
   }
   // Пакет правок как ОДИН шаг отмены (например, стирание ластиком: удалить штрих
   // и добавить его уцелевшие куски). ops — массив обычных записей add/del/upd.
-  function histBatch(ops) { if (!ops || !ops.length) return; undoStack.push({ kind: 'batch', ops: ops.map((o) => clone(o)) }); redoStack.length = 0; trimHist(); syncAlgebra(); }
+  function histBatch(ops) {
+    if (!ops || !ops.length) return;
+    // Пакет внутри сделки не заводит свой шаг, а вливается в неё целиком.
+    if (сделка) { ops.forEach((o) => сделка.push(clone(o))); return; }
+    undoStack.push({ kind: 'batch', ops: ops.map((o) => clone(o)) }); redoStack.length = 0; trimHist(); syncAlgebra();
+  }
   function trimHist() { if (undoStack.length > 200) undoStack.shift(); }
   function reAdd(el) { const c = clone(el); upsertNode(c); send({ action: 'element_add', element: stripPrivate(c) }); }
   function reUpd(el) { const c = clone(el); upsertNode(c); send({ action: 'element_update', element: stripPrivate(c) }); }
@@ -1025,10 +1062,10 @@
   }
   // Удалить элементы вместе со всем, что от них зависит.
   function deleteWithDependents(ids) {
-    withDependents(ids).forEach((id) => {
+    одинШаг(() => withDependents(ids).forEach((id) => {
       const el = elements.get(id); if (!el) return;
       histDel(el); send({ action: 'element_delete', id }); removeNode(id);
-    });
+    }));
   }
 
   // Перетаскивание нескольких выбранных объектов вместе (в т.ч. группы).
@@ -1043,7 +1080,7 @@
   }
   function commitDragSnap() {
     if (!dragSnap) return;
-    dragSnap.forEach((b) => { const cur = elements.get(b.id); if (cur) histUpd(b, cur); });
+    одинШаг(() => dragSnap.forEach((b) => { const cur = elements.get(b.id); if (cur) histUpd(b, cur); }));
     dragSnap = null;
   }
 
@@ -1077,10 +1114,27 @@
     });
     widgetItems.forEach((it, id) => {
       if (ex.has(id)) return;
+      // Скрытые элементы страницы в опоры не берём. Раньше брались все подряд,
+      // и доска равнялась по тому, чего на экране нет: направляющая появлялась
+      // «из ниоткуда», а объект прыгал к невидимому краю.
+      if (it.el.data && it.el.data.hidden && !revealHidden) return;
       const d = it.el.data, w = it.wrapper.offsetWidth, h = it.wrapper.offsetHeight;
       if (w && h) refs.push({ x: d.x || 0, y: d.y || 0, w: w, h: h });
     });
     return refs;
+  }
+
+  // ШТРИХ ОТ РУКИ НЕ РАВНЯЕТСЯ НИ ПО ЧЕМУ.
+  //
+  // Выравнивание — про блоки с краями: у картинки, окна, фигуры, таблицы край
+  // есть, и равнять по нему осмысленно. У закорючки края нет: её «рамка» —
+  // случайный прямоугольник вокруг росчерка. Пока этой проверки не было,
+  // карандашный штрих, который ведут рядом с надписью, липнул к её краям и
+  // середине — и с виду это ровно «текст и карандаш притягиваются».
+  //
+  // Само собой, опорой штрих тоже не служит: его нет в SNAP_BOX_TYPES.
+  function магнитуНеПодлежит(el) {
+    return !!(el && el.type === 'freehand');
   }
   function computeSnap(box) {
     if (!guideRefs || !guideRefs.length) return { dx: 0, dy: 0, lines: [] };
@@ -1276,11 +1330,18 @@
   }
 
   function onNodeDragMove(id, node) {
+    // Пока тащат, ручки не заказывают СВОЮ отрисовку холста: она синхронная и
+    // полная (со слоем попаданий), а шагов перетаскивания в кадре бывает
+    // несколько. На доске, полной карандаша, от этого объект ехал рывками.
+    // Кадровая отрисовка стоит в конце этой же функции — её достаточно.
+    тащатОбъект = true;
     positionHandles(); // ручки следуют за объектом при перемещении
+    тащатОбъект = false;
     recomputeConnectors(); renderAnchors(); // привязанные стрелки тянутся следом
     captureDragSnap(dragStart ? Array.from(selected) : [id]);
     const isLead = !dragStart || dragStart.leadId === id;
     if (!isLead) return; // следом-объекты двигает ведущий
+    if (магнитуНеПодлежит(elements.get(id))) { moveDragFollowers(id, node); layer.batchDraw(); return; }
     if (!guideRefs) guideRefs = collectGuideRefs(dragStart ? Array.from(selected) : [id]);
     const b = node.getClientRect({ relativeTo: layer });
     const snap = computeDragSnap({ x: b.x, y: b.y, w: b.width, h: b.height });
@@ -2326,12 +2387,12 @@
     if (typeof n.listening === 'function') n.listening(!(hid && !revealHidden));
   }
   function setHidden(ids, hidden) {
-    ids.forEach((id) => {
+    одинШаг(() => ids.forEach((id) => {
       const el = elements.get(id); if (!el) return;
       const before = clone(el); el.data.hidden = hidden ? true : undefined;
       applyElVisibility(el); histUpd(before, el); send({ action: 'element_update', element: el });
       if (hidden && selected.has(id)) selected.delete(id);
-    });
+    }));
     refreshTransformer(); syncAlgebra(); layer.batchDraw();
   }
   // Режим скрытия. Включён — скрытое проступает призраком, а щелчок по любому
@@ -6577,7 +6638,8 @@
 
   // Названия для подсказки. Отдельной картой, а не в коде разбора: тот про
   // доску ничего не знает и знать не должен.
-  const SMART_ИМЕНА = { line: 'прямая', circle: 'окружность', ellipse: 'овал',
+  // Прямой здесь нет намеренно: её подмену убрали (см. smartЗаменить).
+  const SMART_ИМЕНА = { circle: 'окружность', ellipse: 'овал',
                         rect: 'прямоугольник', triangle: 'треугольник' };
 
   function smartПодсказка(kind) {
@@ -6636,6 +6698,15 @@
       return false;
     }
     if (!фиг) return false;
+
+    // ПРЯМУЮ НЕ ПОДМЕНЯЕМ — по просьбе владельца.
+    //
+    // Почти всякая черта в записи близка к прямой: подчёркивание, дробная
+    // черта, знак минус, штрих на чертеже, зачёркивание. Подмена их ровным
+    // отрезком мешала больше, чем помогала, и приходилась ровно на письмо —
+    // то есть на самое частое. Остальные фигуры остаются: окружность, овал,
+    // прямоугольник и треугольник ни с чем не спутаешь.
+    if (фиг.kind === 'line') return false;
 
     // ── Треугольник остаётся ТЕМ ЖЕ элементом, только с прямыми сторонами.
     // Причина не в экономии: у доски нет типа «произвольный треугольник».
@@ -6908,11 +6979,47 @@
   // Текущее касание отдано доске: инструмент его не увидит вовсе.
   let палецВедётДоску = false;
 
+  // Когда мы в последний раз отказали пальцу. Нужно для «призраков» — см. ниже.
+  let отказаноКасаниюAt = 0;
+
+  // ОТКАЗ ДОЛЖЕН БЫТЬ ПОЛНЫМ.
+  //
+  // Раньше отказ был молчаливый: доска просто ничего не делала. Браузер про
+  // отказ не знал и доигрывал касание «за мышь» — досылал мышиные события того
+  // же самого нажатия. У мышиного события нет ни touches, ни changedTouches,
+  // поэтому evtIsFinger честно отвечал «это не палец», проверка пропускала, и
+  // короткое нажатие без движения по правилам карандаша означало ТОЧКУ. Отсюда
+  // точки от пальца в режиме пера.
+  //
+  // Тот же молчаливый отказ разрешал системе считать долгое нажатие своим — и
+  // на планшете вылезала плашка «Вставить», споря с удержанием, которое
+  // начинает рамку выделения.
+  //
+  // preventDefault закрывает обе двери сразу: браузер не досылает мышиные
+  // события и не показывает свою плашку.
+  function отказатьКасанию(e) {
+    const ev = e && e.evt;
+    if (!ev) return true;
+    отказаноКасаниюAt = Date.now();
+    if (typeof ev.preventDefault === 'function' && ev.cancelable) ev.preventDefault();
+    return true;
+  }
+
   // Должна ли обычная логика доски пропустить это событие.
   function touchBlocked(e) {
-    if (gesture) return true;                   // идёт жест — доска не рисует и не выделяет
-    if (!evtIsFinger(e)) return false;          // мышь и перо всегда работают как раньше
-    if (penDown) return true;                   // перо ведёт → это ладонь
+    if (gesture) return evtIsFinger(e) ? отказатьКасанию(e) : true;  // идёт жест — доска не рисует и не выделяет
+    if (!evtIsFinger(e)) {
+      // ПРИЗРАК. Мышиное событие, пришедшее сразу за отказанным касанием, —
+      // это то же самое касание, доигранное браузером. Второй рубеж на случай,
+      // если preventDefault где-то не сработал (иные браузеры, иной путь
+      // события). Взводится ТОЛЬКО после отказа пальцу, поэтому настоящей мыши
+      // на компьютере не мешает никогда: там отказов пальцу не бывает.
+      const ev = e && e.evt;
+      const мышь = ev && !ev.touches && !ev.changedTouches;
+      if (мышь && Date.now() - отказаноКасаниюAt < 700) return true;
+      return false;                             // мышь и перо всегда работают как раньше
+    }
+    if (penDown) return отказатьКасанию(e);     // перо ведёт → это ладонь
     // В режиме пера палец не ведёт ШТРИХ — для этого есть перо, и именно от
     // касания ладонью мы защищаемся. Всё остальное пальцу доступно: стрелки,
     // фигуры, стирание, стикеры, текст, матокна. Раньше здесь стояло
@@ -6922,10 +7029,10 @@
     // Ладонь во время письма пером отсекается выше, проверкой penDown, и это
     // послабление её не касается.
     // Только что писали пером → палец сейчас это ладонь (перо ещё рядом).
-    if (Date.now() - lastPenAt < 1200) return true;
+    if (Date.now() - lastPenAt < 1200) return отказатьКасанию(e);
     // Палец в режиме выделения отдан ДОСКЕ: ведёт её, а рамку начинает долгим
     // нажатием (см. отдатьКасаниеДоске). Инструменту это касание не достаётся.
-    if (палецВедётДоску) return true;
+    if (палецВедётДоску) return отказатьКасанию(e);
     // ШТРИХ ПАЛЬЦЕМ — ТОЛЬКО ТАМ, ГДЕ ПЕРА НЕТ.
     //
     // Здесь однажды уже стояла такая проверка, её сняли, и палец начал писать
@@ -6940,7 +7047,7 @@
     // не попросил обратного». На планшете без пера ничего не меняется: там
     // палец единственный инструмент, и запрет сделал бы доску бесполезной.
     // Обратный ход — галочка «Рисовать пальцем» в меню; она снова что-то значит.
-    if (penMode() && ШТРИХ_ОТ_РУКИ[tool]) return true;
+    if (penMode() && ШТРИХ_ОТ_РУКИ[tool]) return отказатьКасанию(e);
     return false;
   }
 
@@ -6990,6 +7097,7 @@
     if (!gesture) return;
     const c = touchCenter();
     if (!c) return;
+    if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
     // Панорама: доска едет за серединой между пальцами (или за единственным пальцем).
     const dx = c.x - gesture.cx, dy = c.y - gesture.cy;
     if (dx || dy) stage.position({ x: stage.x() + dx, y: stage.y() + dy });
@@ -7724,6 +7832,7 @@
   // Масштабирует к newScale вокруг точки center (экранные коорды). Без center —
   // вокруг центра видимой области.
   function zoomTo(newScale, center) {
+    if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
     const oldScale = stage.scaleX();
     const clamped = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
     const c = center || { x: stage.width() / 2, y: stage.height() / 2 };
@@ -7742,6 +7851,7 @@
   // ось, чтобы новое направление сработало сразу.
   let wheelLastT = 0, wheelDxAvg = 0, wheelDyAvg = 0;
   function wheelPan(dx, dy) {
+    if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
     const now = (window.performance && performance.now) ? performance.now() : Date.now();
     if (now - wheelLastT > 150) { wheelDxAvg = 0; wheelDyAvg = 0; } // пауза → новый жест
     wheelLastT = now;
@@ -8112,6 +8222,12 @@
   // поэтому при изменении размера объекта они оставались на старом месте.
   // Связываем напрямую: где двигаются ручки — там же двигаются и якоря. Новые
   // места, откуда позовут positionHandles, подхватятся сами.
+  // Идёт перетаскивание объекта: отрисовку холста ручки заказывают кадровую,
+  // а не мгновенную. Разница видна на доске, полной карандаша: layer.draw()
+  // перерисовывает и картинку, и слой попаданий, а шагов мыши в один кадр
+  // приходит несколько.
+  let тащатОбъект = false;
+  function рисоватьРучки() { if (тащатОбъект) layer.batchDraw(); else layer.draw(); }
   function positionHandles() { positionHandlesCore(); renderAnchors(); }
 
   // Куда целимся: объект под курсором и его ближайшая сторона.
@@ -8240,11 +8356,14 @@
     + ' #people-panel, #voice-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control,'
     + ' #settings-btn, #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor,'
     + ' #tbox-bar, #tbl-bar, #venn-bar, #dp-pop, #eraser-panel, #storyboard, #pdf-controls,'
-    + ' #frame-exit-btn, #mobile-sheet, #mobile-fab, #mobile-backdrop, #embed-dialog,'
+    + ' #frame-exit-btn, #mobile-sheet, #mobile-fab, #mobile-bar, #mobile-backdrop, #embed-dialog,'
     + ' #board-pw-dialog, #pdf-export-dialog';
 
   function setPanMode(on) {
     panMode = !!on;
+    // Вошли в перемещение — всё всплывающее убираем: доску возят, чтобы её
+    // ВИДЕТЬ, а панели поверх неё в этот момент только мешают.
+    if (panMode && typeof closeToolPanels === 'function') closeToolPanels();
     document.body.classList.toggle('board-pan', panMode);
     const sel = document.querySelector('#board-toolbar .tool[data-tool="select"]');
     if (sel) {
@@ -8267,6 +8386,7 @@
   }
 
   function panBoardBy(dx, dy) {
+    следованиеОтпустить();
     stage.position({ x: panDrag.sx + dx, y: panDrag.sy + dy });
     scheduleViewRedraw();   // сетка, курсоры, якоря и трансляция вида ведомым
   }
@@ -8707,7 +8827,8 @@
       positionConnHandles(el);
       connHandles.show(); connHandles.moveToTop();
       showConnPanel(el); hideShapePanel();
-      layer.draw(); updateDebug(); return;
+      if (typeof syncObjActions === 'function') syncObjActions();
+      рисоватьРучки(); updateDebug(); return;
     }
     hideConnPanel();
     if (connHandles.visible()) connHandles.hide();
@@ -8720,10 +8841,12 @@
     // Штрихи карандаша и маркера — своя панель с цветом и толщиной.
     const strokeEls = strokeSelectedEls();
     if (strokeEls.length) showStrokePanel(strokeEls[0]); else hideStrokePanel();
+    // Действия над выделенным — здесь же: это про выделение, а не про тип.
+    if (typeof syncObjActions === 'function') syncObjActions();
     const node = el && RESIZABLE.includes(el.type) ? nodes.get(ids[0]) : null;
     if (!node) {
       if (handlesGroup.visible()) { handlesGroup.hide(); }
-      layer.draw();
+      рисоватьРучки();
       updateDebug();
       return;
     }
@@ -8766,7 +8889,7 @@
     });
     handlesGroup.show();
     handlesGroup.moveToTop();
-    layer.draw(); // синхронно (rAF может быть не готов) — ручки появляются сразу
+    рисоватьРучки(); // обычно синхронно (rAF может быть не готов) — ручки появляются сразу
     updateDebug();
   }
 
@@ -8873,6 +8996,7 @@
     frameExitBtn.hidden = !show;
   }
   function fitFrameToView(fr, frac) {
+    if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
     const vw = window.innerWidth, vh = window.innerHeight - STAGE_TOP;
     const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
       Math.min(frac * vw / Math.max(1, fr.data.width), frac * vh / Math.max(1, fr.data.height))));
@@ -10219,28 +10343,36 @@
     members.forEach((mid) => { if (allSelected) selected.delete(mid); else selected.add(mid); });
     refreshTransformer();
   }
+  // Группировка и разгруппировка НЕ писались в историю вовсе: сгруппировал
+  // случайно — вернуть было нечем, Ctrl+Z отменял предыдущее действие, а
+  // группа оставалась. Теперь пишутся, и обе — одним шагом на всю группу.
   function groupSelected() {
     if (selected.size < 2) return;
     const gid = 'g' + uuid();
-    Array.from(selected).forEach((id) => {
+    одинШаг(() => Array.from(selected).forEach((id) => {
       const el = elements.get(id);
       if (!el) return;
+      const before = clone(el);
       el.data.groupId = gid;
+      histUpd(before, el);
       send({ action: 'element_update', element: el });
-    });
+    }));
     refreshTransformer();
+    boardHint('Сгруппировано: ' + selected.size + ' — теперь двигаются вместе');
   }
   function ungroupSelected() {
     let changed = false;
-    Array.from(selected).forEach((id) => {
+    одинШаг(() => Array.from(selected).forEach((id) => {
       const el = elements.get(id);
       if (el && el.data && el.data.groupId != null) {
+        const before = clone(el);
         delete el.data.groupId;
+        histUpd(before, el);
         send({ action: 'element_update', element: el });
         changed = true;
       }
-    });
-    if (changed) refreshTransformer();
+    }));
+    if (changed) { refreshTransformer(); boardHint('Разгруппировано'); }
   }
   function deleteSelected() {
     if (selected.size === 0) return;
@@ -10254,7 +10386,8 @@
   const DUP_TYPES = ['shape', 'image', 'rect', 'ellipse', 'line', 'arrow', 'freehand',
     'text', 'textbox', 'latex', 'sticky', 'card'];
   function canDuplicate(el) { return DUP_TYPES.indexOf(el.type) >= 0 || (el.type === 'point' && !el.data.on); }
-  function duplicateSelected() {
+  function duplicateSelected() { одинШаг(() => duplicateSelected_()); }
+  function duplicateSelected_() {
     const news = [];
     // Сортируем по глубине и раздаём НОВЫЕ z по возрастанию поверх доски.
     // Раньше дубликат получал тот же z, что и оригинал: при равных z порядок
@@ -10309,7 +10442,8 @@
     boardHint((cut ? 'Вырезано: ' : 'Скопировано: ') + boardClip.length);
     if (cut) deleteSelected();
   }
-  function pasteBoardClip(at) {
+  function pasteBoardClip(at) { return одинШаг(() => pasteBoardClip_(at)); }
+  function pasteBoardClip_(at) {
     if (!boardClip.length) return false;
     // Всю пачку сдвигаем как целое: её левый верхний угол встаёт под курсор,
     // взаимное расположение объектов сохраняется.
@@ -10477,7 +10611,8 @@
   // dir: 'front' | 'back' — сразу наверх или вниз; 'up' | 'down' — на один шаг,
   // то есть поменяться местами с ближайшим соседом по глубине. Шаг нужен, когда
   // объектов много и прыжок через все ломает разложенный порядок.
-  function moveElZ(ids, dir) {
+  function moveElZ(ids, dir) { одинШаг(() => moveElZ_(ids, dir)); }
+  function moveElZ_(ids, dir) {
     let mz = 0, minz = 0; elements.forEach((e) => { const z = e.z || 0; if (z > mz) mz = z; if (z < minz) minz = z; });
     if (dir === 'up' || dir === 'down') {
       ids.forEach((id) => {
@@ -10515,13 +10650,13 @@
   // data.locked уважается всюду (перетаскивание, двойной щелчок, якоря), но
   // поставить его можно было только точке — чекбоксом в её настройках.
   function setLocked(ids, locked) {
-    ids.forEach((id) => {
+    одинШаг(() => ids.forEach((id) => {
       const el = elements.get(id); if (!el) return;
       const before = clone(el); el.data.locked = locked ? true : undefined;
       const n = nodes.get(id);
       if (n && typeof n.draggable === 'function') n.draggable(!locked && tool === 'select' && !viewOnly && !isPointBound(el) && el.type !== 'frame');
       histUpd(before, el); send({ action: 'element_update', element: el });
-    });
+    }));
     renderAnchors(); refreshTransformer(); layer.batchDraw();
     boardHint(locked ? 'Заблокировано: объект не двигается и не правится' : 'Разблокировано');
   }
@@ -10693,6 +10828,11 @@
     applyCull();
     redrawGrid(); repositionWidgets(); positionHandles();
     layer.batchDraw(); updateZoomLabel();
+    if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
+    // Свой новый вид надо разослать ведомым. Раньше «Показать всё» этого не
+    // делало: у ведущего доска отъезжала, а у учеников оставалась на месте до
+    // его следующего движения — и разговор «смотрите сюда» шёл впустую.
+    if (typeof sendView === 'function') sendView();
   }
 
   // Точка мира по экранным координатам. Считаем из них напрямую, а не через
@@ -11066,6 +11206,11 @@
   }
 
   toolButtons.forEach((b) => b.addEventListener('click', () => {
+    // Выделение и перемещение — режимы, в которых НИЧЕГО не рисуют. Значит все
+    // всплывающие панели (цвет, толщина, настройки пера, панель фигуры, меню
+    // доски, мобильный лист) сейчас только загораживают доску. Убираем их с
+    // глаз, как это уже делается при начале рисования.
+    if (b.dataset.tool === 'select') closeToolPanels();
     // Повторный клик по уже выбранному «Выделению» — переход в перемещение доски.
     if (b.dataset.tool === 'select' && tool === 'select' && !panMode) { setPanMode(true); return; }
     if (panMode) setPanMode(false);           // любой другой инструмент выводит из перемещения
@@ -11275,9 +11420,35 @@
       + ' #people-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control, #settings-btn,'
       + ' #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor, #tbox-bar,'
       + ' #dp-pop, #eraser-panel, #storyboard, #pdf-controls, #frame-exit-btn,'
-      + ' #mobile-sheet, #mobile-fab, #mobile-backdrop';
+      + ' #mobile-sheet, #mobile-fab, #mobile-bar, #mobile-backdrop';
     const THRESHOLD = 8; // сдвиг меньше этого — обычный клик, а не перетаскивание
     let src = null, ghost = null, pid = null, startX = 0, startY = 0, dragging = false;
+    // Чьё родное перетаскивание мы временно погасили, чтобы вернуть потом.
+    let сНеюСнялиDraggable = null;
+
+    // РОДНОЕ ПЕРЕТАСКИВАНИЕ БРАУЗЕРА МЕШАЕТ НАШЕМУ.
+    //
+    // Кнопки панели помечены draggable — так их меняют местами. Но инструмент
+    // лежит ВНУТРИ кнопки-группы, и когда его тянут на доску, браузер заводит
+    // перетаскивание группы: шлёт pointercancel и перестаёт слать движения
+    // указателя. Наш код до порога не доходит, и вынос на компьютере не
+    // работал вовсе — в отличие от планшета, где родного перетаскивания нет.
+    //
+    // Гасим только на время жеста и только когда тянут инструмент из
+    // выпадающего списка. Перестановку кнопок это не трогает: её начинают с
+    // самой кнопки-группы, а там инструмента под указателем нет.
+    function погаситьРодноеПеретаскивание(btn) {
+      if (!btn.closest || !btn.closest('.tool-flyout')) return;
+      const держатель = btn.closest('[draggable="true"]');
+      if (!держатель) return;
+      держатель.setAttribute('draggable', 'false');
+      сНеюСнялиDraggable = держатель;
+    }
+    function вернутьРодноеПеретаскивание() {
+      if (!сНеюСнялиDraggable) return;
+      сНеюСнялиDraggable.setAttribute('draggable', 'true');
+      сНеюСнялиDraggable = null;
+    }
 
     // Помечаем перетаскиваемые кнопки: им нужен touch-action: none, иначе на
     // касании жест уедет в прокрутку панели вместо перетаскивания.
@@ -11308,6 +11479,7 @@
       setTimeout(() => document.removeEventListener('click', kill, true), 0);
     }
     function cleanup() {
+      вернутьРодноеПеретаскивание();
       if (src) { try { src.releasePointerCapture(pid); } catch (e) {} src.classList.remove('tool-dragging'); }
       if (ghost) { ghost.remove(); ghost = null; }
       document.body.classList.remove('tool-dragging-body');
@@ -11326,6 +11498,7 @@
       const btn = e.target.closest('[data-tool]');
       if (!btn || !isDropTool(btn.dataset.tool)) return;
       src = btn; pid = e.pointerId; startX = e.clientX; startY = e.clientY; dragging = false;
+      погаситьРодноеПеретаскивание(btn);
       try { btn.setPointerCapture(pid); } catch (err) {}
     });
     bar.addEventListener('pointermove', (e) => {
@@ -11853,11 +12026,11 @@
   function strokeIsMarker(els) { return els.length > 0 && els.every((e) => e.data && e.data.marker); }
   function strokeApply(mutator) {
     const els = strokeSelectedEls(); if (!els.length) return;
-    els.forEach((el) => {
+    одинШаг(() => els.forEach((el) => {
       const before = clone(el);
       mutator(el);
       upsertNode(el); histUpd(before, el); send({ action: 'element_update', element: el });
-    });
+    }));
     layer.batchDraw(); renderStrokePanel();
   }
   function closeStrokePops() {
@@ -11896,6 +12069,103 @@
       });
     }
   }
+  // ── Панель действий над выделенным ────────────────────────────────────
+  // Замок, группировка, дублирование и удаление одинаковы для любого типа,
+  // поэтому панель одна на всё выделение, а не по кнопке в каждой панели
+  // свойств. И появляется она от самого факта выделения — значит есть и у
+  // картинки, текста, таблицы, у которых своей панели свойств нет.
+  const objActs = document.getElementById('obj-actions');
+  const oaLock = document.getElementById('oa-lock');
+  const oaGroup = document.getElementById('oa-group');
+  const oaDup = document.getElementById('oa-dup');
+  const oaDel = document.getElementById('oa-del');
+
+  function выделенныеЭлементы() {
+    return Array.from(selected).map((id) => elements.get(id)).filter(Boolean);
+  }
+  // Экранная рамка вокруг всего выделенного. Konva-узлы и элементы страницы
+  // меряются по-разному, поэтому считаем и тех и других к одной системе — к
+  // окну браузера.
+  function рамкаВыделенияНаЭкране() {
+    const box = stage.container().getBoundingClientRect();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    selected.forEach((id) => {
+      const n = nodes.get(id);
+      if (n && typeof n.getClientRect === 'function') {
+        const r = n.getClientRect();
+        x0 = Math.min(x0, box.left + r.x); y0 = Math.min(y0, box.top + r.y);
+        x1 = Math.max(x1, box.left + r.x + r.width); y1 = Math.max(y1, box.top + r.y + r.height);
+        return;
+      }
+      const w = widgetItems.get(id);
+      if (w && w.wrapper) {
+        const r = w.wrapper.getBoundingClientRect();
+        if (!r.width && !r.height) return;
+        x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top);
+        x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom);
+      }
+    });
+    return isFinite(x0) ? { left: x0, top: y0, right: x1, bottom: y1 } : null;
+  }
+  function группаВыделенного() {
+    const els = выделенныеЭлементы();
+    return els.some((e) => e.data && e.data.groupId != null);
+  }
+  function renderObjActions() {
+    const ids = Array.from(selected);
+    const заперто = allLocked(ids);
+    if (oaLock) {
+      oaLock.classList.toggle('cn-on', заперто);
+      oaLock.title = заперто ? 'Снять замок' : 'Замок: закреплённый объект не двигается и не правится';
+    }
+    const вГруппе = группаВыделенного();
+    if (oaGroup) {
+      // Кнопка одна, а смысл два: пока объекты порознь — собрать, когда
+      // собраны — распустить. Два разных места для этого не нужны.
+      oaGroup.hidden = !(вГруппе || ids.length > 1);
+      oaGroup.classList.toggle('cn-on', вГруппе);
+      oaGroup.title = вГруппе ? 'Разгруппировать (Ctrl+Shift+G)'
+                              : 'Сгруппировать: объекты будут выделяться и двигаться вместе (Ctrl+G)';
+    }
+    // Дублировать умеет не всё: у таблицы, голосования и таймера живое
+    // состояние, и копия сбивала бы с толку. Нечего дублировать — кнопки нет.
+    if (oaDup) oaDup.hidden = !выделенныеЭлементы().some(canDuplicate);
+  }
+  function positionObjActions() {
+    if (!objActs || objActs.classList.contains('ps-hidden')) return;
+    const r = рамкаВыделенияНаЭкране(); if (!r) return;
+    const w = objActs.offsetWidth || 160, h = objActs.offsetHeight || 44;
+    // ПОД выделенным: панели свойств встают НАД ним, и так они не спорят за
+    // одно место.
+    let top = r.bottom + 12;
+    if (top + h > window.innerHeight - 8) top = Math.max(70, r.top - h - 12);
+    let left = (r.left + r.right) / 2 - w / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    top = Math.max(70, Math.min(top, window.innerHeight - h - 8));
+    objActs.style.left = left + 'px'; objActs.style.top = top + 'px';
+  }
+  function syncObjActions() {
+    if (!objActs) return;
+    const надо = selected.size > 0 && tool === 'select' && !panMode && !viewOnly
+      && !(typeof sbView !== 'undefined' && sbView);
+    if (!надо) { objActs.classList.add('ps-hidden'); return; }
+    renderObjActions();
+    objActs.classList.remove('ps-hidden');
+    positionObjActions();
+  }
+  if (oaLock) oaLock.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const ids = Array.from(selected); if (!ids.length) return;
+    setLocked(ids, !allLocked(ids)); syncObjActions();
+  });
+  if (oaGroup) oaGroup.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (группаВыделенного()) ungroupSelected(); else groupSelected();
+    syncObjActions();
+  });
+  if (oaDup) oaDup.addEventListener('click', (e) => { e.stopPropagation(); duplicateSelected(); });
+  if (oaDel) oaDel.addEventListener('click', (e) => { e.stopPropagation(); deleteSelected(); });
+
   function positionStrokePanel(el) {
     const node = nodes.get(el.id); if (!node) return;
     const cr = node.getClientRect(), box = stage.container().getBoundingClientRect();
@@ -11937,10 +12207,10 @@
       const commit = () => {
         const before = snaps; snaps = null;
         const els = strokeSelectedEls();
-        els.forEach((el, i) => {
+        одинШаг(() => els.forEach((el, i) => {
           if (before && before[i]) histUpd(before[i], el);
           send({ action: 'element_update', element: el });
-        });
+        }));
       };
       range.addEventListener('mousedown', start); range.addEventListener('input', () => live(range.value)); range.addEventListener('change', commit);
       num.addEventListener('focus', start); num.addEventListener('input', () => live(num.value)); num.addEventListener('change', commit);
@@ -12269,6 +12539,9 @@
     panRAF = requestAnimationFrame(panLoop);
   }
   function ensurePanLoop() {
+    // Сброс следования — здесь, а не внутри panLoop: цикл крутится по кадру, и
+    // проверять в нём то, что меняется раз за жест, незачем.
+    if (heldKeys.size && typeof следованиеОтпустить === 'function') следованиеОтпустить();
     if (panRAF == null) { lastPanT = 0; panRAF = requestAnimationFrame(panLoop); }
   }
 
@@ -12425,7 +12698,11 @@
     // раскладки и клавиши M это ещё один способ, привычный по «v = стрелка»).
     if (k === 'v') {
       const now = Date.now();
-      if (now - lastVAt < 400) { lastVAt = 0; e.preventDefault(); setPanMode(!panMode); return; }
+      // 700 мс, а не 400. Четыреста — мерка двойного ЩЕЛЧКА мышью: там палец
+      // уже лежит на кнопке и делает два коротких движения. Двойное нажатие
+      // БУКВЫ человек делает заметно медленнее, в четыреста миллисекунд не
+      // попадал и решал, что этого нет вовсе.
+      if (now - lastVAt < 700) { lastVAt = 0; e.preventDefault(); setPanMode(!panMode); return; }
       lastVAt = now;
     }
     if (map[k]) { e.preventDefault(); setTool(map[k]); }
@@ -12693,6 +12970,31 @@
   // Повернули планшет в альбом — панель вернулась, вход надо пересчитать.
   window.addEventListener('resize', () => { if (typeof обновитьВходВПанель === 'function') обновитьВходВПанель(); });
 
+  // ── У КЛАВИАТУРЫ ДОЛЖЕН БЫТЬ ХОЗЯИН ──────────────────────────────────
+  // Панель берёт себе стрелки, только если в неё вошли КЛАВИШЕЙ. Пришли мышью
+  // или пальцем — стрелки достаются доске, как человек и ждёт.
+  //
+  // Прежде здесь спрашивался сам браузер (:focus-visible). Это его собственная
+  // догадка по его собственным правилам, и она не выдержала: жалоба «выбрал
+  // инструмент, жму стрелку — едет выбор по панели, а не доска» вернулась
+  // слово в слово. Признак, который ведёшь сам, догадкой не бывает.
+  let вошлиВПанельКлавишами = false;
+  let последнийВводКлавиша = false;
+  document.addEventListener('keydown', (e) => {
+    // Модификаторы сами по себе входом не считаем: Shift перед щелчком мышью
+    // не должен выглядеть как приход с клавиатуры.
+    if (e.key !== 'Shift' && e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta') последнийВводКлавиша = true;
+  }, true);
+  document.addEventListener('pointerdown', () => {
+    последнийВводКлавиша = false;
+    вошлиВПанельКлавишами = false;   // мышью — значит панель клавиатуру не держит
+  }, true);
+  document.addEventListener('focusin', (e) => {
+    const t = e.target;
+    const вПанели = !!(t && t.closest && t.closest('#board-toolbar'));
+    вошлиВПанельКлавишами = вПанели && последнийВводКлавиша;
+  }, true);
+
   // Клавиши для «кнопок по роли». Ловим на СПУСКЕ (capture), чтобы опередить
   // общий разбор горячих клавиш, и глушим событие только когда действительно
   // обработали — иначе отняли бы Enter у построений.
@@ -12705,23 +13007,11 @@
     if (!el.closest || !el.closest('#board-toolbar')) return;
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
 
-    // ЛИСТАЕМ ПАНЕЛЬ ТОЛЬКО ТОГДА, КОГДА ЧЕЛОВЕК ПРИШЁЛ СЮДА КЛАВИШАМИ.
-    //
-    // Жалоба была такая: на ноутбуке выбрал инструмент мышью, нажал стрелку
-    // вправо, чтобы отъехать по доске, — а вместо доски поехал выбор по панели.
-    // Причина в том, что кнопка инструмента после щелчка остаётся
-    // сфокусированной, и стрелки достаются ей, а не холсту. setTool фокус
-    // отпускает, но путей выбора инструмента много (группа, выпадающее меню,
-    // мобильный лист, горячая клавиша), и хоть один да оставит фокус на панели.
-    //
-    // Поэтому не гоняемся за путями, а спрашиваем сам браузер: :focus-visible
-    // истинно, когда фокус пришёл с клавиатуры, и ложно, когда мышью. Пришёл
-    // мышью — панель стрелки не берёт, они уходят холсту, как человек и ждёт.
-    // Клавиатурная навигация по панели при этом цела: Tab внутрь, стрелки по
-    // кнопкам, Enter — выбрать.
-    let сКлавиатуры = true;
-    try { сКлавиатуры = el.matches(':focus-visible'); } catch (err) { /* старый браузер — оставляем как было */ }
-    if (!сКлавиатуры) {
+    // ЛИСТАЕМ ПАНЕЛЬ ТОЛЬКО ТОГДА, КОГДА ЧЕЛОВЕК ПРИШЁЛ СЮДА КЛАВИШЕЙ.
+    // Признак ведётся выше, по факту входа, а не догадкой браузера.
+    // Клавиатурная навигация цела: Tab внутрь, стрелки по кнопкам, Enter —
+    // выбрать. А выбрал инструмент мышью и жмёшь стрелку — едет доска.
+    if (!вошлиВПанельКлавишами) {
       // Заодно снимаем фокус совсем: иначе следующая стрелка снова придёт сюда.
       if (el.blur) el.blur();
       return;
@@ -12803,6 +13093,7 @@
     if (typeof repositionGGB === 'function') repositionGGB();
     cursors.forEach((c) => placeCursor(c));
     if (typeof repositionConnPanel === 'function') repositionConnPanel();
+    if (typeof positionObjActions === 'function') positionObjActions();
 
     // А вот якоря пересчитываются с поиском объекта под курсором, и это уже не
     // копейки. Их трогаем только когда сменился ВИД: при перетаскивании якоря
@@ -12931,6 +13222,25 @@
     }
     renderPeoplePanel(); syncPeopleBtn();
   }
+  // СВОЁ ДВИЖЕНИЕ ОТПУСКАЕТ СЛЕДОВАНИЕ.
+  //
+  // Следование — договорённость, а не оковы: человек в любой миг может
+  // захотеть посмотреть свой угол доски. Раньше отписаться можно было только
+  // кнопкой, а до тех пор доску отбрасывало обратно каждым кадром ведущего —
+  // и это выглядело как поломка.
+  //
+  // Зовётся из мест САМОГО ВВОДА (колесо, щипок, «рука», стрелки и т. д.), а не
+  // из общей перерисовки: через ту проходит и чужой вид, пришедший по сети.
+  //
+  // Проверка followUid !== null обязательна: панорама идёт по шестьдесят
+  // кадров в секунду, а setFollowUid каждый раз перерисовывает список
+  // участников.
+  function следованиеОтпустить() {
+    if (followUid === null) return;
+    setFollowUid(null, true);
+    boardHint('Вы сдвинули доску сами — следование отключено');
+  }
+
   // Вести участника: его доска повторяет мою.
   function setLead(uid, on) {
     if (on) {
@@ -13191,6 +13501,7 @@
   }
   function focusElement(eid) {
     const el = elements.get(eid); if (!el) { boardHint('Объект уже удалён — можно восстановить из строки удаления'); return; }
+    if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
     const n = nodes.get(eid); let cx, cy;
     if (el.type === 'frame') { cx = el.data.x + el.data.width / 2; cy = el.data.y + el.data.height / 2; }
     else if (n && typeof n.getClientRect === 'function') { const b = n.getClientRect({ relativeTo: layer }); cx = b.x + b.width / 2; cy = b.y + b.height / 2; }
@@ -13394,7 +13705,7 @@
     if (!any) return null;
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }
-  const EXPORT_HIDE_IDS = ['board-toolbar', 'board-topbar', 'board-head', 'board-menu', 'zoom-control', 'board-version', 'cursor-layer', 'tbox-bar', 'dp-pop', 'shape-panel', 'sticky-panel', 'stroke-panel', 'conn-panel', 'settings-btn', 'settings-menu', 'history-panel', 'people-panel', 'point-settings', 'figure-settings', 'func-editor', 'text-editor', 'conn-banner'];
+  const EXPORT_HIDE_IDS = ['board-toolbar', 'board-topbar', 'board-head', 'board-menu', 'zoom-control', 'board-version', 'cursor-layer', 'tbox-bar', 'dp-pop', 'shape-panel', 'sticky-panel', 'stroke-panel', 'conn-panel', 'settings-btn', 'settings-menu', 'history-panel', 'people-panel', 'point-settings', 'figure-settings', 'func-editor', 'text-editor', 'conn-banner', 'obj-actions', 'mobile-bar', 'mobile-fab'];
   function exportIgnore(el) {
     if (!el) return false;
     if (el.id && EXPORT_HIDE_IDS.indexOf(el.id) >= 0) return true;
@@ -14505,7 +14816,16 @@
   function syncMobileFab() {
     if (!mobFab) return;
     syncMobileSheetActive();
-    const src = document.querySelector('#board-toolbar .tool[data-tool="' + tool + '"] svg');
+    // Подсветка в нижней панели: видно, что сейчас в руках.
+    const полоса = document.getElementById('mobile-bar');
+    if (полоса) полоса.querySelectorAll('.mb-item[data-tool]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tool === tool);
+    });
+    // На «+» показываем значок текущего инструмента — но только если его нет в
+    // самой панели. Карандаш и текст там и так видны, и дублировать их значок
+    // на соседней кнопке значит сбивать с толку: кажется, что выбрано два.
+    const своя = полоса && полоса.querySelector('.mb-item[data-tool="' + tool + '"]');
+    const src = своя ? null : document.querySelector('#board-toolbar .tool[data-tool="' + tool + '"] svg');
     mobFab.innerHTML = src ? src.outerHTML : FAB_PLUS;
   }
 
@@ -14632,6 +14952,49 @@
 
     // Перетаскивание на холст работает и отсюда — тем же кодом, что на компьютере.
     enableToolDragToCanvas(mobSheet);
+
+    // ── Нижняя панель: четыре частых действия + «+» ────────────────────
+    // Кнопки нажимают ОРИГИНАЛЫ на настоящей панели инструментов, своей логики
+    // не заводят. Значит любая правка инструментов доедет сюда сама, а не
+    // разъедется двумя разными поведениями.
+    //
+    // Почему именно эти четыре. Карандаш и текст — то, ради чего доску
+    // открывают. Отмена и повтор — то, что на телефоне нужно чаще всего:
+    // пальцем промахиваются постоянно, а раньше до отмены надо было открыть
+    // лист во весь экран, то есть закрыть собой ровно то место, куда смотришь.
+    (function собратьНижнююПанель() {
+      const полоса = document.getElementById('mobile-bar');
+      if (!полоса) return;
+      const состав = [
+        { tool: 'pen', подпись: 'Карандаш' },
+        { tool: 'text_plain', подпись: 'Текст' },
+        { раздел: true },
+        { action: 'undo', подпись: 'Шаг назад' },
+        { action: 'redo', подпись: 'Шаг вперёд' },
+        { раздел: true },
+      ];
+      состав.forEach((это) => {
+        if (это.раздел) {
+          const s = document.createElement('span'); s.className = 'mb-sep';
+          полоса.appendChild(s); return;
+        }
+        const исходник = это.tool
+          ? bar.querySelector('.tool[data-tool="' + это.tool + '"]')
+          : bar.querySelector('.tool[data-action="' + это.action + '"]');
+        if (!исходник) return;
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'mb-item';
+        if (это.tool) b.dataset.tool = это.tool;
+        const svg = исходник.querySelector('svg');
+        b.innerHTML = svg ? svg.outerHTML : '';
+        b.title = это.подпись;
+        b.setAttribute('aria-label', это.подпись);
+        b.addEventListener('click', () => { исходник.click(); closeMobileSheet(); });
+        полоса.appendChild(b);
+      });
+      // «+» — пятая кнопка этой же панели, а не отдельный кружок в углу.
+      if (mobFab) полоса.appendChild(mobFab);
+    })();
 
     if (mobFab) mobFab.addEventListener('click', toggleMobileSheet);
     if (mobBackdrop) mobBackdrop.addEventListener('click', closeMobileSheet);
