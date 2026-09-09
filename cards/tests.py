@@ -17,9 +17,9 @@ from django.utils import timezone
 
 from users.models import User
 
-from . import srs, views
+from . import views
 from .ai_prompt import собрать
-from .models import Card, CardReview, CardState, Deck, SchedulerWeights
+from .models import Card, CardState, Deck
 from .parsing import разобрать
 from .richtext import очистить, текстом
 from .templatetags.cards_extras import слово
@@ -143,95 +143,6 @@ class ПравилоДляНейросети(TestCase):
         self.assertEqual(ответ.context['вид'], 'text')
 
 
-class Планировщик(TestCase):
-
-    def setUp(self):
-        self.user = User.objects.create_user('ученик', 'пароль')
-        self.колода = Deck.objects.create(title='Формулы', owner=self.user)
-        self.карточка = Card.objects.create(
-            deck=self.колода, front='Площадь круга', back='$\\pi R^2$',
-        )
-
-    def _состояние(self):
-        return srs.состояние_для(self.user, self.карточка, CardState.ПРЯМОЕ)
-
-    def test_оценка_двигает_срок_и_пишет_журнал(self):
-        состояние = self._состояние()
-        было = состояние.due
-        состояние, срок = srs.оценить(состояние, 3, длительность=1500)
-        self.assertGreater(срок, было)
-        self.assertEqual(состояние.reps, 1)
-        self.assertIsNotNone(состояние.started_at)
-        журнал = CardReview.objects.get()
-        self.assertEqual(журнал.rating, 3)
-        self.assertEqual(журнал.duration_ms, 1500)
-
-    def test_на_кнопках_четыре_срока_и_они_растут(self):
-        кнопки = srs.предпросмотр(self._состояние())
-        self.assertEqual(sorted(кнопки), [1, 2, 3, 4])
-        self.assertTrue(all(кнопки.values()))
-
-    def test_дата_экзамена_ограничивает_интервал(self):
-        """Без потолка интервалы дорастают до десятков лет — для экзамена это бессмыслица."""
-        self.колода.exam_date = timezone.localdate() + timedelta(days=30)
-        self.колода.save()
-        состояние = self._состояние()
-        for _ in range(8):
-            состояние, срок = srs.оценить(состояние, 4)
-            состояние.due = timezone.now()      # как будто ученик пришёл вовремя
-        предел = timezone.now() + timedelta(days=31)
-        self.assertLess(срок, предел)
-
-    def test_трудно_не_держит_карточку_в_изучении_вечно(self):
-        """Оценка «Трудно» повторяет шаг обучения; после предела карточка выпускается."""
-        состояние = self._состояние()
-        for _ in range(srs.ПРЕДЕЛ_ШАГОВ + 1):
-            состояние, срок = srs.оценить(состояние, 2)
-            состояние.due = timezone.now()
-        self.assertEqual(состояние.state, CardState.ПОВТОРЕНИЕ)
-
-    def test_забывание_считается_отдельно(self):
-        состояние = self._состояние()
-        for _ in range(3):
-            состояние, _ = srs.оценить(состояние, 4)
-            состояние.due = timezone.now()
-        self.assertEqual(состояние.state, CardState.ПОВТОРЕНИЕ)
-        состояние, _ = srs.оценить(состояние, 1)
-        self.assertEqual(состояние.lapses, 1)
-
-
-class Очередь(TestCase):
-
-    def setUp(self):
-        self.user = User.objects.create_user('ученик', 'пароль')
-        self.колода = Deck.objects.create(
-            title='Слова', owner=self.user, new_per_day=3,
-        )
-        for i in range(10):
-            Card.objects.create(deck=self.колода, front='вопрос %d' % i,
-                                back='ответ %d' % i, order=i)
-
-    def test_дневной_потолок_новых(self):
-        очередь = srs.очередь(self.user, self.колода)
-        self.assertEqual(len(очередь), 3)
-
-    def test_обратное_направление_удваивает_карточки(self):
-        self.колода.reverse_enabled = True
-        self.колода.new_per_day = 100
-        self.колода.save()
-        очередь = srs.очередь(self.user, self.колода)
-        self.assertEqual(len(очередь), 20)
-
-    def test_отложенная_карточка_не_показывается(self):
-        карточка = self.колода.cards.first()
-        CardState.objects.create(
-            user=self.user, card=карточка, suspended=True,
-            due=timezone.now() - timedelta(days=1),
-        )
-        показанные = {к.pk for к, _н, _с in srs.очередь(self.user, self.колода)}
-        self.assertNotIn(карточка.pk, показанные)
-
-
 class Страницы(TestCase):
 
     def setUp(self):
@@ -312,28 +223,42 @@ class Страницы(TestCase):
         задания = ответ.context['задания']
         self.assertEqual(len(задания), 1)
         self.assertEqual(задания[0]['вопрос'], 'Площадь круга')
-        self.assertTrue(задания[0]['новая'])
-        self.assertEqual(sorted(задания[0]['кнопки']), [1, 2, 3, 4])
+        self.assertEqual(задания[0]['секция'], CardState.НЕ_РАЗОБРАНА)
+        self.assertEqual(ответ.context['размер_раунда'], self.колода.round_size)
 
-    def test_ответ_записывается(self):
+    def test_карточка_кладётся_в_секцию(self):
         self.client.force_login(self.автор)
         карточка = self.колода.cards.get()
         ответ = self.client.post(
             reverse('cards:answer', args=[self.колода.pk]),
-            data={'card': карточка.pk, 'direction': 0, 'rating': 3,
-                  'duration_ms': 2000},
+            data={'card': карточка.pk, 'direction': 0,
+                  'секция': CardState.ТРУДНО},
             content_type='application/json',
         )
         self.assertEqual(ответ.status_code, 200)
-        self.assertIn('пауза', ответ.json())
-        self.assertEqual(CardReview.objects.count(), 1)
+        состояние = CardState.objects.get(card=карточка)
+        self.assertEqual(состояние.section, CardState.ТРУДНО)
+        self.assertEqual(состояние.shows, 1)
 
-    def test_оценка_вне_шкалы_отклоняется(self):
+    def test_секцию_можно_поменять_позже(self):
+        """Ровно ради этого раскладку и делает человек, а не программа."""
+        self.client.force_login(self.автор)
+        карточка = self.колода.cards.get()
+        адрес = reverse('cards:answer', args=[self.колода.pk])
+        for секция in (CardState.ТРУДНО, CardState.ЛЕГКО):
+            self.client.post(адрес, content_type='application/json',
+                             data={'card': карточка.pk, 'direction': 0,
+                                   'секция': секция})
+        self.assertEqual(CardState.objects.get(card=карточка).section,
+                         CardState.ЛЕГКО)
+        self.assertEqual(CardState.objects.filter(card=карточка).count(), 1)
+
+    def test_несуществующая_секция_отклоняется(self):
         self.client.force_login(self.автор)
         карточка = self.колода.cards.get()
         ответ = self.client.post(
             reverse('cards:answer', args=[self.колода.pk]),
-            data={'card': карточка.pk, 'rating': 9},
+            data={'card': карточка.pk, 'секция': 9},
             content_type='application/json',
         )
         self.assertEqual(ответ.status_code, 400)
@@ -386,19 +311,20 @@ class Страницы(TestCase):
         self.assertNotIn('вид', ответ.context['задания'][0])
 
     def test_список_колод_считает_и_новые_карточки(self):
-        """Колода, где все карточки новые, не должна писать «на сегодня всё»."""
+        """Пока карточку никуда не положили, она числится неразобранной."""
         self.client.force_login(self.автор)
         ответ = self.client.get(reverse('cards:list'))
         колода = ответ.context['мои'][0]
-        self.assertEqual(колода.ждёт, 1)
+        self.assertEqual(колода.неразобрано, 1)
+        self.assertEqual(колода.трудных, 0)
 
-        # После оценки карточка уходит в будущее, новых больше нет — пусто.
-        состояние = srs.состояние_для(
-            self.автор, self.колода.cards.get(), CardState.ПРЯМОЕ,
+        CardState.objects.create(
+            user=self.автор, card=self.колода.cards.get(),
+            direction=CardState.ПРЯМОЕ, section=CardState.ТРУДНО,
         )
-        srs.оценить(состояние, 4)
         ответ = self.client.get(reverse('cards:list'))
-        self.assertEqual(ответ.context['мои'][0].ждёт, 0)
+        self.assertEqual(ответ.context['мои'][0].неразобрано, 0)
+        self.assertEqual(ответ.context['мои'][0].трудных, 1)
 
     def test_правило_открыто_без_входа(self):
         ответ = self.client.get(reverse('cards:prompt'))
@@ -456,7 +382,6 @@ class РежимыТренировки(TestCase):
             content_type='application/json',
         )
         self.assertEqual(CardState.objects.count(), 0)
-        self.assertEqual(CardReview.objects.count(), 0)
 
     def test_мало_карточек_для_режима(self):
         мелкая = Deck.objects.create(title='Мелкая', owner=self.user)
@@ -467,19 +392,30 @@ class РежимыТренировки(TestCase):
         self.assertFalse(ответ.context['хватает'])       # для заучивания нужно две
         self.assertFalse(ответ.context['есть_выбор'])    # и четыре для вариантов
 
-    def test_тест_идёт_стопками_по_семь(self):
-        """Двадцать вопросов одним листом — экзамен, а не тренировка."""
-        ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]))
-        разметка = ответ.content.decode('utf-8')
-        self.assertIn('В_СТОПКЕ = 7', разметка)
-        # Ошибки возвращаются в следующую стопку, а не теряются.
-        self.assertIn('ошиблись.push(в.карточка)', разметка)
+    def test_тест_идёт_целиком_и_одним_видом(self):
+        """Раньше тест шёл стопками по семь и мешал выбор с вводом в одной
+        стопке. Так делать нельзя: человек каждый раз заново соображает, что
+        от него хотят, и сравнивать такие результаты между собой нельзя."""
+        разметка = self.client.get(
+            reverse('cards:test', args=[self.колода.pk])).content.decode()
+        self.assertNotIn('В_СТОПКЕ', разметка)
+        self.assertNotIn('Следующая стопка', разметка)
+        # Вид выбирается один раз на весь тест.
+        self.assertIn('Начать тест', разметка)
 
-    def test_заучивание_идёт_полными_прогонами(self):
+    def test_заучивание_идёт_раундами_без_прогресса(self):
+        """Раунд вместо полного прогона по колоде, и никакого счёта выученного:
+        заучивание — это прогон, а не зачёт."""
         ответ = self.client.get(reverse('cards:learn', args=[self.колода.pk]))
-        разметка = ответ.content.decode('utf-8')
-        self.assertIn('начатьПрогон', разметка)
-        self.assertIn('Следующий прогон', разметка)
+        self.assertEqual(ответ.context['размер_раунда'],
+                         self.колода.round_size)
+        разметка = ответ.content.decode()
+        self.assertIn('Следующий раунд', разметка)
+        # Слова берём точные: «полоса» встречается и в общем шаблоне сайта.
+        for пропавшее in ('Выучено', 'Осталось выучить', 'id="полоса"',
+                          'Следующий прогон'):
+            self.assertNotIn(пропавшее, разметка,
+                             'прогресс должен был уйти из заучивания')
 
     def test_пачка_ответов_проверяется_разом(self):
         карточки = list(self.колода.cards.all()[:3])
@@ -531,110 +467,6 @@ class РежимыТренировки(TestCase):
             content_type='application/json',
         )
         self.assertTrue(ответ.json()['верно'])
-
-
-class Статистика(TestCase):
-
-    def setUp(self):
-        self.user = User.objects.create_user('ученик', 'пароль')
-        self.колода = Deck.objects.create(title='Формулы', owner=self.user)
-        self.карточки = [
-            Card.objects.create(deck=self.колода, front='в %d' % i,
-                                back='о %d' % i, order=i)
-            for i in range(5)
-        ]
-        self.client.force_login(self.user)
-
-    def test_пустая_колода_показывает_всё_как_неначатое(self):
-        ответ = self.client.get(reverse('cards:stats', args=[self.колода.pk]))
-        self.assertEqual(ответ.status_code, 200)
-        self.assertEqual(ответ.context['не_начато'], 5)
-        self.assertEqual(ответ.context['закрепилось'], 0)
-        self.assertEqual(ответ.context['всего_повторений'], 0)
-        self.assertEqual(len(ответ.context['прогноз']), 14)
-        self.assertEqual(len(ответ.context['активность']), 30)
-
-    def test_прогноз_и_счётчики_после_занятия(self):
-        состояние = srs.состояние_для(self.user, self.карточки[0], CardState.ПРЯМОЕ)
-        srs.оценить(состояние, 3)
-        ответ = self.client.get(reverse('cards:stats', args=[self.колода.pk]))
-        self.assertEqual(ответ.context['не_начато'], 4)
-        self.assertEqual(ответ.context['всего_повторений'], 1)
-        # Карточка на шаге обучения возвращается сегодня же.
-        self.assertEqual(ответ.context['прогноз'][0]['сколько'], 1)
-        self.assertEqual(ответ.context['активность'][-1]['сколько'], 1)
-        self.assertEqual(ответ.context['дней_подряд'], 1)
-
-    def test_трудные_карточки_попадают_в_список(self):
-        состояние = srs.состояние_для(self.user, self.карточки[0], CardState.ПРЯМОЕ)
-        состояние.lapses = 4
-        состояние.save()
-        ответ = self.client.get(reverse('cards:stats', args=[self.колода.pk]))
-        self.assertEqual(list(ответ.context['трудные']), [состояние])
-
-    def test_чужая_статистика_недоступна(self):
-        чужак = User.objects.create_user('чужак', 'пароль')
-        self.client.force_login(чужак)
-        ответ = self.client.get(reverse('cards:stats', args=[self.колода.pk]))
-        self.assertEqual(ответ.status_code, 404)
-
-
-class ОтветыБезСети(TestCase):
-    """Оценки, накопленные без связи, приходят пачкой позже.
-
-    Считать интервал от момента доставки нельзя: FSRS смотрит, сколько прошло
-    с прошлого показа, и поездка в метро сдвинула бы всё расписание.
-    """
-
-    def setUp(self):
-        self.user = User.objects.create_user('ученик', 'пароль')
-        self.колода = Deck.objects.create(title='Формулы', owner=self.user)
-        self.карточка = Card.objects.create(
-            deck=self.колода, front='вопрос', back='ответ',
-        )
-        self.client.force_login(self.user)
-
-    def _ответить(self, **лишнее):
-        тело = {'card': self.карточка.pk, 'direction': 0, 'rating': 3}
-        тело.update(лишнее)
-        return self.client.post(
-            reverse('cards:answer', args=[self.колода.pk]),
-            data=тело, content_type='application/json',
-        )
-
-    def test_время_ответа_из_браузера_попадает_в_журнал(self):
-        было = timezone.now() - timedelta(hours=3)
-        ответ = self._ответить(when=было.isoformat())
-        self.assertEqual(ответ.status_code, 200)
-        запись = CardReview.objects.get()
-        self.assertLess(abs((запись.reviewed_at - было).total_seconds()), 2)
-
-    def test_время_из_будущего_не_принимается(self):
-        вперёд = timezone.now() + timedelta(days=1)
-        self._ответить(when=вперёд.isoformat())
-        запись = CardReview.objects.get()
-        self.assertLess(запись.reviewed_at, timezone.now() + timedelta(minutes=1))
-
-    def test_слишком_старое_время_не_принимается(self):
-        давно = timezone.now() - timedelta(days=100)
-        self._ответить(when=давно.isoformat())
-        запись = CardReview.objects.get()
-        self.assertGreater(запись.reviewed_at, timezone.now() - timedelta(minutes=1))
-
-    def test_мусор_вместо_времени_не_роняет_ответ(self):
-        for метка in ('вчера', '', None, 12345, '2026-13-45T99:99:99'):
-            CardReview.objects.all().delete()
-            ответ = self._ответить(when=метка)
-            self.assertEqual(ответ.status_code, 200, метка)
-            self.assertEqual(CardReview.objects.count(), 1, метка)
-
-    def test_страница_повторения_умеет_копить_оценки(self):
-        """Разметка и ключ хранилища — то, на чём очередь отправки держится."""
-        ответ = self.client.get(reverse('cards:study', args=[self.колода.pk]))
-        разметка = ответ.content.decode('utf-8')
-        self.assertIn('cards-pending-%d' % self.колода.pk, разметка)
-        self.assertIn('id="не-отправлено"', разметка)
-        self.assertIn("addEventListener('online'", разметка)
 
 
 class НеверныеВариантыВРазборе(TestCase):
@@ -789,104 +621,12 @@ class Самопроверка(TestCase):
     def test_тест_не_предлагает_ввод_при_самопроверке(self):
         """Самопроверка по каждому из семи вопросов — это не тест."""
         ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]))
-        self.assertFalse(ответ.context['просить_ввод'])
+        self.assertFalse(ответ.context['можно_вводить'])
 
         self.колода.check_mode = Deck.АВТОМАТ
         self.колода.save()
         ответ = self.client.get(reverse('cards:test', args=[self.колода.pk]))
-        self.assertTrue(ответ.context['просить_ввод'])
-
-
-class ВесаПланировщика(TestCase):
-
-    def setUp(self):
-        self.user = User.objects.create_user('ученик', 'пароль')
-        self.колода = Deck.objects.create(title='Формулы', owner=self.user)
-        self.карточка = Card.objects.create(deck=self.колода, front='в', back='о')
-
-    def test_без_записи_берутся_стандартные(self):
-        self.assertIsNone(srs.веса(self.user))
-
-    def test_свои_веса_меняют_интервалы(self):
-        состояние = srs.состояние_для(self.user, self.карточка, CardState.ПРЯМОЕ)
-        обычные = srs.предпросмотр(состояние)
-
-        # Первые четыре числа — стартовая прочность по каждой оценке. Подняв
-        # их, получаем заметно более длинные интервалы.
-        свои = list(srs.планировщик(self.колода).parameters)
-        свои[0], свои[1], свои[2], свои[3] = 20.0, 25.0, 30.0, 40.0
-        SchedulerWeights.objects.create(user=self.user, parameters=свои,
-                                        reviews_used=600)
-        self.assertEqual(srs.веса(self.user), свои)
-        self.assertNotEqual(srs.предпросмотр(состояние)[4], обычные[4])
-
-    def test_испорченные_веса_не_ломают_занятие(self):
-        SchedulerWeights.objects.create(user=self.user, parameters=[0.0] * 21,
-                                        reviews_used=600)
-        состояние = srs.состояние_для(self.user, self.карточка, CardState.ПРЯМОЕ)
-        # Ноль вне допустимых границ — планировщик молча возвращается к
-        # стандартным весам, а не падает посреди повторения.
-        self.assertEqual(sorted(srs.предпросмотр(состояние)), [1, 2, 3, 4])
-
-    def test_неполный_набор_весов_игнорируется(self):
-        SchedulerWeights.objects.create(user=self.user, parameters=[1.0, 2.0],
-                                        reviews_used=600)
-        self.assertIsNone(srs.веса(self.user))
-
-
-class КомандаОптимизатора(TestCase):
-
-    def test_мало_истории_ничего_не_записывает(self):
-        from io import StringIO
-
-        from django.core.management import call_command
-
-        ученик = User.objects.create_user('ученик', 'пароль')
-        колода = Deck.objects.create(title='Формулы', owner=ученик)
-        карточка = Card.objects.create(deck=колода, front='в', back='о')
-        состояние = srs.состояние_для(ученик, карточка, CardState.ПРЯМОЕ)
-        srs.оценить(состояние, 3)
-
-        вывод = StringIO()
-        call_command('fsrs_optimize', stdout=вывод)
-        self.assertIn('мало', вывод.getvalue())
-        self.assertEqual(SchedulerWeights.objects.count(), 0)
-
-    def test_без_истории_говорит_прямо(self):
-        from io import StringIO
-
-        from django.core.management import call_command
-
-        вывод = StringIO()
-        call_command('fsrs_optimize', stdout=вывод)
-        self.assertIn('Ни у кого нет истории', вывод.getvalue())
-
-
-class ОчередьБезСети(TestCase):
-    """Страница должна уметь продолжить заход, когда сети нет."""
-
-    def setUp(self):
-        self.user = User.objects.create_user('ученик', 'пароль')
-        self.колода = Deck.objects.create(title='Формулы', owner=self.user)
-        for i in range(3):
-            Card.objects.create(deck=self.колода, front='в %d' % i,
-                                back='о %d' % i, order=i)
-        self.client.force_login(self.user)
-
-    def test_страница_запасает_очередь_и_отсеивает_отвеченное(self):
-        ответ = self.client.get(reverse('cards:study', args=[self.колода.pk]))
-        разметка = ответ.content.decode('utf-8')
-        self.assertIn('cards-queue-%d' % self.колода.pk, разметка)
-        self.assertIn('cards-pending-%d' % self.колода.pk, разметка)
-        # Ключ пары «карточка+сторона» — то, по чему отсеиваются уже отвеченные.
-        self.assertIn('отвеченные[з.ключ]', разметка)
-
-    def test_у_каждого_задания_есть_ключ(self):
-        ответ = self.client.get(reverse('cards:study', args=[self.колода.pk]))
-        for задание in ответ.context['задания']:
-            self.assertEqual(задание['ключ'],
-                             '%d-%d' % (задание['card'], задание['direction']))
-
+        self.assertTrue(ответ.context['можно_вводить'])
 
 
 class ЧисткаРазметки(TestCase):
@@ -1063,14 +803,15 @@ class ПростойРедактор(TestCase):
     def test_правка_сохраняет_прогресс_ученика(self):
         """Карточки обновляются по номеру, а не пересоздаются.
 
-        Пересоздание удалило бы вместе с карточкой всё, что помнит планировщик:
-        прочность, сроки и историю повторений у каждого ученика.
+        Пересоздание удалило бы вместе с карточкой то, ради чего ученик и
+        сидел над колодой: раскладку по секциям.
         """
         колода = Deck.objects.create(title='Слова', owner=self.user)
         карточка = Card.objects.create(deck=колода, front='старое', back='ответ')
-        состояние = srs.состояние_для(self.user, карточка, CardState.ПРЯМОЕ)
-        srs.оценить(состояние, 3)
-        срок = CardState.objects.get(pk=состояние.pk).due
+        CardState.objects.create(
+            user=self.user, card=карточка, direction=CardState.ПРЯМОЕ,
+            section=CardState.СЛОЖНО,
+        )
 
         self.client.post(reverse('cards:edit_cards', args=[колода.pk]), {
             'title': 'Слова', 'description': '',
@@ -1080,7 +821,8 @@ class ПростойРедактор(TestCase):
         карточка.refresh_from_db()
         self.assertEqual(карточка.front, 'новое')
         self.assertEqual(CardState.objects.filter(card=карточка).count(), 1)
-        self.assertEqual(CardState.objects.get(card=карточка).due, срок)
+        self.assertEqual(CardState.objects.get(card=карточка).section,
+                         CardState.СЛОЖНО)
 
     def test_убранная_из_редактора_карточка_удаляется(self):
         колода = Deck.objects.create(title='Слова', owner=self.user)

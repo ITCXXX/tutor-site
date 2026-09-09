@@ -6,8 +6,15 @@
 {% block extra_css %}
 <style>
     .mode-wrap { max-width: 820px; margin: 0 auto; }
-    .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; }
-    @media (max-width: 700px) { .board { grid-template-columns: repeat(2, 1fr); } }
+
+    /*
+     * Колонки набираются сами по ширине плитки, а не задаются числом: длина
+     * раунда — настройка колоды, и на поле может оказаться и двенадцать плиток,
+     * и полсотни. На широком экране выходит те же четыре колонки, что и раньше,
+     * на телефоне — две, и ни в одном промежутке сетка не разъезжается.
+     */
+    .board { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .6rem; }
+    @media (max-width: 700px) { .board { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); } }
 
     .tile {
         min-height: 96px; padding: .7rem .8rem;
@@ -22,6 +29,9 @@
     .tile.picked { border-color: var(--c-primary-600); background: var(--c-primary-100); }
     .tile.wrong { border-color: var(--c-danger); background: var(--c-danger-soft); }
     .tile.gone { opacity: 0; transform: scale(.9); pointer-events: none; }
+
+    /* Плиток много — жмём их, чтобы поле оставалось полем, а не длинной лентой. */
+    .board.dense .tile { min-height: 74px; font-size: .85rem; padding: .5rem .6rem; }
 
     .timer { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 1.1rem; }
     .result { text-align: center; padding: 2rem 1rem; }
@@ -54,7 +64,10 @@
     <div class="app-section-card result mt-4" id="итог" hidden>
         <div class="n" id="итог-время"></div>
         <p class="text-muted" id="итог-рекорд"></p>
-        <button class="btn btn-primary mt-2" id="кнопка-заново">Ещё раз</button>
+        <div class="d-flex gap-2 justify-content-center flex-wrap mt-2">
+            <button class="btn btn-primary" id="кнопка-заново">Ещё раз</button>
+            <a href="{% url 'cards:deck' колода.pk %}" class="btn btn-outline-primary">К колоде</a>
+        </div>
     </div>
 
     {% endif %}
@@ -72,8 +85,13 @@
     var поле = document.getElementById('поле');
     if (!набор.length || !поле) { return; }
 
-    var ПАР = 6;
-    var КЛЮЧ_РЕКОРДА = 'cards-match-best-{{ колода.pk }}';
+    // Пар за раунд столько же, сколько карточек в раунде у остальных режимов:
+    // длину подхода задаёт хозяин колоды. Больше, чем есть карточек, не взять.
+    var ПАР = Math.min(набор.length,
+                       Math.max(2, parseInt('{{ размер_раунда }}', 10) || 6));
+    // Рекорд привязан к длине раунда: время за шесть пар и за двадцать —
+    // разные величины, и складывать их в один рекорд значит его обесценить.
+    var КЛЮЧ_РЕКОРДА = 'cards-match-best-{{ колода.pk }}-' + ПАР;
 
     var таймер = document.getElementById('таймер');
     var итог = document.getElementById('итог');
@@ -93,19 +111,37 @@
         return 0;
     }
 
+    /*
+     * Карточку берём в игру один раз, даже когда колода спрашивает обе стороны:
+     * прямая и обратная дают на поле две одинаковые плитки в разных парах, и
+     * совпадение перестаёт быть однозначным. Если карточек на раунд не хватает,
+     * вторая сторона всё же идёт в дело — это лучше, чем полупустое поле.
+     */
+    function отобрать(сколько) {
+        var взятые = {};
+        var сначала = [];
+        var запас = [];
+        К.перемешать(набор).forEach(function (к) {
+            if (взятые[к.card]) { запас.push(к); }
+            else { взятые[к.card] = true; сначала.push(к); }
+        });
+        return сначала.concat(запас).slice(0, сколько);
+    }
+
     function начать() {
         итог.hidden = true;
         поле.innerHTML = '';
         выбранная = null;
         занято = false;
 
-        var пары = К.перемешать(набор).slice(0, ПАР);
+        var пары = отобрать(ПАР);
         осталось = пары.length;
         var плитки = [];
         пары.forEach(function (к) {
             плитки.push({пара: к.ключ, текст: к.вопрос});
             плитки.push({пара: к.ключ, текст: к.ответ});
         });
+        поле.classList.toggle('dense', плитки.length > 24);
 
         К.перемешать(плитки).forEach(function (данные) {
             var плитка = document.createElement('button');
@@ -190,6 +226,7 @@
         }
         document.getElementById('итог-рекорд').textContent = строка;
         итог.hidden = false;
+        итог.scrollIntoView({behavior: 'smooth', block: 'nearest'});
     }
 
     document.getElementById('кнопка-заново').addEventListener('click', начать);

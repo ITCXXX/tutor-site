@@ -13,7 +13,7 @@ class DeckForm(forms.ModelForm):
         model = Deck
         fields = [
             'title', 'description', 'check_mode', 'reverse_enabled',
-            'desired_retention', 'exam_date', 'new_per_day', 'reviews_per_day',
+            'round_size',
         ]
         widgets = {
             'title': forms.TextInput(attrs={
@@ -25,25 +25,21 @@ class DeckForm(forms.ModelForm):
                 'placeholder': 'Необязательно: для кого и зачем',
             }),
             'check_mode': forms.Select(attrs={'class': 'form-select'}),
-            'desired_retention': forms.NumberInput(attrs={
-                'class': 'form-control', 'step': '0.01', 'min': '0.7', 'max': '0.97',
+            'round_size': forms.NumberInput(attrs={
+                'class': 'form-control', 'min': '3', 'max': '50',
             }),
-            'exam_date': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
-            'new_per_day': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
-            'reviews_per_day': forms.NumberInput(attrs={'class': 'form-control', 'min': '0'}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['reverse_enabled'].widget.attrs['class'] = 'form-check-input'
 
-    def clean_desired_retention(self):
-        значение = self.cleaned_data['desired_retention']
-        # Верхнюю границу держим на 0,97: выше планировщик начинает назначать
-        # повторения чаще, чем человек успевает их делать, и колода превращается
-        # в бесконечную очередь.
-        if not 0.7 <= значение <= 0.97:
-            raise forms.ValidationError('Разумные значения — от 0,70 до 0,97.')
+    def clean_round_size(self):
+        значение = self.cleaned_data['round_size']
+        # Раунд меньше трёх карточек — это уже не подход, а мельтешение;
+        # больше полусотни человек не удержит и бросит на середине.
+        if not 3 <= значение <= 50:
+            raise forms.ValidationError('Разумный раунд — от 3 до 50 карточек.')
         return значение
 
 

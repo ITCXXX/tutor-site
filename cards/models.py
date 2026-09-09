@@ -67,29 +67,14 @@ class Deck(models.Model):
         help_text='Имеет значение только при вводе ответа.',
     )
 
-    # Две настройки планировщика, которые действительно нужны репетитору.
-    # Остальные 21 весов FSRS трогать незачем — см. cards/srs.py.
-    desired_retention = models.FloatField(
-        'Желаемая прочность', default=0.9,
-        help_text='Доля карточек, которые ученик должен помнить к моменту '
-                  'повторения. Больше — надёжнее, но повторений больше.',
-    )
-    exam_date = models.DateField(
-        'Дата экзамена', null=True, blank=True,
-        help_text='Если указана, карточка никогда не назначается на «после» неё. '
-                  'Без этого интервалы дорастают до десятков лет.',
-    )
-
-    # Дневные потолки. Без них колода в 300 карточек вываливает всё в первый
-    # день, ученик тонет и бросает — это самая частая причина, по которой люди
-    # уходят из Anki.
-    new_per_day = models.IntegerField(
-        'Новых карточек в день', default=20,
-        help_text='Сколько незнакомых карточек показывать за сутки.',
-    )
-    reviews_per_day = models.IntegerField(
-        'Повторений в день', default=200,
-        help_text='Потолок на уже начатые карточки. 0 — без ограничения.',
+    # Сколько карточек за один подход. Семь — потому что столько человек
+    # держит в голове разом и столько помещается на экран телефона; но число
+    # оставлено настраиваемым, потому что у списка из двадцати слов и у списка
+    # из двухсот формул разный удобный шаг.
+    round_size = models.IntegerField(
+        'Карточек за раунд', default=7,
+        help_text='Сколько карточек показывать за один подход. '
+                  'В просмотре и тесте раундов нет.',
     )
 
     created_at = models.DateTimeField('Создана', auto_now_add=True)
@@ -241,11 +226,12 @@ class Card(models.Model):
 class CardState(models.Model):
     """Что сайт помнит про пару «ученик — карточка».
 
-    Поля state, step, stability, difficulty, due, last_review — ровно те, что
-    просит планировщик FSRS; они кладутся в его объект Card и забираются
-    обратно без переводчиков. reps и lapses он не использует, они для
-    статистики и для отлова «пиявок» — карточек, которые ученик забывает снова
-    и снова.
+    Помнит немного и намеренно: в какой секции карточка лежит и два счётчика.
+    Раскладывает по секциям сам ученик, кнопками. Раньше здесь жил планировщик
+    со сроками и прочностью памяти — он решал за ученика, когда показать
+    карточку снова, и объяснял это интервалами вида «через 10 минут». От этого
+    отказались: человек лучше знает, что ему трудно, а «через сколько минут»
+    ему знать незачем.
     """
 
     ПРЯМОЕ = 0
@@ -255,15 +241,25 @@ class CardState(models.Model):
         (ОБРАТНОЕ, 'Оборот → лицо'),
     ]
 
-    # Числа совпадают с fsrs.State, чтобы не переводить туда-сюда.
-    ИЗУЧЕНИЕ = 1
-    ПОВТОРЕНИЕ = 2
-    ПЕРЕУЧИВАНИЕ = 3
-    STATE_CHOICES = [
-        (ИЗУЧЕНИЕ, 'Изучается'),
-        (ПОВТОРЕНИЕ, 'На повторении'),
-        (ПЕРЕУЧИВАНИЕ, 'Переучивается'),
+    # Секции. Ноль — «ещё не разбирал»: там лежат все карточки, пока ученик
+    # их не разложил. Дальше от трудного к лёгкому; повторение берёт две
+    # трудные, заучивание начинает с самой трудной.
+    НЕ_РАЗОБРАНА = 0
+    ТРУДНО = 1
+    СЛОЖНО = 2
+    НОРМАЛЬНО = 3
+    ЛЕГКО = 4
+    SECTION_CHOICES = [
+        (НЕ_РАЗОБРАНА, 'Не разобрано'),
+        (ТРУДНО, 'Трудно'),
+        (СЛОЖНО, 'Сложно'),
+        (НОРМАЛЬНО, 'Нормально'),
+        (ЛЕГКО, 'Легко'),
     ]
+    # Секции, из которых берёт повторение.
+    ТРУДНЫЕ = (ТРУДНО, СЛОЖНО)
+    # Порядок показа в заучивании: сначала самое трудное, неразобранное следом.
+    ПОРЯДОК_ЗАУЧИВАНИЯ = (ТРУДНО, СЛОЖНО, НЕ_РАЗОБРАНА, НОРМАЛЬНО, ЛЕГКО)
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
@@ -276,23 +272,11 @@ class CardState(models.Model):
         'Направление', choices=DIRECTION_CHOICES, default=ПРЯМОЕ,
     )
 
-    state = models.SmallIntegerField('Стадия', choices=STATE_CHOICES, default=ИЗУЧЕНИЕ)
-    step = models.SmallIntegerField('Шаг обучения', null=True, blank=True, default=0)
-    stability = models.FloatField('Прочность', null=True, blank=True)
-    difficulty = models.FloatField('Трудность', null=True, blank=True)
-    due = models.DateTimeField('Показать не раньше', default=timezone.now)
-    last_review = models.DateTimeField('Последний показ', null=True, blank=True)
-
-    reps = models.IntegerField('Показов', default=0)
-    lapses = models.IntegerField('Забываний', default=0)
-    # Когда карточку показали впервые. По этому полю считается дневной потолок
-    # новых карточек — иначе пришлось бы каждый раз искать первую запись в
-    # журнале.
-    started_at = models.DateTimeField('Впервые показана', null=True, blank=True)
-    suspended = models.BooleanField(
-        'Отложена', default=False,
-        help_text='Карточка не показывается, пока её не вернут в оборот.',
+    section = models.SmallIntegerField(
+        'Секция', choices=SECTION_CHOICES, default=НЕ_РАЗОБРАНА,
     )
+    shows = models.IntegerField('Показов', default=0)
+    misses = models.IntegerField('Ошибок', default=0)
 
     class Meta:
         verbose_name = 'Состояние карточки'
@@ -303,92 +287,9 @@ class CardState(models.Model):
             ),
         ]
         indexes = [
-            # Главный запрос раздела: «что показать этому ученику сейчас».
-            models.Index(fields=['user', 'due'], name='cards_state_due_idx'),
+            # Главный запрос раздела: «что у этого ученика лежит в этой секции».
+            models.Index(fields=['user', 'section'], name='cards_state_sect_idx'),
         ]
 
     def __str__(self):
         return '%s — %s' % (self.user, self.card)
-
-
-class CardReview(models.Model):
-    """Журнал повторений — по записи на каждый показ.
-
-    Нужен не для отчётов: на этих записях обучается оптимизатор FSRS, который
-    подгоняет 21 вес модели под конкретного ученика. Ему требуется минимум 512
-    повторений И проставленная длительность ответа — если её не писать с
-    первого дня, через полгода окажется, что настраивать не на чем.
-    """
-
-    ОПЯТЬ = 1
-    ТРУДНО = 2
-    ХОРОШО = 3
-    ЛЕГКО = 4
-    RATING_CHOICES = [
-        (ОПЯТЬ, 'Опять'),
-        (ТРУДНО, 'Трудно'),
-        (ХОРОШО, 'Хорошо'),
-        (ЛЕГКО, 'Легко'),
-    ]
-
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
-        related_name='card_reviews', verbose_name='Ученик',
-    )
-    card = models.ForeignKey(
-        Card, on_delete=models.CASCADE, related_name='reviews', verbose_name='Карточка',
-    )
-    direction = models.SmallIntegerField(
-        'Направление', choices=CardState.DIRECTION_CHOICES, default=CardState.ПРЯМОЕ,
-    )
-    rating = models.SmallIntegerField('Оценка', choices=RATING_CHOICES)
-    reviewed_at = models.DateTimeField('Когда', default=timezone.now)
-    duration_ms = models.IntegerField(
-        'Сколько думал, мс', null=True, blank=True,
-        help_text='Нужно оптимизатору весов. Пишется автоматически.',
-    )
-    # Что ученик набрал, если колода просит вводить ответ. Хранится, чтобы
-    # преподаватель видел, на чём именно спотыкаются.
-    typed = models.CharField('Введённый ответ', max_length=300, blank=True)
-
-    class Meta:
-        verbose_name = 'Повторение'
-        verbose_name_plural = 'Журнал повторений'
-        ordering = ['-reviewed_at']
-        indexes = [
-            models.Index(fields=['user', 'reviewed_at'], name='cards_review_when_idx'),
-        ]
-
-    def __str__(self):
-        return '%s: %s' % (self.card, self.get_rating_display())
-
-
-class SchedulerWeights(models.Model):
-    """Веса планировщика, подогнанные под конкретного ученика.
-
-    FSRS идёт со стандартными весами, обученными на чужой большой выборке. По
-    личной истории повторений их можно пересчитать: оптимизатор смотрит, где
-    предсказание разошлось с тем, что ученик на самом деле вспомнил, и сдвигает
-    21 число модели.
-
-    Пока записи нет, планировщик берёт стандартные веса — это рабочее
-    состояние, а не поломка. Считать своё имеет смысл от 512 повторений; на
-    меньшем оптимизатор возвращает те же стандартные значения, и заводить
-    запись незачем.
-    """
-
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
-        related_name='scheduler_weights', verbose_name='Ученик',
-    )
-    parameters = models.JSONField('Веса модели', default=list)
-    reviews_used = models.IntegerField('На скольких повторениях обучено', default=0)
-    updated_at = models.DateTimeField('Пересчитано', auto_now=True)
-    note = models.CharField('Пометка', max_length=200, blank=True)
-
-    class Meta:
-        verbose_name = 'Веса планировщика'
-        verbose_name_plural = 'Веса планировщика'
-
-    def __str__(self):
-        return 'Веса для %s (%d повторений)' % (self.user, self.reviews_used)

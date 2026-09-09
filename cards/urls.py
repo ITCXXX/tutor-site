@@ -23,7 +23,6 @@ urlpatterns = [
     path('<int:pk>/learn/', views.заучивание, name='learn'),
     path('<int:pk>/test/', views.тест, name='test'),
     path('<int:pk>/match/', views.подбор, name='match'),
-    path('<int:pk>/stats/', views.статистика, name='stats'),
     path('<int:pk>/check/', views.проверить, name='check'),
     path('<int:pk>/check-many/', views.проверить_многие, name='check_many'),
     path('<int:pk>/answer/', views.ответ, name='answer'),

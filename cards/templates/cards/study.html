@@ -1,7 +1,7 @@
 {% extends "users/visitor_base.html" %}
 {% load static %}
 
-{% block title %}{{ колода.title }} — повторение{% endblock %}
+{% block title %}{{ колода.title }} — {% if откуда == 'новые' %}разбор{% else %}повторение{% endif %}{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -9,10 +9,14 @@
 
     .study-top {
         display: flex; justify-content: space-between; align-items: flex-start;
-        gap: 1rem; margin-bottom: 1rem;
+        gap: 1rem; margin-bottom: .6rem;
         font-size: .85rem; color: var(--c-text-muted);
     }
+    .study-title { margin: 0 0 1rem; }
     .offline-note { color: var(--c-warning-text); font-weight: 500; }
+    /* Где карточка лежит сейчас — это факт о карточке, а не совет, что нажать.
+       Поэтому он стоит в шапке, рядом со счётчиком, а не у кнопок секций. */
+    .где-сейчас { color: var(--c-text-muted); }
 
     .study-card {
         background: var(--c-surface);
@@ -55,20 +59,20 @@
     .option.right { border-color: var(--c-success); background: var(--c-success-soft); }
     .option.wrong { border-color: var(--c-danger); background: var(--c-danger-soft); }
 
-    .grade-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; margin-top: 1.25rem; }
-    .grade {
+    /* Четыре секции. Ни одна не выделена: куда положить карточку, решает
+       человек, и подсветка «правильной» кнопки решала бы это за него. */
+    .section-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; margin-top: 1.25rem; }
+    .section-btn {
         min-height: 58px; border-radius: var(--r-lg);
         border: 1px solid var(--c-border-strong); background: var(--c-surface);
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        gap: .1rem; cursor: pointer; padding: .4rem .2rem;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer; padding: .4rem .2rem;
         transition: border-color .12s, background .12s;
     }
-    .grade:hover { border-color: var(--c-primary-600); }
-    .grade .name { font-weight: 600; font-size: .92rem; }
-    .grade .when { font-size: .74rem; color: var(--c-text-muted); }
-    .grade[data-rating="1"] .name { color: var(--c-danger); }
-    .grade[data-rating="4"] .name { color: var(--c-success); }
-    .grade.suggest { border-color: var(--c-primary-600); box-shadow: 0 0 0 3px var(--c-primary-100); }
+    .section-btn:hover { border-color: var(--c-primary-600); }
+    .section-btn .name { font-weight: 600; font-size: .92rem; }
+    .section-row .section-btn:first-child .name { color: var(--c-danger); }
+    .section-row .section-btn:last-child .name { color: var(--c-success); }
 
     .способы { display: flex; gap: .3rem; margin-bottom: .9rem; flex-wrap: wrap; }
     .способы button {
@@ -95,8 +99,8 @@
     .keys { margin-top: 1.25rem; font-size: .78rem; color: var(--c-text-muted); text-align: center; }
     @media (max-width: 600px) {
         .study-card { padding: 1.5rem 1.1rem; }
-        .grade-row { gap: .35rem; }
-        .grade .name { font-size: .82rem; }
+        .section-row { gap: .35rem; }
+        .section-btn .name { font-size: .82rem; }
         .keys { display: none; }
     }
 </style>
@@ -109,10 +113,14 @@
     <div class="study-top">
         <a class="btn-back-link" href="{% url 'cards:deck' колода.pk %}">← {{ колода.title }}</a>
         <div style="text-align: right;">
-            <span id="осталось">0</span> в очереди · сделано сегодня: <span id="сделано">{{ счёт.сделано_сегодня }}</span>
+            <div id="счётчик"></div>
+            <div id="осталось"></div>
+            <div id="сейчас" class="где-сейчас" hidden></div>
             <div id="не-отправлено" class="offline-note" hidden></div>
         </div>
     </div>
+
+    <h1 class="h4 study-title">{% if откуда == 'новые' %}Разбор{% else %}Повторение{% endif %}</h1>
 
     <div id="экран-учёбы" hidden>
         <div class="способы" id="способы" role="group" aria-label="Как спрашивать">
@@ -156,20 +164,53 @@
             <button class="btn btn-outline-success" id="угадал">Я был прав</button>
         </div>
 
-        <div class="grade-row" id="оценки" hidden>
-            <button class="grade" data-rating="1"><span class="name">Опять</span><span class="when"></span></button>
-            <button class="grade" data-rating="2"><span class="name">Трудно</span><span class="when"></span></button>
-            <button class="grade" data-rating="3"><span class="name">Хорошо</span><span class="when"></span></button>
-            <button class="grade" data-rating="4"><span class="name">Легко</span><span class="when"></span></button>
+        <!--
+            Кнопки секций приходят из вьюхи: их состав и названия задаёт модель,
+            а не шаблон, иначе переименование секции пришлось бы искать в двух
+            местах. Порядок — от трудного к лёгкому, он же порядок горячих клавиш.
+        -->
+        <div class="section-row" id="секции" hidden>
+            {% for номер, имя in секции %}
+            <button type="button" class="section-btn" data-секция="{{ номер }}">
+                <span class="name">{{ имя }}</span>
+            </button>
+            {% endfor %}
         </div>
 
-        <div class="keys">Пробел — показать ответ · 1—4 — оценка</div>
+        <div class="keys">Пробел — показать ответ · 1—4 — разложить по секциям</div>
     </div>
 
+    <!-- Конец раунда и конец захода: одна и та же карточка, разные слова. -->
     <div id="экран-конца" hidden>
         <div class="app-empty-state">
-            <h2 class="h5 mb-2">На сегодня всё</h2>
+            <h2 class="h5 mb-2" id="итог-заголовок">Раунд пройден</h2>
             <p class="text-muted mb-3" id="итог"></p>
+            <div class="d-flex gap-2 justify-content-center flex-wrap">
+                <button type="button" class="btn btn-primary" id="ещё-раунд" hidden>Следующий раунд</button>
+                <a href="{% url 'cards:deck' колода.pk %}" class="btn btn-outline-primary">К колоде</a>
+            </div>
+        </div>
+    </div>
+
+    <!--
+        Пусто. Показывается сразу разметкой, без скрипта: если карточек нет,
+        человеку не нужно ждать JS, чтобы это узнать. Скрипт прячет этот экран,
+        когда очередь всё-таки нашлась — например, сохранённая с прошлого раза.
+    -->
+    <div id="экран-пусто" {% if задания %}hidden{% endif %}>
+        <div class="app-empty-state">
+            {% if откуда == 'новые' %}
+                <h2 class="h5 mb-2">Разбирать нечего</h2>
+                <p class="text-muted mb-3">
+                    Все карточки колоды уже лежат в секциях. Их можно прогнать заново
+                    и переложить — со страницы колоды.
+                </p>
+            {% else %}
+                <h2 class="h5 mb-2">Повторять нечего</h2>
+                <p class="text-muted mb-3">
+                    Ни одна карточка не лежит в «Трудно» или «Сложно».
+                </p>
+            {% endif %}
             <a href="{% url 'cards:deck' колода.pk %}" class="btn btn-primary">К колоде</a>
         </div>
     </div>
@@ -192,23 +233,34 @@
     var КЛЮЧ_ХВОСТА = 'cards-pending-{{ колода.pk }}';
     var КЛЮЧ_ОЧЕРЕДИ = 'cards-queue-{{ колода.pk }}';
     var КЛЮЧ_СПОСОБА = 'cards-ask-{{ колода.pk }}';
+    var РАЗМЕР_РАУНДА = Math.max(1, parseInt('{{ размер_раунда }}', 10) || 7);
 
     var э = {};
-    ['экран-учёбы', 'экран-конца', 'вопрос', 'блок-ответа', 'ответ', 'подсказка',
-     'вердикт', 'варианты', 'блок-ввода', 'поле-ответа', 'кнопка-ответить',
-     'кнопка-показать', 'сам-решает', 'угадал', 'не-угадал', 'оценки',
-     'осталось', 'сделано', 'итог', 'не-отправлено', 'способы',
-     'нет-вариантов', 'кнопка-подсказки'].forEach(function (id) {
+    ['экран-учёбы', 'экран-конца', 'экран-пусто', 'вопрос', 'блок-ответа',
+     'ответ', 'подсказка', 'вердикт', 'варианты', 'блок-ввода', 'поле-ответа',
+     'кнопка-ответить', 'кнопка-показать', 'сам-решает', 'угадал', 'не-угадал',
+     'секции', 'счётчик', 'осталось', 'сейчас', 'итог', 'итог-заголовок',
+     'ещё-раунд', 'не-отправлено', 'способы', 'нет-вариантов',
+     'кнопка-подсказки'].forEach(function (id) {
         э[id] = document.getElementById(id);
     });
 
-    /* ── Оценки, ждущие отправки ────────────────────────────────────────
+    /* Названия секций берём из уже отрисованных кнопок: список секций задаёт
+     * вьюха, и дублировать его в скрипте значило бы завести второй источник
+     * правды о том, как называется секция номер три. */
+    var кнопкиСекций = Array.prototype.slice.call(
+        э['секции'].querySelectorAll('[data-секция]'));
+    var имяСекции = {};
+    кнопкиСекций.forEach(function (кнопка) {
+        имяСекции[кнопка.dataset.секция] = кнопка.querySelector('.name').textContent;
+    });
+
+    /* ── Карточки, ждущие отправки ──────────────────────────────────────
      *
      * Карточки уже на странице целиком, поэтому заход можно доработать до
-     * конца и без сети: оценки ложатся в хранилище браузера и уходят сами,
-     * когда связь вернётся. Время ответа отправляем своё — если бы сервер
-     * считал интервал от момента доставки, расписание уехало бы на длину
-     * поездки в метро.
+     * конца и без сети: выбранная секция ложится в хранилище браузера и уходит
+     * сама, когда связь вернётся. Ничего, кроме секции, отправлять не нужно —
+     * сервер только запоминает, куда человек положил карточку.
      */
     function прочитать(ключ, поумолчанию) {
         try { return JSON.parse(localStorage.getItem(ключ)) || поумолчанию; }
@@ -226,11 +278,24 @@
         показатьХвост();
     }
 
+    // Без склонения надпись выглядит как ошибка программы, а не как речь.
+    function склонение(сколько, формы) {
+        var десятки = сколько % 100;
+        var единицы = сколько % 10;
+        if (десятки > 10 && десятки < 20) { return формы[2]; }
+        if (единицы === 1) { return формы[0]; }
+        if (единицы >= 2 && единицы <= 4) { return формы[1]; }
+        return формы[2];
+    }
+
     function показатьХвост() {
         var сколько = хвост().length;
         э['не-отправлено'].hidden = !сколько;
         э['не-отправлено'].textContent = сколько
-            ? 'Без сети: не отправлено оценок — ' + сколько : '';
+            ? 'Нет связи: ' + сколько + ' '
+              + склонение(сколько, ['карточка ждёт', 'карточки ждут', 'карточек ждут'])
+              + ' отправки'
+            : '';
     }
 
     function отправитьХвост() {
@@ -252,9 +317,9 @@
 
     /* ── Очередь карточек ───────────────────────────────────────────────
      *
-     * Со страницы приходит очередь, посчитанная сервером, и она же кладётся в
+     * Со страницы приходит очередь, отобранная сервером, и она же кладётся в
      * хранилище. Без сети страницу отдаёт service worker из кэша, и очередь в
-     * ней может быть вчерашней — тогда берём сохранённую. Карточки, чьи оценки
+     * ней может быть старой — тогда берём сохранённую. Карточки, чьи секции
      * ещё лежат в хвосте, из очереди убираем: иначе они спросятся второй раз.
      */
     var сСервера = JSON.parse(document.getElementById('задания').textContent);
@@ -280,44 +345,83 @@
     var СПОСОБ = 'flip';
     try { СПОСОБ = localStorage.getItem(КЛЮЧ_СПОСОБА) || 'flip'; } catch (e) {}
 
+    var раунд = [];              // карточки текущего подхода
+    var всегоВРаунде = 0;
+    var разложеноВРаунде = 0;
     var текущее = null;
-    var началось = 0;
+    var показанные = [];         // варианты в том порядке, в каком их видно
     var раскрыто = false;
     var занято = false;
     var набрано = '';
-    var подсказанная = 0;
-    var сделаноВсего = 0;
 
     function спрятать(имена) {
         имена.forEach(function (id) { э[id].hidden = true; });
     }
 
+    /*
+     * Раунд — это подход, а не вся стопка. Разобрать сорок карточек за раз
+     * никто не станет, а семь — станет, и после них видно, что подход кончился.
+     */
+    function начатьРаунд() {
+        раунд = очередь.splice(0, РАЗМЕР_РАУНДА);
+        всегоВРаунде = раунд.length;
+        разложеноВРаунде = 0;
+        э['экран-пусто'].hidden = true;
+        э['экран-конца'].hidden = true;
+        э['экран-учёбы'].hidden = false;
+        показатьСледующее();
+    }
+
     function показатьСледующее() {
-        текущее = очередь[0] || null;
-        э['осталось'].textContent = очередь.length;
-        if (!текущее) {
-            э['экран-учёбы'].hidden = true;
-            э['экран-конца'].hidden = false;
-            э['итог'].textContent = сделаноВсего
-                ? 'Повторено карточек: ' + сделаноВсего + '.'
-                : 'Всё, что было назначено на сегодня, уже сделано.';
-            return;
-        }
+        текущее = раунд[0] || null;
+        if (!текущее) { закончитьРаунд(); return; }
 
         раскрыто = false;
         набрано = '';
-        подсказанная = 0;
         э['экран-учёбы'].hidden = false;
-        спрятать(['блок-ответа', 'оценки', 'вердикт', 'подсказка', 'варианты',
+        спрятать(['блок-ответа', 'секции', 'вердикт', 'подсказка', 'варианты',
                   'блок-ввода', 'кнопка-показать', 'сам-решает']);
         // Подсказка нужна ДО ответа: иначе она не подсказка, а комментарий к
         // уже показанному ответу.
         э['кнопка-подсказки'].hidden = !текущее.подсказка;
 
         К.разметка(э['вопрос'], текущее.вопрос);
+        показатьГдеЛежит();
         спросить();
-        началось = Date.now();
+        обновитьСчётчик();
     }
+
+    function показатьГдеЛежит() {
+        var имя = имяСекции[текущее.секция];
+        э['сейчас'].hidden = !имя;
+        э['сейчас'].textContent = имя ? 'Сейчас в секции: ' + имя : '';
+    }
+
+    function обновитьСчётчик() {
+        var номер = всегоВРаунде - раунд.length + (текущее ? 1 : 0);
+        э['счётчик'].textContent = текущее
+            ? 'Карточка ' + номер + ' из ' + всегоВРаунде : '';
+        э['осталось'].textContent = очередь.length
+            ? 'Дальше ещё ' + очередь.length : '';
+    }
+
+    function закончитьРаунд() {
+        э['экран-учёбы'].hidden = true;
+        э['экран-конца'].hidden = false;
+        э['сейчас'].hidden = true;
+        обновитьСчётчик();
+
+        var ещё = очередь.length;
+        э['итог-заголовок'].textContent = ещё ? 'Раунд пройден' : 'Разобрано всё';
+        э['итог'].textContent = ещё
+            ? 'Разложено карточек: ' + разложеноВРаунде + '. Дальше ждёт ещё '
+              + ещё + '.'
+            : 'Все карточки этого захода разложены по секциям.';
+        э['ещё-раунд'].hidden = !ещё;
+        if (ещё) { э['ещё-раунд'].focus(); }
+    }
+
+    э['ещё-раунд'].addEventListener('click', начатьРаунд);
 
     function спросить() {
         э['нет-вариантов'].hidden = true;
@@ -366,9 +470,14 @@
         }
     });
 
+    /*
+     * Порядок вариантов перемешиваем на показе, а не берём как пришёл: иначе
+     * место правильного ответа в плитках запоминается быстрее самого ответа.
+     */
     function нарисоватьВарианты() {
         э['варианты'].innerHTML = '';
-        текущее.варианты.forEach(function (текст) {
+        показанные = К.перемешать(текущее.варианты || []);
+        показанные.forEach(function (текст) {
             var кнопка = document.createElement('button');
             кнопка.type = 'button';
             кнопка.className = 'option';
@@ -378,7 +487,7 @@
                 var верно = текст === текущее.ответ;
                 Array.prototype.forEach.call(э['варианты'].children, function (д, i) {
                     д.disabled = true;
-                    if (текущее.варианты[i] === текущее.ответ) { д.classList.add('right'); }
+                    if (показанные[i] === текущее.ответ) { д.classList.add('right'); }
                 });
                 if (!верно) { кнопка.classList.add('wrong'); }
                 набрано = текст;
@@ -441,45 +550,49 @@
                 э['вердикт'].textContent = 'Верно';
             } else {
                 э['вердикт'].innerHTML = 'Неверно · <span class="typed"></span>';
-                э['вердикт'].querySelector('.typed').textContent = 'вы ответили: ' + набрано;
+                К.написать(э['вердикт'].querySelector('.typed'),
+                           'вы ответили: ' + набрано);
             }
-            подсказанная = вердикт ? 3 : 1;
         }
 
         if (спроситьСамого) {
             э['вердикт'].hidden = false;
             э['вердикт'].className = 'verdict';
             э['вердикт'].innerHTML = 'Вы ответили: <span class="typed"></span>';
-            э['вердикт'].querySelector('.typed').textContent = набрано || '—';
+            К.написать(э['вердикт'].querySelector('.typed'), набрано || '—');
             э['сам-решает'].hidden = false;
             return;
         }
 
-        показатьОценки();
+        показатьСекции();
     }
 
-    function показатьОценки() {
-        var кнопки = э['оценки'].querySelectorAll('.grade');
-        for (var i = 0; i < кнопки.length; i++) {
-            var оценка = кнопки[i].getAttribute('data-rating');
-            кнопки[i].querySelector('.when').textContent = текущее.кнопки[оценка] || '';
-            кнопки[i].classList.toggle('suggest', +оценка === подсказанная);
-        }
-        э['оценки'].hidden = false;
+    function показатьСекции() {
+        э['секции'].hidden = false;
     }
 
-    function оценить(оценка) {
+    /*
+     * Кладём карточку в секцию. Сервер только запоминает выбор и отвечает
+     * тем же номером — никаких сроков и назначений, поэтому и разбирать в
+     * ответе нечего.
+     */
+    function положить(секция) {
         if (занято || !раскрыто || !текущее) { return; }
         if (!э['сам-решает'].hidden) { return; }   // сначала свой вердикт
         занято = true;
-        var длительность = Math.min(600000, Date.now() - началось);
-        var карточка = текущее;
 
         var тело = {
-            card: карточка.card, direction: карточка.direction,
-            rating: оценка, duration_ms: длительность, typed: набрано,
-            when: new Date().toISOString(),
+            card: текущее.card,
+            direction: текущее.direction,
+            'секция': секция,
         };
+
+        function дальше() {
+            занято = false;
+            разложеноВРаунде += 1;
+            раунд.shift();
+            показатьСледующее();
+        }
 
         fetch(АДРЕС_ОТВЕТА, {
             method: 'POST',
@@ -488,31 +601,10 @@
         }).then(function (r) {
             if (!r.ok) { throw new Error('отказ'); }
             return r.json();
-        }).then(function (данные) {
-            занято = false;
-            сделаноВсего += 1;
-            э['сделано'].textContent = данные.счёт ? данные.счёт.сделано_сегодня : '';
-            очередь.shift();
-            if (данные.вернуть) {
-                // Шаги обучения работают только внутри одного захода: карточку,
-                // назначенную на ближайшие минуты, показываем ещё раз сегодня.
-                карточка.кнопки = данные.кнопки;
-                карточка.новая = false;
-                очередь.push(карточка);
-            }
-            показатьСледующее();
-        }).catch(function () {
-            // Сети нет — заход продолжается, оценка ждёт своей очереди.
-            занято = false;
-            сделаноВсего += 1;
+        }).then(дальше).catch(function () {
+            // Сети нет — заход продолжается, карточка ждёт своей очереди.
             отложить(тело);
-            очередь.shift();
-            if (оценка === 1) {
-                // Что вернуть сегодня, решает сервер, но «Опять» значит
-                // «не знаю» при любых настройках.
-                очередь.push(карточка);
-            }
-            показатьСледующее();
+            дальше();
         });
     }
 
@@ -533,17 +625,15 @@
     });
     э['угадал'].addEventListener('click', function () {
         э['сам-решает'].hidden = true;
-        подсказанная = 3;
-        показатьОценки();
+        показатьСекции();
     });
     э['не-угадал'].addEventListener('click', function () {
         э['сам-решает'].hidden = true;
-        подсказанная = 1;
-        показатьОценки();
+        показатьСекции();
     });
-    э['оценки'].addEventListener('click', function (e) {
-        var кнопка = e.target.closest('.grade');
-        if (кнопка) { оценить(parseInt(кнопка.getAttribute('data-rating'), 10)); }
+    э['секции'].addEventListener('click', function (e) {
+        var кнопка = e.target.closest('[data-секция]');
+        if (кнопка) { положить(parseInt(кнопка.dataset.секция, 10)); }
     });
 
     document.addEventListener('keydown', function (e) {
@@ -552,16 +642,27 @@
             && !э['кнопка-показать'].hidden) {
             e.preventDefault();
             раскрыть();
-        } else if (раскрыто && !э['оценки'].hidden && e.key >= '1' && e.key <= '4') {
+        } else if (раскрыто && !э['секции'].hidden && e.key >= '1' && e.key <= '9') {
+            // Цифра — это место кнопки в ряду, а не номер секции: если состав
+            // секций во вьюхе поменяется, клавиши поедут вместе с кнопками.
+            var кнопка = кнопкиСекций[parseInt(e.key, 10) - 1];
+            if (!кнопка) { return; }
             e.preventDefault();
-            оценить(parseInt(e.key, 10));
+            положить(parseInt(кнопка.dataset.секция, 10));
         }
     });
 
     отметитьСпособ();
     показатьХвост();
     отправитьХвост();
-    показатьСледующее();
+
+    if (очередь.length) {
+        начатьРаунд();
+    } else {
+        // Разбирать нечего: экран уже нарисован разметкой, скрипту остаётся
+        // не мешать.
+        э['экран-пусто'].hidden = false;
+    }
 })();
 </script>
 {% endblock %}
