@@ -44,8 +44,9 @@
 
         <div class="app-list">
             {% for n in items %}
-            {# Без адреса это не ссылка, а строка текста: якорь на «#» выглядел
-               бы кликабельным, ловил фокус с клавиатуры и никуда не вёл. #}
+            {% comment %} Без адреса это не ссылка, а строка текста: якорь на «#» выглядел
+               бы кликабельным, ловил фокус с клавиатуры и никуда не вёл. 
+            {% endcomment %}
             {% if n.url %}
             <a class="nt-item{% if not n.is_read %} unread{% endif %}" href="{{ n.url }}">
                 <span class="nt-dot" aria-hidden="true"></span>
