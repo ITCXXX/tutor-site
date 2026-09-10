@@ -7104,7 +7104,12 @@
   function startGesture() {
     const c = touchCenter();
     if (!c) return;
-    gesture = { cx: c.x, cy: c.y, dist: touchSpread() };
+    gesture = { cx: c.x, cy: c.y, dist: touchSpread(), zoomAcc: 0 };
+    // Опора жеста переехала — след сбрасываем. startGesture зовётся не только
+    // в начале, но и когда палец добавили или сняли: середина между касаниями
+    // при этом скачком переезжает, а доска стоит. Не сбрось мы след, отрыв
+    // последнего пальца выдал бы скорость в сотни пикселей из ничего.
+    сброситьРазгон();
     abortBoardInput();
     stageEl.style.cursor = 'grabbing';
   }
@@ -7117,11 +7122,21 @@
     const dx = c.x - gesture.cx, dy = c.y - gesture.cy;
     if (dx || dy) stage.position({ x: stage.x() + dx, y: stage.y() + dy });
     gesture.cx = c.x; gesture.cy = c.y;
+    отметитьРазгон(c.x, c.y);   // след для инерции: где была рука и когда
     // Щипок: масштаб вокруг середины между пальцами — точка под пальцами стоит на месте.
     const d = touchSpread();
     if (d > 0 && gesture.dist > 0) {
       const k = d / gesture.dist;
-      if (Math.abs(k - 1) > 0.002) zoomTo(stage.scaleX() * k, toStageXY(c.x, c.y));
+      if (Math.abs(k - 1) > 0.002) {
+        // Копим ВЕЛИЧИНУ зума за жест, а не просто «зум был». Порог ниже —
+        // 0,2% масштаба за одно событие, то есть «пальцы шевельнулись»; на
+        // настоящем броске двумя пальцами он перешагивается чуть ли не каждый
+        // кадр. Отказывать по нему в инерции значило бы лишить её самого
+        // частого жеста на планшете. Отказываем только когда масштаба
+        // накопилось столько, что это уже щипок, а не бросок.
+        gesture.zoomAcc = (gesture.zoomAcc || 0) + Math.abs(Math.log(k));
+        zoomTo(stage.scaleX() * k, toStageXY(c.x, c.y));
+      }
       gesture.dist = d;
     } else if (d > 0) {
       gesture.dist = d;
@@ -7130,6 +7145,8 @@
   }
   function endGestureIfDone() {
     if (touchPts.size === 0) {
+      // Последний палец ушёл — если это был бросок, доска доедет сама.
+      if (typeof запуститьИнерцию === 'function') запуститьИнерцию(gesture ? (gesture.zoomAcc || 0) : 0);
       gesture = null;
       stageEl.style.cursor = (tool === 'select') ? 'default' : 'crosshair';
     }
@@ -7221,6 +7238,11 @@
     палецВедётДоску = true;
     pendingPan = { id, x: p.x, y: p.y };
     отменитьУдержание();
+    // Палец, положенный чтобы ОСТАНОВИТЬ едущую доску, не должен через
+    // полсекунды заводить рамку выделения с вибрацией и подсказкой: человек
+    // тормозил, а не выделял. Инерция делает этот жест частым — значит частой
+    // стала бы и незваная рамка.
+    if (typeof касаниеГасилоВыбег === 'function' && касаниеГасилоВыбег()) return true;
     holdAt = { id, x: p.x, y: p.y };
     holdTimer = setTimeout(() => {
       holdTimer = null;
@@ -7296,7 +7318,8 @@
       // держалось намертво, пока не возьмёшь мышь. Проверка палецВедётДоску
       // важна — при кнопке «Перемещение» pendingPan тоже заводится, но там тап
       // по доске выделение снимать не должен.
-      if (палецВедётДоску && !gesture && !marquee) clearSelection();
+      if (палецВедётДоску && !gesture && !marquee
+        && !(typeof касаниеГасилоВыбег === 'function' && касаниеГасилоВыбег())) clearSelection();
       pendingPan = null;
     }
     if (holdAt && ev.pointerId === holdAt.id) отменитьУдержание();
@@ -7892,6 +7915,7 @@
   // вокруг центра видимой области.
   function zoomTo(newScale, center) {
     if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     const oldScale = stage.scaleX();
     const clamped = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
     const c = center || { x: stage.width() / 2, y: stage.height() / 2 };
@@ -7911,6 +7935,7 @@
   let wheelLastT = 0, wheelDxAvg = 0, wheelDyAvg = 0;
   function wheelPan(dx, dy) {
     if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     const now = (window.performance && performance.now) ? performance.now() : Date.now();
     if (now - wheelLastT > 150) { wheelDxAvg = 0; wheelDyAvg = 0; } // пауза → новый жест
     wheelLastT = now;
@@ -8493,12 +8518,17 @@
     if (!panDrag || e.pointerId !== panDrag.id) return;
     if (!(e.buttons & 1)) { endPanDrag(e); return; }   // отпустили вне окна
     e.preventDefault(); e.stopPropagation();
+    отметитьРазгон(e.clientX, e.clientY);
     panBoardBy(e.clientX - panDrag.x, e.clientY - panDrag.y);
   }, true);
   function endPanDrag(e) {
     if (!panDrag || (e && e.pointerId !== panDrag.id)) return;
     panDrag = null;
     document.body.classList.remove('panning');
+    // Только настоящее отпускание кнопки. Сюда же приходят «кнопку отпустили
+    // за краем окна» (это событие движения) и потеря фокуса окна — там броска
+    // не было, и выкат означал бы, что доска уезжает сама по себе.
+    if (e && e.type === 'pointerup' && typeof запуститьИнерцию === 'function') запуститьИнерцию(0);
   }
   document.addEventListener('pointerup', endPanDrag, true);
   document.addEventListener('pointercancel', endPanDrag, true);
@@ -8545,6 +8575,10 @@
       if (Math.abs(e.clientX - rmbPan.x0) < RMB_MOVE_PX
         && Math.abs(e.clientY - rmbPan.y0) < RMB_MOVE_PX) return;
       rmbMoved = true; rmbMovedAt = Date.now(); rmbMenu = null;
+      // Этот тракт единственный не отпускал следование за участником: тянешь
+      // доску правой кнопкой, а её возвращает назад чужой вид. Ставим здесь —
+      // один раз за жест, когда стало ясно, что это перемещение.
+      if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
       hideCtxMenu();                         // macOS успевает открыть меню на нажатии
       document.body.classList.add('rmb-pan');
     }
@@ -8554,6 +8588,7 @@
     // положение сцены, а абсолютный пересчёт затирал бы его.
     const dx = e.clientX - rmbPan.x, dy = e.clientY - rmbPan.y;
     rmbPan.x = e.clientX; rmbPan.y = e.clientY;
+    отметитьРазгон(e.clientX, e.clientY);
     stage.position({ x: stage.x() + dx, y: stage.y() + dy });
     scheduleViewRedraw();                    // сетка, курсоры, якоря и вид ведомым
   }, true);
@@ -8564,6 +8599,12 @@
     document.body.classList.remove('rmb-pan');
     // Меню пришло на нажатии и было отложено: не потянули — показываем сейчас.
     if (!rmbMoved && rmbMenu) { const показать = rmbMenu; rmbMenu = null; показать(); }
+    // Выкат — только если правой действительно тянули и левая при этом не
+    // зажата. Начать панораму правой при зажатой левой нельзя, а вот дожать
+    // левую посреди панорамы — можно, и тогда идёт штрих: выкат под живым
+    // штрихом размазал бы линию по всей доске, и отменить это было бы нечем.
+    if (rmbMoved && e && e.type === 'pointerup' && !(e.buttons & 1)
+      && typeof запуститьИнерцию === 'function') запуститьИнерцию(0);
   }
   document.addEventListener('pointerup', endRmbPan, true);
   document.addEventListener('pointercancel', endRmbPan, true);
@@ -9056,6 +9097,7 @@
   }
   function fitFrameToView(fr, frac) {
     if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     const vw = window.innerWidth, vh = window.innerHeight - STAGE_TOP;
     const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
       Math.min(frac * vw / Math.max(1, fr.data.width), frac * vh / Math.max(1, fr.data.height))));
@@ -10853,6 +10895,8 @@
   ];
   // «Показать всё»: вписываем в экран прямоугольник по всем видимым объектам.
   function fitAllToView() {
+    // Гасим В НАЧАЛЕ: иначе новый масштаб применится к ещё едущей доске.
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const take = (x, y, w, h) => {
       minX = Math.min(minX, x); minY = Math.min(minY, y);
@@ -12567,16 +12611,158 @@
     return { x, y };
   }
 
+  // ── ИНЕРЦИЯ ПАНОРАМЫ ─────────────────────────────────────────────────
+  // Бросил доску — она доезжает и плавно встаёт.
+  //
+  // Скорость броска считается не по последнему шагу указателя, а по следу за
+  // последние сто миллисекунд. По одному шагу считать нельзя: перед тем как
+  // убрать палец, человек почти всегда его придерживает, и последний шаг
+  // выходит почти нулевым — броска бы просто не заметили.
+  //
+  // След ограничен ВРЕМЕНЕМ, а не числом точек. Точки приходят от событий
+  // указателя, а не от кадров: при двух пальцах их вдвое больше, а планшетный
+  // дигитайзер опрашивают и по двести раз в секунду. Ограничь мы след десятью
+  // точками — окно схлопнулось бы до двадцати миллисекунд, и всю скорость
+  // снова задавала бы одна случайная точка.
+  const ИНЕРЦИЯ_ОКНО = 100;       // мс: по какому отрезку следа считаем скорость
+  const ИНЕРЦИЯ_СВЕЖЕСТЬ = 120;   // мс: старше — бросок «протух», это не бросок
+  const ИНЕРЦИЯ_МИН_ДТ = 15;      // мс: короче — делить не на что
+  const ИНЕРЦИЯ_ПОРОГ = 150;      // px/с: медленнее — «поставил и отпустил»
+  const ИНЕРЦИЯ_ПОТОЛОК = 2500;   // px/с: выше — рывок кисти, а не намерение
+  const ИНЕРЦИЯ_ЛЯМБДА = 5;       // 1/с: чем больше, тем короче выкат
+  const ИНЕРЦИЯ_СТОП = 40;        // px/с: ниже — считаем, что доска встала
+  const ИНЕРЦИЯ_МАКС_МС = 1200;   // мс: предел выката при любой скорости
+  const ИНЕРЦИЯ_ЗУМ = 0.08;       // накопленный |ln k|: больше — это был щипок
+  const ИНЕРЦИЯ_СЛЕД_МАКС = 32;   // страховка от бесконечного роста следа
+  let следЖеста = [];             // точки указателя за окно: {x, y, t}
+  let инерцияИдёт = false;        // цикл катится по броску, а не по клавишам
+  let инерцияДо = 0;              // время, после которого выкат обрывается
+  let выбегПогашенAt = 0;         // когда касание остановило выкат
+
+  function _мс() {
+    return (window.performance && performance.now) ? performance.now() : Date.now();
+  }
+  // Человек мог выключить анимации в системе. Доска это уже уважает в стилях —
+  // уважаем и здесь.
+  function анимацииВыключены() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+  // Записывать движение обязаны ВСЕ тракты панорамы — палец, «рука», правая
+  // кнопка. Иначе инерция будет только у того, кто вспомнил её записать.
+  function отметитьРазгон(x, y) {
+    const t = _мс();
+    следЖеста.push({ x: x, y: y, t: t });
+    while (следЖеста.length > 2 && t - следЖеста[0].t > ИНЕРЦИЯ_ОКНО) следЖеста.shift();
+    while (следЖеста.length > ИНЕРЦИЯ_СЛЕД_МАКС) следЖеста.shift();
+  }
+  function сброситьРазгон() { следЖеста.length = 0; }
+
+  // зумНакоплен — сколько масштаба набежало за жест (для щипка). У мыши нуль.
+  function запуститьИнерцию(зумНакоплен) {
+    const след = следЖеста.slice();
+    сброситьРазгон();
+    // ГЛАВНОЕ УСЛОВИЕ И ПЕРВОЕ. Пока зажата стрелка, движением распоряжаются
+    // клавиши. Подними мы признак выбега здесь — гасить его было бы нечем:
+    // ветка остановки цикла при зажатой клавише недостижима, и клавиатурная
+    // панорама навсегда осталась бы с чужим торможением.
+    if (heldKeys.size) return;
+    if (анимацииВыключены()) return;
+    if (зумНакоплен > ИНЕРЦИЯ_ЗУМ) return;   // это был щипок, а не бросок
+    if (след.length < 2) return;
+    const конец = след[след.length - 1], начало = след[0];
+    if (_мс() - конец.t > ИНЕРЦИЯ_СВЕЖЕСТЬ) return;   // подержали и отпустили
+    const дт = конец.t - начало.t;
+    if (дт < ИНЕРЦИЯ_МИН_ДТ) return;
+    let vx = (конец.x - начало.x) / дт * 1000;
+    let vy = (конец.y - начало.y) / дт * 1000;
+    const модуль = Math.hypot(vx, vy);
+    if (!isFinite(модуль) || модуль < ИНЕРЦИЯ_ПОРОГ) return;
+    // Зажимаем ДЛИНУ вектора, а не каждую ось порознь: иначе бросок по
+    // диагонали получил бы скорость в полтора раза выше потолка.
+    if (модуль > ИНЕРЦИЯ_ПОТОЛОК) {
+      const к = ИНЕРЦИЯ_ПОТОЛОК / модуль; vx *= к; vy *= к;
+    }
+    panVX = vx; panVY = vy;
+    инерцияИдёт = true;
+    инерцияДо = _мс() + ИНЕРЦИЯ_МАКС_МС;
+    // Цикл запускаем НАПРЯМУЮ, а не через ensurePanLoop: тот заодно отпускает
+    // следование за участником, а выкат — движение уже не человеческой руки.
+    if (panRAF == null) { lastPanT = 0; panRAF = requestAnimationFrame(panLoop); }
+  }
+  // Погасить выкат. Возвращает true, если действительно было что гасить.
+  // Ранний выход по признаку важен: функцию зовут из любого нажатия и любой
+  // клавиши, и она не должна трогать скорость, набранную стрелками.
+  function остановитьИнерцию() {
+    сброситьРазгон();
+    if (!инерцияИдёт) return false;
+    инерцияИдёт = false; panVX = 0; panVY = 0;
+    выбегПогашенAt = _мс();
+    if (panRAF != null && !heldKeys.size) {
+      cancelAnimationFrame(panRAF); panRAF = null; lastPanT = 0;
+    }
+    return true;
+  }
+  // Это касание пришло, чтобы остановить доску? Тогда оно не должно ни снимать
+  // выделение, ни через полсекунды заводить рамку выделения с вибрацией.
+  function касаниеГасилоВыбег() { return _мс() - выбегПогашенAt < 400; }
+
+  // Любое нажатие где угодно гасит выкат: это новое намерение человека, и
+  // доска обязана встать под пальцем сразу, как останавливают лист бумаги.
+  //
+  // Слушатель именно на документе, и это не перестраховка: текст, стикеры и
+  // таблицы лежат в отдельных слоях-БРАТЬЯХ холста, а не внутри него, поэтому
+  // до сторожей холста нажатия на них не доходят вовсе.
+  //
+  // Обёрнут в стрелку нарочно: браузер передал бы обработчику событие первым
+  // доводом, и у остановки молча появился бы непрошеный аргумент.
+  document.addEventListener('pointerdown', () => { остановитьИнерцию(); }, true);
+
   function panLoop(t) {
     const dt = lastPanT ? Math.min(0.05, (t - lastPanT) / 1000) : 0;
     lastPanT = t;
     const dir = panDirection();
     const speed = PAN_SPEED * (shiftHeld ? 2 : 1);
-    // Скорость плавно стремится к целевой (разгон при зажатии, торможение при отпускании).
-    panVX += (dir.x * speed - panVX) * PAN_EASE;
-    panVY += (dir.y * speed - panVY) * PAN_EASE;
-    if (!dir.x && !dir.y && Math.abs(panVX) < 1 && Math.abs(panVY) < 1) {
-      panVX = panVY = 0; panRAF = null; lastPanT = 0; return; // остановились
+    // Нажали стрелку — клавиши забирают движение себе: у них своё торможение,
+    // и двум законам в одном цикле спорить незачем.
+    if (dir.x || dir.y) инерцияИдёт = false;
+    const выбег = инерцияИдёт;
+    if (выбег) {
+      // Хит-граф на время выката не нужен никому. Его выключает жест, но
+      // возвращает таймер через 180 мс — то есть ровно посреди выката, и
+      // дальше каждый кадр рисовал бы ещё и невидимый холст попаданий,
+      // который стоит столько же, сколько видимый.
+      pauseHitDuringGesture();
+      // Предел по времени. Зажим шага по dt (строка выше) сохраняет ПУТЬ, но
+      // растягивает ВРЕМЯ: на слабом устройстве с десятью кадрами в секунду
+      // выкат шёл бы вдвое дольше и рывками. А доска, уезжающая сама спустя
+      // полторы секунды после того, как её отпустили, — это не инерция, это
+      // выглядит поломкой.
+      if (_мс() > инерцияДо) { panVX = 0; panVY = 0; }
+    }
+    // ТОРМОЖЕНИЕ ВЫКАТА СЧИТАЕТСЯ ОТ ВРЕМЕНИ, А НЕ ОТ КАДРА. PAN_EASE
+    // применяется раз в кадр и на длительность кадра не смотрит: клавишам это
+    // безразлично, а вот выкат на планшете со 120 кадрами вышел бы ровно вдвое
+    // короче, чем на компьютере с шестьюдесятью. Показательная форма даёт один
+    // и тот же выкат при любой частоте кадров.
+    const тормоз = выбег ? (1 - Math.exp(-ИНЕРЦИЯ_ЛЯМБДА * dt)) : PAN_EASE;
+    panVX += (dir.x * speed - panVX) * тормоз;
+    panVY += (dir.y * speed - panVY) * тормоз;
+    // Порог остановки у выката выше: хвост от сорока пикселей в секунду до
+    // одного тянется ещё три четверти секунды, доска за него проезжает восемь
+    // пикселей — ровно тот сдвиг, который сама доска считает неподвижностью, —
+    // и каждый из этих кадров стоит полной перерисовки.
+    const стоп = выбег ? ИНЕРЦИЯ_СТОП : 1;
+    if (!dir.x && !dir.y && Math.abs(panVX) < стоп && Math.abs(panVY) < стоп) {
+      panVX = panVY = 0; инерцияИдёт = false; panRAF = null; lastPanT = 0;
+      // Последний кадр ведомым — мимо дросселя. Вид рассылается не чаще раза в
+      // 60 мс, поэтому конец движения в дроссель и попадает: у ведущего доска
+      // встала, а у ученика осталась смещённой на хвост. Это чинит и старую
+      // панораму стрелками, у которой была та же дыра.
+      if (typeof lastViewAt !== 'undefined') lastViewAt = 0;
+      if (typeof sendView === 'function') sendView();
+      return; // остановились
     }
     stage.position({ x: stage.x() + panVX * dt, y: stage.y() + panVY * dt });
     // ВСЁ РИСУЕМ В ОДНОМ КАДРЕ, и это исправление «плавающего» текста.
@@ -12618,6 +12804,9 @@
   // Горячие клавиши.
   window.addEventListener('keydown', (e) => {
     if (e.target && e.target.matches && e.target.matches('input, textarea, [contenteditable], [contenteditable] *')) return;
+    // Клавиша — тоже новое намерение. Стрелки после этого разгоняют доску сами,
+    // с обычным клавиатурным разгоном.
+    остановитьИнерцию();
     shiftHeld = e.shiftKey;
     // Открытая справка забирает Esc себе — иначе он сначала выключал бы режимы.
     if (keysHelpEl && e.key === 'Escape') { e.preventDefault(); toggleKeysHelp(); return; }
@@ -12768,11 +12957,11 @@
   });
   window.addEventListener('keyup', (e) => {
     shiftHeld = e.shiftKey;
-    if (PAN_KEYS[e.key]) { heldKeys.delete(e.key); ensurePanLoop(); }
+    if (PAN_KEYS[e.key]) { heldKeys.delete(e.key); остановитьИнерцию(); ensurePanLoop(); }
     if (e.code === 'Space' && spaceHeld) { spaceHeld = false; setPanMode(panBeforeSpace); }
   });
   // Если окно потеряло фокус с зажатой клавишей — плавно останавливаемся.
-  window.addEventListener('blur', () => { heldKeys.clear(); ensurePanLoop(); });
+  window.addEventListener('blur', () => { heldKeys.clear(); остановитьИнерцию(); ensurePanLoop(); });
 
   // ── Справка по горячим клавишам ────────────────────────────────────────
   // Инструментов на панели почти восемьдесят; без списка о клавишах просто
@@ -13254,6 +13443,8 @@
       ? Math.max(MIN_SCALE, Math.min(MAX_SCALE, s0)) : stage.scaleX();
     const x0 = Number(x), y0 = Number(y);
     if (!Number.isFinite(x0) || !Number.isFinite(y0)) return;
+    // Вид задаёт ведущий — свой выкат уступает ему место.
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     applyingView = true; stage.scale({ x: безопасный, y: безопасный }); stage.position({ x: x0, y: y0 }); applyingView = false;
     scheduleViewRedraw();
   }
@@ -13561,6 +13752,7 @@
   function focusElement(eid) {
     const el = elements.get(eid); if (!el) { boardHint('Объект уже удалён — можно восстановить из строки удаления'); return; }
     if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     const n = nodes.get(eid); let cx, cy;
     if (el.type === 'frame') { cx = el.data.x + el.data.width / 2; cy = el.data.y + el.data.height / 2; }
     else if (n && typeof n.getClientRect === 'function') { const b = n.getClientRect({ relativeTo: layer }); cx = b.x + b.width / 2; cy = b.y + b.height / 2; }
@@ -13820,6 +14012,9 @@
   // на страницу), 'selection' (только выделенное — одна страница).
   async function exportBoardPdf(mode) {
     if (_exporting) return;
+    // Экспорт сам двигает вид по страницам — едущая доска дала бы смазанные
+    // страницы и вернулась бы не туда.
+    if (typeof остановитьИнерцию === 'function') остановитьИнерцию();
     mode = mode || 'whole';
     const selIds = Array.from(selected);
     if (mode === 'selection' && !selIds.length) { boardHint('Сначала выделите объекты'); return; }
