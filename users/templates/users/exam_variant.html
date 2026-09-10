@@ -125,6 +125,21 @@
     background: var(--c-gray-50);
     color: var(--c-text-soft);
 }
+.answer-row .check-btn {
+    padding: .4rem .8rem;
+    border: 1px solid var(--c-border-strong);
+    border-radius: .3rem;
+    background: var(--c-white);
+    color: var(--c-text);
+    font-size: .9rem;
+    cursor: pointer;
+}
+.answer-row .check-btn:hover:not(:disabled) { background: var(--c-gray-50); }
+.answer-row .check-btn:disabled {
+    background: var(--c-gray-50);
+    color: var(--c-text-soft);
+    cursor: default;
+}
 .correct-hint {
     color: var(--c-danger);
     font-size: .9rem;
@@ -189,8 +204,13 @@
         <div class="slot"
              id="slot-{{ slot.slot }}"
              data-slot="{{ slot.slot }}"
-             data-correct-answer="{{ slot.correct_answer }}"
              {% if slot.is_correct is not None %}
+                {% comment %} Ответ попадает в разметку только там, где он уже открыт:
+                   слот отвечен, и подсказка всё равно на экране. Раньше он
+                   стоял здесь у КАЖДОГО слота, то есть весь вариант читался
+                   из исходного кода страницы, не решая. 
+                {% endcomment %}
+                data-correct-answer="{{ slot.correct_answer }}"
                 data-already="{{ slot.user_answer }}"
                 data-is-correct="{{ slot.is_correct|yesno:'1,0' }}"
              {% endif %}>
@@ -215,6 +235,8 @@
                        inputmode="numeric"
                        style="width: 90px;"
                        {% if slot.is_correct is not None %}disabled{% endif %}>
+                <button type="button" class="check-btn"
+                        {% if slot.is_correct is not None %}disabled{% endif %}>Проверить</button>
                 <span class="correct-hint" style="display:none;">
                     <span class="label">правильный:</span>
                     <span class="ans"></span>
@@ -228,6 +250,8 @@
                        data-slot="{{ slot.slot }}"
                        value="{{ slot.user_answer }}"
                        {% if slot.is_correct is not None %}disabled{% endif %}>
+                <button type="button" class="check-btn"
+                        {% if slot.is_correct is not None %}disabled{% endif %}>Проверить</button>
                 <span class="correct-hint" style="display:none;">
                     <span class="label">правильный:</span>
                     <span class="ans"></span>
@@ -270,7 +294,9 @@
     function applyResult(slotEl, isCorrect, correctAns) {
         const status = slotEl.querySelector('.slot-status');
         const input = slotEl.querySelector('.answer-input');
+        const btn = slotEl.querySelector('.check-btn');
         input.disabled = true;
+        if (btn) btn.disabled = true;
         if (isCorrect) {
             slotEl.classList.add('correct');
             status.textContent = '✓ верно';
@@ -298,9 +324,11 @@
 
     function submitAnswer(slotEl) {
         const input = slotEl.querySelector('.answer-input');
+        const btn = slotEl.querySelector('.check-btn');
         const val = (input.value || '').trim();
         if (!val || input.disabled) return;
         input.disabled = true;
+        if (btn) btn.disabled = true;
         fetch(urlFor(slotEl.dataset.slot), {
             method: 'POST',
             headers: {
@@ -312,10 +340,14 @@
         }).then(r => r.json()).then(data => {
             if (data.error) {
                 input.disabled = false;
+                if (btn) btn.disabled = false;
                 return;
             }
             applyResult(slotEl, data.correct, data.correct_answer);
-        }).catch(() => { input.disabled = false; });
+        }).catch(() => {
+            input.disabled = false;
+            if (btn) btn.disabled = false;
+        });
     }
 
     document.querySelectorAll('.answer-input').forEach(inp => {
@@ -326,10 +358,15 @@
                 submitAnswer(slotEl);
             }
         });
-        inp.addEventListener('blur', () => {
-            const slotEl = inp.closest('.slot');
-            submitAnswer(slotEl);
-        });
+    });
+
+    // Отправляет только явное действие ученика. Раньше здесь висел обработчик
+    // blur: достаточно было нажать Tab или кликнуть в соседнее поле, и ответ
+    // уходил на проверку — попытка сгорала, поле запиралось навсегда, а при
+    // ошибке сайт сам показывал правильный ответ. Вариант же решают как на
+    // экзамене: заполняют по кругу и возвращаются перепроверить.
+    document.querySelectorAll('.slot .check-btn').forEach(btn => {
+        btn.addEventListener('click', () => submitAnswer(btn.closest('.slot')));
     });
 
     if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise();

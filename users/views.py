@@ -25,6 +25,7 @@ from .decorators import student_required, teacher_required
 from .answer_check import check_answer
 from .progress import mark_progress, needed_for
 from .grades import course_score
+from .text import склонение
 from .uploads import validate_homework_file
 from .notifications import notify_submitted, notify_reviewed
 from .homework import (homework_for, lesson_report, dates_for,
@@ -107,8 +108,14 @@ def login_view(request):
 
 # users/views.py - функция student_dashboard
 
-def course_progress_percent(student, course):
-    """Процент прохождения курса учеником (0..100), считается на лету.
+def course_progress_counts(student, course):
+    """Сколько сделано и сколько всего в курсе — счётом, а не долей.
+
+    Возвращает {'сделано', 'всего', 'единица'}. Единица важна: у курса с
+    заданиями это задания, у курса-методички — уроки, и складывать одно с
+    другим нельзя. Раньше это складывалось: в кабинете стоял «средний
+    прогресс» — среднее арифметическое долей по курсам, где методичка из трёх
+    уроков весила столько же, сколько курс из двухсот прототипов.
 
     По заданиям: manual-курс — по отметкам преподавателя (ManualMark),
     иначе — по авто-прогрессу (StudentProgress). Если заданий в курсе нет
@@ -120,28 +127,44 @@ def course_progress_percent(student, course):
         Assignment.objects.filter(lesson__module__course=course)
         .values_list('id', flat=True)
     )
-    total = len(assignment_ids)
-    if total:
+    if assignment_ids:
         if course.is_manual:
-            done = ManualMark.objects.filter(
+            сделано = ManualMark.objects.filter(
                 student=student, assignment_id__in=assignment_ids, is_completed=True,
             ).count()
         else:
-            done = StudentProgress.objects.filter(
+            сделано = StudentProgress.objects.filter(
                 student=student, assignment_id__in=assignment_ids, is_completed=True,
             ).count()
-        return round(done / total * 100)
+        return {'сделано': сделано, 'всего': len(assignment_ids),
+                'единица': склонение(len(assignment_ids),
+                                     'задания', 'заданий', 'заданий')}
 
     # Курс без заданий — считаем по прочитанным теоретическим урокам.
     lesson_ids = list(
         Lesson.objects.filter(module__course=course).values_list('id', flat=True)
     )
     if not lesson_ids:
-        return 0
-    read = LessonProgress.objects.filter(
+        return {'сделано': 0, 'всего': 0, 'единица': 'уроков'}
+    прочитано = LessonProgress.objects.filter(
         student=student, lesson_id__in=lesson_ids, is_read=True,
     ).count()
-    return round(read / len(lesson_ids) * 100)
+    return {'сделано': прочитано, 'всего': len(lesson_ids),
+            'единица': склонение(len(lesson_ids),
+                                 'урока', 'уроков', 'уроков')}
+
+
+def course_progress_percent(student, course):
+    """Процент прохождения ОДНОГО курса (0..100), считается на лету.
+
+    Доля по одному курсу — величина осмысленная, в отличие от среднего по
+    курсам. Здесь она и остаётся: на странице «Мои курсы», у каждого курса
+    своя.
+    """
+    счёт = course_progress_counts(student, course)
+    if not счёт['всего']:
+        return 0
+    return round(счёт['сделано'] / счёт['всего'] * 100)
 
 
 @student_required
@@ -151,9 +174,10 @@ def student_dashboard(request):
     enrollments = (Enrollment.objects
                    .filter(student=request.user, is_active=True)
                    .select_related('course'))
-    percents = [course_progress_percent(request.user, e.course) for e in enrollments]
-    courses_count = len(percents)
-    progress_pct = round(sum(percents) / courses_count) if courses_count else 0
+    курсы = [dict(course_progress_counts(request.user, e.course),
+                  название=e.course.title, курс=e.course)
+             for e in enrollments]
+    courses_count = len(курсы)
 
     # Ссылки от преподавателя: личные плюс общие (те, что он положил всем).
     # Профиля может не быть — тогда преподаватель неизвестен и общих нет.
@@ -172,7 +196,7 @@ def student_dashboard(request):
         'title': 'Личный кабинет',
         'has_courses': courses_count > 0,
         'courses_count': courses_count,
-        'progress_pct': progress_pct,
+        'курсы': курсы,
         'links': links,
     })
 

@@ -148,11 +148,6 @@ urlpatterns = [
     path('task-group/<int:group_id>/submit/',
          views_oge1_5.task_group_submit, name='task_group_submit'),
 
-    # --- ДОПОЛНИТЕЛЬНЫЕ МАРШРУТЫ ДЛЯ БУДУЩЕГО РАСШИРЕНИЯ ---
-    # path('exam/course/<int:course_id>/', views_exam.exam_course_detail, name='exam_course_detail'),
-    # path('exam/prototype/<int:prototype_id>/', views_exam.prototype_detail, name='prototype_detail'),
-    # path('exam/statistics/', views_exam.student_statistics, name='exam_statistics'),
-
     # ===== Переписка преподавателя с учеником =====
     path('chat/', views_chat.chat_home, name='chat_home'),
     path('chat/start/<int:user_id>/', views_chat.chat_start, name='chat_start'),

@@ -455,8 +455,9 @@ def check_problem_answer(request, problem_id):
     if is_correct:
         problem.correct_attempts += 1
         problem.status = 'solved'
-    elif problem.attempts_count >= 3:
-        problem.status = 'failed'
+    # Раньше здесь стояло «а после трёх попыток — failed». Сколько раз стоит
+    # пробовать, решает ученик, а не счётчик: задача остаётся открытой, пока
+    # он сам не откроет ответ кнопкой «Узнать ответ».
     problem.last_attempt_at = timezone.now()
     problem.save()
 
@@ -486,17 +487,21 @@ def check_problem_answer(request, problem_id):
             'is_completed': progress.is_completed,
         }
 
-    # Разбор задачи отдаём тогда же, когда открывается сам ответ: после верного
-    # решения или после трёх попыток. Раньше нельзя — в разборе стоит ответ.
-    # Для №22 без разбора задача бессмысленна: график ученик иначе не увидит.
+    # Разбор отдаём только там, где он уже не подсказка: после верного ответа
+    # и в доказательствах, где ответа-числа нет вовсе и без разбора задача
+    # бессмысленна. По неверной попытке не отдаём ничего — раньше третья
+    # попытка выкладывала и ответ, и разбор, хотя ученик не просил. Кто хочет
+    # посмотреть, нажимает «Узнать ответ»: /exam/solution/<id>/.
     solution_html = ''
-    if is_correct or problem.attempts_count >= 3 or task_data.get('answer_kind') == 'proof':
+    if is_correct or task_data.get('answer_kind') == 'proof':
         solution_html = task_data.get('solution_html') or ''
 
     return JsonResponse({
         'correct': is_correct,
         'message': message,
-        'correct_answer': problem.correct_answer,
+        # Ответ уходит на страницу только вместе с правом его увидеть: иначе
+        # он лежал бы в ответе сервера на каждую неверную попытку.
+        'correct_answer': problem.correct_answer if solution_html or is_correct else '',
         'attempts_count': problem.attempts_count,
         'problem_correct_attempts': problem.correct_attempts,
         'is_practice': is_practice,
@@ -508,19 +513,25 @@ def check_problem_answer(request, problem_id):
 @login_required
 def problem_solution(request, problem_id):
     """
-    Разбор задачи на доказательство — до ответа и без записи попытки.
+    Разбор задачи — по просьбе ученика и без записи попытки.
 
-    Только для answer_kind = 'proof': там ученик обязан прочитать разбор
-    ДО того, как отметит результат, и ответа-числа, который можно было бы
-    подсмотреть, не существует. Для всех остальных задач разбор выдаёт
-    check_problem_answer — после верного ответа или трёх попыток.
+    Раньше отсюда отдавались только доказательства, а всем остальным задачам
+    разбор открывал сам сайт: третья неверная попытка ставила задаче «не
+    решено» и выкладывала ответ на экран. Число 3 было зашито в код, и
+    выбирало оно за ученика, когда тот закончил думать. Теперь решает он:
+    попытки не ограничены, а ответ открывается нажатием на «Узнать ответ».
+
+    Ответ отдаётся вместе с разбором: в разборе он всё равно есть, и прятать
+    одно за другим бессмысленно. Попытка при этом не записывается — ученик
+    ещё не отвечал.
     """
     problem = get_object_or_404(GeneratedProblem, id=problem_id, student=request.user)
     _require_course_access(request, problem.assignment.lesson.module.course)
     task_data = problem.task_data or {}
-    if task_data.get('answer_kind') != 'proof':
-        return JsonResponse({'error': 'Разбор откроется после ответа'}, status=403)
-    return JsonResponse({'solution_html': task_data.get('solution_html') or ''})
+    return JsonResponse({
+        'solution_html': task_data.get('solution_html') or '',
+        'correct_answer': problem.correct_answer,
+    })
 
 
 @login_required

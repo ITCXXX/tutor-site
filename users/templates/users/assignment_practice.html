@@ -366,7 +366,6 @@
                                    id="q-input-{{ q.id }}"
                                    data-qid="{{ q.id }}"
                                    data-solved="{% if q.solved %}1{% else %}0{% endif %}"
-                                   data-correct="{{ q.correct_answer }}"
                                    placeholder="Ответ"
                                    {% if q.solved %}value="{{ q.correct_answer }}"{% endif %}>
                             <button class="btn btn-primary q-check-btn"
@@ -471,6 +470,11 @@
                                     <button type="submit" class="btn btn-primary" id="submitBtn" disabled>
                                         <i class="bi bi-check-lg"></i> Проверить ответ
                                     </button>
+                                    <button type="button" id="revealBtn"
+                                            class="btn btn-outline-secondary"
+                                            {% if problem.status == 'solved' %}hidden{% endif %}>
+                                        <i class="bi bi-eye"></i> Узнать ответ
+                                    </button>
                                     <button type="button" id="newProblemBtn" class="btn btn-outline-secondary">
                                         <i class="bi bi-arrow-repeat"></i> Новая задача
                                     </button>
@@ -556,6 +560,11 @@
                                             {% if problem.status == 'solved' %}disabled{% endif %}>
                                         <i class="bi bi-check-lg"></i> Проверить ответ
                                     </button>
+                                    <button type="button" id="revealBtn"
+                                            class="btn btn-outline-secondary"
+                                            {% if problem.status == 'solved' %}hidden{% endif %}>
+                                        <i class="bi bi-eye"></i> Узнать ответ
+                                    </button>
                                     <button type="button" id="newProblemBtn" class="btn btn-outline-secondary">
                                         <i class="bi bi-arrow-repeat"></i> Новая задача
                                     </button>
@@ -566,9 +575,11 @@
                     </div>
 
                     {% comment %}
-                    Разбор. Открывается вместе с ответом — после верного решения
-                    или после трёх попыток, не раньше. У №22 внутри лежит график:
-                    без него «постройте график функции» остаётся непроверяемым.
+                    Разбор. Открывается после верного решения или по кнопке
+                    «Узнать ответ» — то есть тогда, когда ученик сам этого захотел.
+                    Раньше его выкладывала третья неверная попытка. У №22 внутри
+                    лежит график: без него «постройте график функции» остаётся
+                    непроверяемым.
                     {% endcomment %}
                     <div class="card mt-4" id="solution-card"
                          {% if problem.status != 'solved' or not problem.task_data.solution_html %}hidden{% endif %}>
@@ -955,6 +966,8 @@ async function loadNewProblem() {
         if (res.ok && result.success) {
             document.getElementById('problem-condition').innerHTML = result.condition_html;
             hideSolution();
+            const rb = document.getElementById('revealBtn');
+            if (rb) { rb.hidden = false; rb.disabled = false; }
             const form = document.getElementById('answerForm');
             form.dataset.problemId = result.problem_id;
             form.dataset.solved = 'false';
@@ -1019,6 +1032,8 @@ document.getElementById('answerForm').addEventListener('submit', async function(
                     if (sl && result.is_completed) sl.innerHTML = '<strong>Статус:</strong> <span class="badge bg-success">Пройдено</span>';
                 }
                 document.getElementById('answerForm').dataset.solved = 'true';
+                const rbOk = document.getElementById('revealBtn');
+                if (rbOk) rbOk.hidden = true;
                 document.getElementById('answerInput').disabled = true;
                 document.getElementById('submitBtn').disabled = true;
                 document.querySelectorAll('.choice-btn').forEach(b => b.disabled = true);
@@ -1028,9 +1043,6 @@ document.getElementById('answerForm').addEventListener('submit', async function(
                 if (result.is_practice) {
                     const ea = document.getElementById('stat-attempted');
                     if (ea) ea.textContent = result.session_attempted;
-                }
-                if (result.attempts_count >= 3 && result.correct_answer !== undefined) {
-                    showAlert(`Правильный ответ: ${result.correct_answer}`, 'info');
                 }
             }
         } else {
@@ -1042,6 +1054,39 @@ document.getElementById('answerForm').addEventListener('submit', async function(
 });
 
 document.getElementById('newProblemBtn').addEventListener('click', loadNewProblem);
+
+// «Узнать ответ». Раньше ответ и разбор выкладывала сама третья неверная
+// попытка — число 3 было зашито в код и решало за ученика, когда тот
+// закончил думать. Теперь попытки не ограничены, а открывает он сам.
+// Попытка при этом не записывается: /exam/solution/ ничего не пишет.
+const revealBtn = document.getElementById('revealBtn');
+if (revealBtn) {
+    revealBtn.addEventListener('click', async () => {
+        const form = document.getElementById('answerForm');
+        const problemId = form.dataset.problemId;
+        if (!problemId) return;
+        revealBtn.disabled = true;
+        try {
+            const res = await fetch(`/exam/solution/${problemId}/`);
+            const result = await res.json();
+            if (!res.ok) {
+                showAlert(result.error || 'Не удалось открыть ответ', 'danger');
+                revealBtn.disabled = false;
+                return;
+            }
+            if (result.correct_answer) {
+                showAlert(`Правильный ответ: ${result.correct_answer}`, 'info');
+            }
+            if (result.solution_html) {
+                showSolution(result.solution_html);
+            }
+            revealBtn.hidden = true;
+        } catch (e) {
+            showAlert('Ошибка соединения', 'danger');
+            revealBtn.disabled = false;
+        }
+    });
+}
 
 // ── Режим доказательства (№24) ────────────────────────────────────────────
 // Разбор хранится в task_data на сервере, и отдаёт его тот же /exam/check/.

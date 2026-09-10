@@ -24,19 +24,7 @@ from django.utils import timezone
 from users.homework import homework_for
 from users.models import Notification, User
 from users.notifications import notify_once
-
-
-def _склонение(n, одна, две, много):
-    """Русское согласование числа: 1 задача, 2 задачи, 5 задач."""
-    n = abs(n) % 100
-    if 11 <= n <= 14:
-        return много
-    n %= 10
-    if n == 1:
-        return одна
-    if 2 <= n <= 4:
-        return две
-    return много
+from users.text import склонение as _склонение
 
 
 class Command(BaseCommand):

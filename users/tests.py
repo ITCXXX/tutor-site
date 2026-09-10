@@ -10,6 +10,8 @@
 самое множество — должен.
 """
 
+import io
+
 from django.test import SimpleTestCase, TestCase
 
 from users import (oge20_generators, oge21_generators, oge22_generators, oge23_generators,
@@ -353,12 +355,40 @@ class ProofModeViewTests(TestCase):
             correct_answer=числовая['correct_answer'], status='new')
         self.client.force_login(self.student)
 
-    def test_solution_before_answer_only_for_proofs(self):
+    def test_разбор_отдаётся_по_просьбе_и_не_пишет_попытку(self):
+        """Раньше разбор числовой задачи отсюда не отдавался (403), потому что
+        его выкладывала сама третья неверная попытка. Число 3 было зашито в
+        код и решало за ученика, когда тот закончил думать; теперь открывает
+        он сам — и попытка при этом не записывается."""
         r = self.client.get('/exam/solution/%d/' % self.proof.id, HTTP_HOST='127.0.0.1')
         self.assertEqual(r.status_code, 200)
         self.assertIn('<svg', r.json()['solution_html'])
+
+        было = self.numeric.attempts_count
         r = self.client.get('/exam/solution/%d/' % self.numeric.id, HTTP_HOST='127.0.0.1')
-        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['correct_answer'], self.numeric.correct_answer)
+        self.numeric.refresh_from_db()
+        self.assertEqual(self.numeric.attempts_count, было)
+        self.assertEqual(self.numeric.status, 'new')
+
+    def test_три_неверные_попытки_ничего_не_открывают(self):
+        """Порог попыток убран: задача не помечается проваленной и ни ответ,
+        ни разбор сами на экран не выкладываются."""
+        import json
+        for _ in range(3):
+            r = self.client.post('/exam/check/%d/' % self.numeric.id,
+                                 data=json.dumps({'answer': 'заведомо не то'}),
+                                 content_type='application/json',
+                                 HTTP_HOST='127.0.0.1')
+            self.assertEqual(r.status_code, 200)
+        итог = r.json()
+        self.assertFalse(итог['correct'])
+        self.assertEqual(итог['attempts_count'], 3)
+        self.assertEqual(итог['solution_html'], '')
+        self.assertEqual(итог['correct_answer'], '')
+        self.numeric.refresh_from_db()
+        self.assertEqual(self.numeric.status, 'new')
 
     def test_self_mark_solved_counts_as_correct(self):
         import json
@@ -844,3 +874,93 @@ class SeedOgeCourseTests(TestCase):
         self.assertIn('Курсов нет вообще', вывод)
         self.assertEqual(Course.objects.count(), 0)
 
+
+class УправлениеУЧеловека(TestCase):
+    """Места, где сайт решал за ученика, и владелец велел это убрать.
+
+    Три правки, у каждой своя причина, но принцип один: сайт показывает и
+    считает, а решает человек. Тесты стоят здесь, чтобы правки нельзя было
+    откатить незаметно — все три легко «вернуть как было» одной строкой.
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from users.models import Course, Enrollment, Lesson, Module
+        User = get_user_model()
+        self.ученик = User.objects.create_user(
+            username='ученик_управление', password='x', role='student')
+        self.курс = Course.objects.create(
+            title='Методичка', slug='metodichka', is_public=True)
+        модуль = Module.objects.create(course=self.курс, title='Раздел', order=1)
+        for i in range(4):
+            Lesson.objects.create(module=модуль, title='Урок %d' % i,
+                                  order=i, lesson_type='theory')
+        Enrollment.objects.create(course=self.курс, student=self.ученик,
+                                  is_active=True)
+        self.client.force_login(self.ученик)
+
+    def test_кабинет_показывает_счёт_а_не_средний_процент(self):
+        """Раньше на входе стояла одна цифра «средний прогресс» — среднее
+        арифметическое долей по курсам, где методичка из трёх уроков весила
+        столько же, сколько курс из двухсот прототипов, а сами доли были
+        разнородные. Проверить её ученик не мог и сделать с ней тоже ничего."""
+        ответ = self.client.get('/student/', HTTP_HOST='127.0.0.1')
+        self.assertEqual(ответ.status_code, 200)
+        разметка = ответ.content.decode()
+        self.assertNotIn('Средний прогресс', разметка)
+        self.assertNotIn('progress_pct', разметка)
+        # Вместо неё — честный счёт по каждому курсу, с названием единицы.
+        self.assertIn('0 из 4 уроков', разметка)
+        курсы = ответ.context['курсы']
+        self.assertEqual(len(курсы), 1)
+        self.assertEqual(курсы[0]['всего'], 4)
+        self.assertEqual(курсы[0]['единица'], 'уроков')
+
+    def test_прочитанный_урок_попадает_в_счёт(self):
+        """Счёт должен быть живым, иначе он не лучше выброшенной цифры."""
+        from users.models import Lesson, LessonProgress
+        LessonProgress.objects.create(
+            student=self.ученик, lesson=Lesson.objects.first(), is_read=True)
+        ответ = self.client.get('/student/', HTTP_HOST='127.0.0.1')
+        self.assertEqual(ответ.context['курсы'][0]['сделано'], 1)
+        self.assertIn('1 из 4 уроков', ответ.content.decode())
+
+    def test_доля_по_одному_курсу_осталась(self):
+        """Убрано было среднее ПО КУРСАМ. Доля внутри одного курса —
+        величина осмысленная, и на странице «Мои курсы» она нужна."""
+        from users.views import course_progress_percent
+        from users.models import Lesson, LessonProgress
+        LessonProgress.objects.create(
+            student=self.ученик, lesson=Lesson.objects.first(), is_read=True)
+        self.assertEqual(course_progress_percent(self.ученик, self.курс), 25)
+
+
+class ОтправкаТолькоПоНажатию(SimpleTestCase):
+    """Страница варианта ОГЭ: ответ уходил на проверку по уходу фокуса.
+
+    Достаточно было нажать Tab или кликнуть в соседнее поле — попытка
+    записана, поле заперто навсегда, а при ошибке сайт сам показывал верный
+    ответ. Вариант решают как на экзамене: заполняют по кругу и возвращаются
+    перепроверить, поэтому отправлять должно только явное действие.
+    """
+
+    def setUp(self):
+        import os
+        путь = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'users', 'templates', 'users',
+            'exam_variant.html')
+        self.разметка = io.open(путь, encoding='utf-8').read()
+
+    def test_нет_отправки_по_уходу_фокуса(self):
+        self.assertNotIn("addEventListener('blur'", self.разметка)
+
+    def test_есть_кнопка_проверить(self):
+        self.assertIn('class="check-btn"', self.разметка)
+        self.assertIn(".slot .check-btn", self.разметка)
+
+    def test_ответ_не_лежит_в_разметке_нерешённого_слота(self):
+        """data-correct-answer стоял у КАЖДОГО слота, то есть весь вариант
+        читался из исходного кода страницы, не решая."""
+        начало = self.разметка.index('data-correct-answer')
+        кусок = self.разметка[начало - 400:начало]
+        self.assertIn('{% if slot.is_correct is not None %}', кусок)

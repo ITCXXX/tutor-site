@@ -14,16 +14,31 @@
                         <h2 class="text-center mb-4">Здравствуйте, {{ user.display }}!</h2>
 
                         {% if has_courses %}
+                        {% comment %} Здесь стоял «средний прогресс» — одна цифра на всё:
+                           среднее арифметическое долей по курсам, где курс из
+                           двухсот прототипов весил столько же, сколько
+                           методичка из трёх уроков, а доли складывались
+                           разнородные. Проверить её было нельзя и сделать с
+                           ней тоже ничего. Теперь по каждому курсу свой счёт,
+                           и видно, чего именно счёт. 
+                        {% endcomment %}
                         <div class="card border-0" style="background: var(--gradient-hero); color: white;">
-                            <div class="card-body text-center">
-                                <div class="display-4 fw-bold mb-2">{{ progress_pct }}%</div>
-                                <p class="mb-2">Средний прогресс</p>
-                                <div class="progress bg-white bg-opacity-25" style="height: 8px;">
-                                    <div class="progress-bar bg-white" style="width: {{ progress_pct }}%"></div>
+                            <div class="card-body">
+                                <p class="mb-3 text-center">Ваши курсы</p>
+                                {% for к in курсы %}
+                                <div class="d-flex justify-content-between align-items-baseline
+                                            {% if not forloop.last %}mb-2{% endif %}">
+                                    <a href="{% url 'course_detail' к.курс.slug %}"
+                                       class="text-white text-decoration-none">{{ к.название }}</a>
+                                    <span class="ms-3 text-nowrap">
+                                        {% if к.всего %}
+                                            {{ к.сделано }} из {{ к.всего }} {{ к.единица }}
+                                        {% else %}
+                                            пока пусто
+                                        {% endif %}
+                                    </span>
                                 </div>
-                                <small class="d-block mt-2">
-                                    по {{ courses_count }} курс{{ courses_count|pluralize:"у,ам" }}
-                                </small>
+                                {% endfor %}
                             </div>
                         </div>
                         {% else %}
