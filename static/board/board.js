@@ -4529,7 +4529,11 @@
       const counts = pollCounts(d);
       const total = counts.reduce((a, b) => a + b, 0);
       const mine = pollMyChoice(d);
-      const open = d.showResults !== false || mine != null;   // свой голос видно всегда
+      // Свой выбор и так виден: он рисуется классом on ниже. Раньше
+      // здесь стояло ещё `|| mine != null`, и первый же голос открывал
+      // ученику чужие числа — «Скрыть до конца» переставало работать
+      // ровно для тех, кто уже ответил, и класс подтягивался к лидеру.
+      const open = d.showResults !== false;
 
       let html = '<div class="poll-q" contenteditable="' + (viewOnly ? 'false' : 'true')
         + '" data-ph="Вопрос">' + escapeHtml(d.title || '') + '</div>';
