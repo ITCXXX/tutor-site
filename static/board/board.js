@@ -8119,7 +8119,11 @@
   // показывался крестик вместо стрелки. Теперь все берут отсюда.
   function курсорИнструмента() {
     const в = вРуке();
-    return panMode ? 'grab'
+    // В перемещении курсор не задаём прямо на холсте, а отдаём стилям: они
+    // знают, тянут ли сейчас доску, — раскрытая рука или сжатая. Заданный
+    // прямо на холсте курсор побеждал стили, и при перетаскивании рука так и
+    // оставалась раскрытой.
+    return panMode ? ''
       : (в === 'select') ? 'default'
       : (в === 'latex' || в === 'text' || в === 'text_plain') ? 'text' : 'crosshair';
   }
@@ -8132,7 +8136,10 @@
     const в = вРуке();
     // Кнопки панели. Кнопки-группы (карандаши, фигуры…) подтягиваются сами:
     // за классами своих кнопок они следят наблюдателем.
-    toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === в));
+    // Кнопка показа экрана горит не «в руке», а «идёт показ» — её подсветку
+    // не гасим, пока показ идёт.
+    toolButtons.forEach((b) => b.classList.toggle('active',
+      b.dataset.tool === в || (b.dataset.tool === 'screen' && screenOn)));
     const sel = document.querySelector('#board-toolbar .tool[data-tool="select"]');
     if (sel) sel.classList.toggle('panning', panMode);
     // Пропуск нажатий сквозь текст — только когда в руке рисующий инструмент.
@@ -8141,7 +8148,13 @@
     // Следы инструмента под указателем. Сами данные не трогаем — только
     // прячем с глаз: по выходе из перемещения они снова нужны.
     if (panMode && eraserRing) eraserRing.style.display = 'none';
-    if (polyPreview) { polyPreview.visible(!panMode); layer.batchDraw(); }
+    if (polyPreview) {
+      polyPreview.visible(!panMode);
+      // На выходе пунктир сразу тянем к курсору: иначе он смотрел туда, где
+      // курсор был ДО сдвига доски, пока мышь не шевельнётся.
+      if (!panMode && в === 'polygon' && polyPicks.length) { const w = worldPoint(); if (w) updatePolyPreview(w); }
+      layer.batchDraw();
+    }
     // Телефон: лист, нижняя панель и значок на «+».
     if (typeof syncMobileFab === 'function') syncMobileFab();
   }
@@ -8202,7 +8215,11 @@
     if (name !== 'select' && !XFORM_SPEC[name]) { clearSelection(); activeFrameId = keepFrame; }
     if (XFORM_SPEC[name] && !сохранитьНачатое) startXformTool();
     updateFuncEditor();
-    if (typeof updateEraserPanel === 'function') updateEraserPanel();
+    // Выход из перемещения — не смена инструмента, и набор пера заново не
+    // применяем. Раньше применяли — и цвет, выбранный в палитре, затирался
+    // цветом набора: после каждого сдвига доски пробелом штрих выходил не тем
+    // цветом. Заодно не мигает меню настроек пера.
+    if (!сохранитьНачатое && typeof updateEraserPanel === 'function') updateEraserPanel();
   }
 
   // ── Якоря и соединительные стрелки ─────────────────────────────────────
@@ -8520,7 +8537,16 @@
       // с доски, и повторный вызов ему безвреден.
       // Кроме обрезки: при ней общий отбой ПРИМЕНЯЕТ её, и картинка
       // обрезалась бы по недоведённой рамке.
+      // Лассо — исключение: у него «оборвать» значит ПРИМЕНИТЬ, а применение
+      // берёт «Выделение» и тем самым выводит из перемещения, не дав в него
+      // войти. Пробел посреди обводки — это «хочу сдвинуть доску», а не
+      // «выдели»: обводку просто снимаем.
+      if (lassoActive) { lassoActive = false; lassoPts = null; if (lassoLine) lassoLine.visible(false); }
       if (!cropId && typeof abortActiveInput === 'function') abortActiveInput();
+      // Страховка: если отбой всё же вывел из перемещения (действие, которое
+      // по завершении берёт другой инструмент), дальше не идём — иначе
+      // погасили бы перетаскивание у объектов уже в обычном режиме.
+      if (!panMode) return;
       // Настройки точки и фигуры относятся к выделению, а оно сейчас снимется.
       if (typeof hideAllSettings === 'function') hideAllSettings();
       // В перемещении объекты не таскаем и якоря прячем — они ловили бы нажатия.
@@ -8656,6 +8682,7 @@
       // рука». Курсор ставим прямо на холст: он задан там же, и правило в
       // стилях его перебить не может — раньше из-за этого оставался крестик.
       if (eraserRing) eraserRing.style.display = 'none';
+      if (polyPreview) polyPreview.visible(false);
       stageEl.style.cursor = 'grabbing';
     }
     e.preventDefault(); e.stopPropagation();
@@ -8674,6 +8701,9 @@
     rmbPan = null;
     document.body.classList.remove('rmb-pan');
     stageEl.style.cursor = курсорИнструмента();   // рука снова держит инструмент
+    if (polyPreview && вРуке() === 'polygon' && polyPicks.length) {
+      polyPreview.visible(true); const w = worldPoint(); if (w) updatePolyPreview(w);
+    }
     // Меню пришло на нажатии и было отложено: не потянули — показываем сейчас.
     if (!rmbMoved && rmbMenu) { const показать = rmbMenu; rmbMenu = null; показать(); }
     // Выкат — только если правой действительно тянули и левая при этом не
@@ -11167,6 +11197,9 @@
     const g = w ? pickObjectAtWorld(w) : null;
     if (g) id = g.id; else { const t = цель; if (t && t !== stage && elements.get(t.id())) id = t.id(); }
     ctxWorld = worldFromClient(x, y);
+    // Действие над объектом — дело «Выделения», как и Ctrl+A: рамка и ручки
+    // поверх пустой руки были бы тем самым следом, от которого избавляемся.
+    if (panMode && id) setTool('select');
     if (id && !selected.has(id)) selectOnly(id);
     // По пустому месту — меню доски, как в Miro. Раньше здесь не появлялось
     // ничего, и правая кнопка казалась несуществующей.
@@ -12682,6 +12715,7 @@
   let shiftHeld = false;
   let spaceHeld = false, panBeforeSpace = false;  // пробел — временная панорама
   let lastVAt = 0;                                // двойное «v» подряд — включить/выключить перемещение
+  let vВывелоИзПеремещения = false;              // первое «v» этой пары вывело из перемещения
   let panVX = 0, panVY = 0, panRAF = null, lastPanT = 0;
 
   function panDirection() {
@@ -13035,8 +13069,16 @@
       // уже лежит на кнопке и делает два коротких движения. Двойное нажатие
       // БУКВЫ человек делает заметно медленнее, в четыреста миллисекунд не
       // попадал и решал, что этого нет вовсе.
-      if (now - lastVAt < 700) { lastVAt = 0; e.preventDefault(); setPanMode(!panMode); return; }
+      if (now - lastVAt < 700) {
+        lastVAt = 0; e.preventDefault();
+        // Первое «v» уже вывело из перемещения (оно — «Выделение»), и второе
+        // не должно включать его обратно. Раньше двойное «v» в перемещении
+        // режим выключало и тут же включало — выйти им было нельзя.
+        if (vВывелоИзПеремещения) { vВывелоИзПеремещения = false; return; }
+        setPanMode(!panMode); return;
+      }
       lastVAt = now;
+      vВывелоИзПеремещения = panMode;   // «Выделение» сейчас выведет из перемещения
     }
     if (map[k]) { e.preventDefault(); setTool(map[k]); }
   });
