@@ -420,6 +420,9 @@
     .ms-item:active { background: #eef1f7; }
     .ms-item svg { width: 24px; height: 24px; display: block; }
     .ms-item.active { background: #e7efff; border-color: #4d7cfe; color: #2b5bd7; }
+    /* Перемещение — не выбранный инструмент, а режим: не синяя заливка, а
+       обведённая кнопка, как у той же кнопки на компьютере. */
+    .ms-item.panning { background: #eef1f7; border-color: #9aa3b8; color: #39404f; }
     .ms-cap { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ms-wide { display: flex; align-items: center; gap: 10px; padding: 4px; }
     .ms-wide input[type=range] { flex: 1; }
@@ -1205,6 +1208,12 @@
        вернувшись к стрелке. */
     body.board-draw #widget-layer,
     body.board-draw #widget-layer * { pointer-events: none !important; }
+    /* В перемещении доска — одно сплошное полотно: текст, стикеры и формулы
+       нажатий не ловят, иначе палец, попавший на стикер, доску не везёт, а на
+       формуле всплывают рамка и крестик. Раньше слой бывал сквозным лишь
+       случайно — когда в перемещение входили с рисующим инструментом. */
+    body.board-pan #widget-layer,
+    body.board-pan #widget-layer * { pointer-events: none !important; }
     /* Обычный текст — живой HTML-элемент на доске (без картинки/рамок). */
     .tbox { position: absolute; top: 0; left: 0; transform-origin: top left; pointer-events: auto; }
     .tbox-edit {

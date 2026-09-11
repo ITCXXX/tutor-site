@@ -5376,8 +5376,10 @@
     header.on('mousedown', startMove);
     // Полоса-ручка невидима и ничего не красит. Наведёшь на неё — курсор
     // «перемещение» и проступает крестик; ушёл — гаснут. Серой плашки нет.
-    header.on('mouseenter', () => { stageEl.style.cursor = 'move'; del.opacity(0.9); layer.batchDraw(); });
-    header.on('mouseleave', () => { stageEl.style.cursor = ''; del.opacity(0); layer.batchDraw(); });
+    // В перемещении шапка окна — просто часть доски: ни курсора «переместить
+    // окно», ни крестика удаления. Это следы выделения, а рука пустая.
+    header.on('mouseenter', () => { if (panMode) return; stageEl.style.cursor = 'move'; del.opacity(0.9); layer.batchDraw(); });
+    header.on('mouseleave', () => { stageEl.style.cursor = курсорИнструмента(); del.opacity(0); layer.batchDraw(); });
     del.on('mousedown', (e) => { e.cancelBubble = true; });
     del.on('click tap', (e) => { e.cancelBubble = true; deleteWithDependents([id]); }); // окно + вся геометрия внутри
   }
@@ -7148,7 +7150,7 @@
       // Последний палец ушёл — если это был бросок, доска доедет сама.
       if (typeof запуститьИнерцию === 'function') запуститьИнерцию(gesture ? (gesture.zoomAcc || 0) : 0);
       gesture = null;
-      stageEl.style.cursor = (tool === 'select') ? 'default' : 'crosshair';
+      stageEl.style.cursor = курсорИнструмента();
     }
   }
 
@@ -7625,7 +7627,9 @@
     clickDownAt = p ? { x: p.x, y: p.y } : null;
   });
   stage.on('click tap', () => {
-    if (tool !== 'select' || !clickDownAt) return;
+    // «Что в руке», а не tool: в перемещении tool может быть «Выделением», но
+    // касание пальцем там возит доску, а не выбирает объект и не открывает ссылку.
+    if (вРуке() !== 'select' || !clickDownAt) return;
     const p = stage.getPointerPosition();
     if (!p || Math.hypot(p.x - clickDownAt.x, p.y - clickDownAt.y) > 4) return;  // это было перетаскивание
     const w = stage.getRelativePointerPosition();
@@ -7634,6 +7638,7 @@
   });
   // Двойной щелчок по не загрузившейся картинке — попробовать ещё раз.
   stage.on('dblclick dbltap', (e) => {
+    if (panMode) return;   // доску возят, а не правят: редакторы не открываем
     let n = e.target;
     while (n && n !== stage && !(n.id && nodes.has(n.id()))) n = n.getParent();
     const id = (n && n.id && nodes.has(n.id())) ? n.id() : null;
@@ -7645,6 +7650,7 @@
   });
   // Двойной клик по тексту — открыть редактор с его содержимым (в любом режиме).
   stage.on('dblclick dbltap', (e) => {
+    if (panMode) return;   // доску возят, а не правят: редакторы не открываем
     let n = e.target;
     while (n && n !== stage && !(n.id && nodes.has(n.id()))) n = n.getParent();
     const id = (n && n.id && nodes.has(n.id())) ? n.id() : null;
@@ -7731,9 +7737,13 @@
   stage.on('mousemove touchmove', (e) => {
     if (touchBlocked(e)) return;   // движение принадлежит жесту холста
     sendCursor();
-    if (tool === 'laser') laserMove();
-    else if (isEraser(tool)) { eraserMove(); positionEraserRing(); }
-    else if (tool === 'lasso') lassoMove();
+    // В перемещении рука пустая: кружок ластика, след лазера и лассо под
+    // курсором не рисуются. Раньше рисовались — tool в режиме не меняется, и
+    // ластик продолжал показывать себя при каждом движении мыши.
+    const вр = вРуке();
+    if (вр === 'laser') laserMove();
+    else if (isEraser(вр)) { eraserMove(); positionEraserRing(); }
+    else if (вр === 'lasso') lassoMove();
     if (drawing) moveDraw(!!(e && e.evt && e.evt.shiftKey));
     if (cropId && cropDrag) cropMove();
     if (marquee) updateMarquee();
@@ -7742,7 +7752,7 @@
     if (lineDrag) doLineDrag();
     if (labelDrag) doLabelDrag();
     if (resizeState) doResize();
-    if (tool === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
+    if (вр === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
   });
   stage.on('mouseup touchend', (e) => { if (touchBlocked(e)) return; abortActiveInput(); });
   stage.on('mouseleave', () => { abortActiveInput(); });
@@ -8086,7 +8096,60 @@
     if (a && a.closest && a.closest('#board-toolbar') && a.blur) a.blur();
   }
 
-  function setTool(name) {
+  // ── ЧТО СЕЙЧАС В РУКЕ ────────────────────────────────────────────────
+  // Перемещение — режим ПОВЕРХ инструмента: tool в нём не меняется, чтобы по
+  // выходе вернуться к тому же. Но показывать прежний инструмент в это время
+  // нельзя — рука пустая. Раньше всё, что зависит от инструмента, читало tool
+  // напрямую, и в перемещении ластик так и горел синим, а под курсором висел
+  // его кружок. Теперь всё читает отсюда.
+  // Правую кнопку, которой тянут доску, считаем тем же перемещением: пока
+  // доска едет, кружок ластика за курсором не нужен.
+  function вРуке() { return (panMode || (rmbPan && rmbMoved)) ? null : tool; }
+
+  // Инструменты, которыми рисуют прямо по холсту. Им нажатие пропускается
+  // сквозь текст и виджеты. Инструменты установки текста сюда НЕ входят:
+  // щелчок по существующему блоку должен попадать в него.
+  function рисующий(имя) {
+    return !!имя && имя !== 'select' && имя !== 'text' && имя !== 'text_plain' && имя !== 'latex';
+  }
+
+  // КУРСОР СЦЕНЫ — ОДИН НА ВСЕХ. Раньше его писали шесть мест, каждое
+  // по-своему и мимо режима перемещения: конец жеста пальцами ставил крестик
+  // вместо руки, уход с шапки окна — пустое значение, и при «Выделении»
+  // показывался крестик вместо стрелки. Теперь все берут отсюда.
+  function курсорИнструмента() {
+    const в = вРуке();
+    return panMode ? 'grab'
+      : (в === 'select') ? 'default'
+      : (в === 'latex' || в === 'text' || в === 'text_plain') ? 'text' : 'crosshair';
+  }
+
+  // ВСЁ, ЧТО ПОКАЗЫВАЕТ ИНСТРУМЕНТ, — ЗДЕСЬ, И ТОЛЬКО ЗДЕСЬ.
+  // Зовут её смена инструмента, вход в перемещение и выход из него. Новый след
+  // инструмента, если появится, добавляется сюда же одной строкой — иначе он
+  // снова останется висеть в перемещении.
+  function показатьИнструмент() {
+    const в = вРуке();
+    // Кнопки панели. Кнопки-группы (карандаши, фигуры…) подтягиваются сами:
+    // за классами своих кнопок они следят наблюдателем.
+    toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === в));
+    const sel = document.querySelector('#board-toolbar .tool[data-tool="select"]');
+    if (sel) sel.classList.toggle('panning', panMode);
+    // Пропуск нажатий сквозь текст — только когда в руке рисующий инструмент.
+    document.body.classList.toggle('board-draw', рисующий(в));
+    stageEl.style.cursor = курсорИнструмента();
+    // Следы инструмента под указателем. Сами данные не трогаем — только
+    // прячем с глаз: по выходе из перемещения они снова нужны.
+    if (panMode && eraserRing) eraserRing.style.display = 'none';
+    if (polyPreview) { polyPreview.visible(!panMode); layer.batchDraw(); }
+    // Телефон: лист, нижняя панель и значок на «+».
+    if (typeof syncMobileFab === 'function') syncMobileFab();
+  }
+
+  function setTool(name, как) {
+    // как.сохранитьНачатое — зовёт только выход из перемещения: вернуть вид и
+    // поведение инструмента, НЕ сбрасывая начатое построение.
+    const сохранитьНачатое = !!(как && как.сохранитьНачатое);
     releaseToolbarFocus();
     if (viewOnly) name = 'select'; // «только просмотр» — без инструментов
     // Любой инструмент выводит из перемещения доски. Раньше это делал только
@@ -8095,36 +8158,38 @@
     // нельзя. Флаг гасит обратный вызов: setPanMode(false) сам зовёт setTool.
     if (panMode && !_panExiting) { _panExiting = true; setPanMode(false); _panExiting = false; }
     tool = name;
-    pendingPicks = []; pickFrame = null; pickRefLine = null; pickCurve1 = null; // сбрасываем незавершённое построение
-    if (typeof clearPolyPicks === 'function' && name !== 'polygon') clearPolyPicks(); // отменяем недорисованный многоугольник
-    if (name !== 'midpoint') midPicks = [];
-    if (!MEASURE_PICKS[name]) measurePicks = [];
-    if (name !== 'angle_deg') angleDegPicks = [];
-    if (name !== 'vector') vectorPicks = [];
-    if (name !== 'farea') areaPicks = [];
-    if (name !== 'fintersect') fintPicks = [];
-    if (name !== 'regionsys') { regionParts = []; regionFrame = null; }
-    if (name !== 'macro') macroPickPts = [];
-    if (name !== 'macro_record') macroMode = null;
-    if (!MARK_PICKS[name]) markPicks = [];
-    if (name === 'smartpen') smartПодсказок = 0;   // взяли инструмент — снова подскажем про Ctrl+Z
-    if (name !== 'laser') laserDrawing = false;
-    if (!isEraser(name)) eraserActive = false;
-    if (name !== 'lasso') { lassoActive = false; if (lassoLine) lassoLine.visible(false); }
-    toolButtons.forEach((b) => b.classList.toggle('active', b.dataset.tool === name));
+    // Начатое сбрасываем только при НАСТОЯЩЕЙ смене инструмента. Выход из
+    // перемещения — не смена: раньше он переназначал инструмент «сам себе», и
+    // начатое пропадало. Зажал пробел посреди отрезка, чтобы сдвинуть доску, —
+    // первая точка исчезла. А пробел для того и придуман, чтобы подвинуть
+    // доску, не выпуская инструмент из рук.
+    if (!сохранитьНачатое) {
+      pendingPicks = []; pickFrame = null; pickRefLine = null; pickCurve1 = null; // сбрасываем незавершённое построение
+      if (typeof clearPolyPicks === 'function' && name !== 'polygon') clearPolyPicks(); // отменяем недорисованный многоугольник
+      if (name !== 'midpoint') midPicks = [];
+      if (!MEASURE_PICKS[name]) measurePicks = [];
+      if (name !== 'angle_deg') angleDegPicks = [];
+      if (name !== 'vector') vectorPicks = [];
+      if (name !== 'farea') areaPicks = [];
+      if (name !== 'fintersect') fintPicks = [];
+      if (name !== 'regionsys') { regionParts = []; regionFrame = null; }
+      if (name !== 'macro') macroPickPts = [];
+      if (name !== 'macro_record') macroMode = null;
+      if (!MARK_PICKS[name]) markPicks = [];
+      if (name === 'smartpen') smartПодсказок = 0;   // взяли инструмент — снова подскажем про Ctrl+Z
+      if (name !== 'laser') laserDrawing = false;
+      if (!isEraser(name)) eraserActive = false;
+      if (name !== 'lasso') { lassoActive = false; if (lassoLine) lassoLine.visible(false); }
+    }
+    // Подсветка кнопок, пропуск нажатий сквозь текст, курсор, следы под
+    // указателем, телефон — всё, что показывает инструмент, рисует одна функция.
+    показатьИнструмент();
     // Табуляция должна приводить к тому инструменту, которым работают сейчас.
     if (typeof обновитьВходВПанель === 'function') обновитьВходВПанель();
-    // Рисующие инструменты пропускают нажатие сквозь текст и виджеты на холст.
-    // Инструменты установки текста сюда НЕ входят: там щелчок по существующему
-    // блоку должен попадать в него, а не создавать новый блок поверх.
-    document.body.classList.toggle('board-draw',
-      name !== 'select' && name !== 'text' && name !== 'text_plain' && name !== 'latex');
     // В режиме выделения перетаскивание по пустому месту рисует рамку выделения,
     // а не панорамирует, поэтому stage.draggable выключен везде. Панорама — на
     // стрелках и колесе (зум).
     stage.draggable(false);
-    stageEl.style.cursor =
-      (name === 'select') ? 'default' : (name === 'latex' || name === 'text' || name === 'text_plain') ? 'text' : 'crosshair';
     nodes.forEach((node) => {
       const e = elements.get(node.id());
       node.draggable(name === 'select' && !viewOnly && (!e || (e.type !== 'frame' && !isPointBound(e) && !e.data.locked)));
@@ -8135,10 +8200,9 @@
     // добирать объекты кликами — поэтому выделение НЕ сбрасываем.
     const keepFrame = activeFrameId;
     if (name !== 'select' && !XFORM_SPEC[name]) { clearSelection(); activeFrameId = keepFrame; }
-    if (XFORM_SPEC[name]) startXformTool();
+    if (XFORM_SPEC[name] && !сохранитьНачатое) startXformTool();
     updateFuncEditor();
     if (typeof updateEraserPanel === 'function') updateEraserPanel();
-    if (typeof syncMobileFab === 'function') syncMobileFab();
   }
 
   // ── Якоря и соединительные стрелки ─────────────────────────────────────
@@ -8449,22 +8513,29 @@
     // ВИДЕТЬ, а панели поверх неё в этот момент только мешают.
     if (panMode && typeof closeToolPanels === 'function') closeToolPanels();
     document.body.classList.toggle('board-pan', panMode);
-    const sel = document.querySelector('#board-toolbar .tool[data-tool="select"]');
-    if (sel) {
-      // Синей подсветки нет — вместо неё отдельный вид «рука», иначе не понять,
-      // почему клики вдруг перестали выделять.
-      sel.classList.toggle('active', !panMode && tool === 'select');
-      sel.classList.toggle('panning', panMode);
-    }
     if (panMode) {
+      // Начатое действие обрываем ДО того, как рука опустеет. Пробел могли
+      // зажать посреди штриха, стирания или лассо — и начатое продолжало бы
+      // тянуться за мышью уже в перемещении. Отбой тот же, что при уходе мыши
+      // с доски, и повторный вызов ему безвреден.
+      // Кроме обрезки: при ней общий отбой ПРИМЕНЯЕТ её, и картинка
+      // обрезалась бы по недоведённой рамке.
+      if (!cropId && typeof abortActiveInput === 'function') abortActiveInput();
+      // Настройки точки и фигуры относятся к выделению, а оно сейчас снимется.
+      if (typeof hideAllSettings === 'function') hideAllSettings();
       // В перемещении объекты не таскаем и якоря прячем — они ловили бы нажатия.
       nodes.forEach((n) => n.draggable(false));
       clearSelection();
     } else if (!_panExiting) {
-      setTool(tool);   // вернуть обычное поведение выбранного инструмента
+      // Вернуть вид и поведение инструмента — но НЕ сбрасывать начатое
+      // построение: перемещение его не отменяло.
+      setTool(tool, { сохранитьНачатое: true });
     }
+    // Рука пустая: ни одна кнопка не горит, следов прежнего инструмента нет,
+    // а кнопка «Выделение» получает свой вид «рука» — иначе непонятно, почему
+    // клики перестали выделять.
+    показатьИнструмент();
     renderAnchors();
-    stageEl.style.cursor = panMode ? 'grab' : ((tool === 'select') ? 'default' : 'crosshair');
     boardHint(panMode ? 'Перемещение доски: тяните мышью, пальцем или пером'
                       : 'Обычный режим');
   }
@@ -8581,6 +8652,11 @@
       if (typeof следованиеОтпустить === 'function') следованиеОтпустить();
       hideCtxMenu();                         // macOS успевает открыть меню на нажатии
       document.body.classList.add('rmb-pan');
+      // Рука пустая, пока доска едет: кружок ластика прячем, курсор — «сжатая
+      // рука». Курсор ставим прямо на холст: он задан там же, и правило в
+      // стилях его перебить не может — раньше из-за этого оставался крестик.
+      if (eraserRing) eraserRing.style.display = 'none';
+      stageEl.style.cursor = 'grabbing';
     }
     e.preventDefault(); e.stopPropagation();
     // Двигаем ШАГАМИ от прошлой точки, а не от точки нажатия. Иначе колесо,
@@ -8597,6 +8673,7 @@
     if (!rmbPan || (e && e.pointerId !== rmbPan.id)) return;
     rmbPan = null;
     document.body.classList.remove('rmb-pan');
+    stageEl.style.cursor = курсорИнструмента();   // рука снова держит инструмент
     // Меню пришло на нажатии и было отложено: не потянули — показываем сейчас.
     if (!rmbMoved && rmbMenu) { const показать = rmbMenu; rmbMenu = null; показать(); }
     // Выкат — только если правой действительно тянули и левая при этом не
@@ -8655,7 +8732,7 @@
     const h = new Konva.Rect({ name: c, width: 10, height: 10, fill: '#fff', stroke: '#4d7cfe', strokeWidth: 1.5, cornerRadius: 1 });
     h.on('mousedown touchstart', (e) => { e.cancelBubble = true; startResize(c); });
     h.on('mouseenter', () => { stageEl.style.cursor = (c === 'tl' || c === 'br') ? 'nwse-resize' : 'nesw-resize'; });
-    h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
+    h.on('mouseleave', () => { stageEl.style.cursor = курсорИнструмента(); });
     handlesGroup.add(h);
   });
   // Боковые ручки для ТЕКСТА: тянешь влево/вправо — меняется ширина строки (перенос),
@@ -8665,7 +8742,7 @@
     const h = new Konva.Rect({ name: c, width: 8, height: 18, fill: '#fff', stroke: '#4d7cfe', strokeWidth: 1.5, cornerRadius: 2, visible: false });
     h.on('mousedown touchstart', (e) => { e.cancelBubble = true; startResize(c); });
     h.on('mouseenter', () => { stageEl.style.cursor = 'ew-resize'; });
-    h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
+    h.on('mouseleave', () => { stageEl.style.cursor = курсорИнструмента(); });
     handlesGroup.add(h);
   });
 
@@ -8699,7 +8776,7 @@
     const isEnd = k === 'a' || k === 'b';
     const h = new Konva.Circle({ name: k, radius: 6, fill: isEnd ? '#4d7cfe' : '#fff', stroke: isEnd ? '#fff' : '#4d7cfe', strokeWidth: 2, draggable: true });
     h.on('mouseenter', () => { stageEl.style.cursor = 'pointer'; });
-    h.on('mouseleave', () => { if (tool === 'select') stageEl.style.cursor = 'default'; });
+    h.on('mouseleave', () => { stageEl.style.cursor = курсорИнструмента(); });
     let cBefore = null;
     // Куда конец стрелки прицепится, если отпустить прямо сейчас.
     let connTarget = null;
@@ -10164,7 +10241,9 @@
   cursorLayerEl.appendChild(eraserRing);
   function isEraser(t) { return t === 'eraser_full' || t === 'eraser_fine'; }
   function positionEraserRing() {
-    if (!isEraser(tool)) { eraserRing.style.display = 'none'; return; }
+    // Проверяем «что в руке», а не tool: в перемещении ластик остаётся в tool,
+    // но его кружка на экране быть не должно.
+    if (!isEraser(вРуке())) { eraserRing.style.display = 'none'; return; }
     const w = worldPoint(); const d = eraserRadius * 2;
     eraserRing.style.display = 'block';
     eraserRing.style.width = d + 'px'; eraserRing.style.height = d + 'px';
@@ -10641,7 +10720,7 @@
   function endCropMode() {
     cropId = null; cropDrag = null;
     cropRect.visible(false); layer.batchDraw();
-    stageEl.style.cursor = (tool === 'select') ? 'default' : 'crosshair';
+    stageEl.style.cursor = курсорИнструмента();
   }
   function cropBox() {
     const el = elements.get(cropId); if (!el) return null;
@@ -11628,7 +11707,11 @@
       if (e.key === 'Escape' && cropId) { endCropMode(); boardHint('Обрезка отменена'); return; }
       // Панель участников закрывается Escape наравне с крестиком и щелчком мимо.
       if (e.key === 'Escape') { const pp = document.getElementById('people-panel'); if (pp && !pp.hidden) { togglePeoplePanel(false); return; } }
-      if (e.key === 'Escape' && panMode && !dragging) { setPanMode(false); return; }
+      // Выход из перемещения — и всё: дальше Esc не пускаем. Иначе общий
+      // разбор клавиш тут же бросал вернувшийся инструмент и брал «Выделение»,
+      // и ластик пропадал из рук. M и пробел возвращают тот же инструмент —
+      // Esc обязан так же.
+      if (e.key === 'Escape' && panMode && !dragging) { e.preventDefault(); e.stopPropagation(); setPanMode(false); return; }
     if (e.key === 'Escape' && dragging) {
         const btn = src; cleanup(); src = null; pid = null; dragging = false;
         if (btn) suppressNextClick();
@@ -12858,7 +12941,9 @@
 
     // Ctrl/Cmd+A — выделить всё на доске.
     if (_L === 'a' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault(); selectAllElements(); return;
+      // Выделять — дело «Выделения». Рамка трансформера поверх пустой руки
+      // была бы тем самым следом инструмента, от которого избавляемся.
+      e.preventDefault(); if (panMode) setTool('select'); selectAllElements(); return;
     }
 
     // Масштаб с клавиатуры: Ctrl+0 — вернуть 100%, Ctrl+«+»/«−» — крупнее/мельче.
@@ -15061,8 +15146,11 @@
   // Подсветка выбранного инструмента в листе.
   function syncMobileSheetActive() {
     if (!mobSheet) return;
+    const в = вРуке();
     mobSheet.querySelectorAll('.ms-item[data-tool]').forEach((b) => {
-      b.classList.toggle('active', b.dataset.tool === tool);
+      b.classList.toggle('active', b.dataset.tool === в);
+      // Кнопка «Выделение» в перемещении — свой вид «рука», как на компьютере.
+      b.classList.toggle('panning', panMode && b.dataset.tool === 'select');
     });
   }
   // На кнопке «+» показываем значок текущего инструмента — видно, чем рисуешь,
@@ -15071,15 +15159,17 @@
     if (!mobFab) return;
     syncMobileSheetActive();
     // Подсветка в нижней панели: видно, что сейчас в руках.
+    const в = вРуке();
     const полоса = document.getElementById('mobile-bar');
     if (полоса) полоса.querySelectorAll('.mb-item[data-tool]').forEach((b) => {
-      b.classList.toggle('active', b.dataset.tool === tool);
+      b.classList.toggle('active', b.dataset.tool === в);
     });
-    // На «+» показываем значок текущего инструмента — но только если его нет в
+    // На «+» показываем значок инструмента в руке — но только если его нет в
     // самой панели. Карандаш и текст там и так видны, и дублировать их значок
     // на соседней кнопке значит сбивать с толку: кажется, что выбрано два.
-    const своя = полоса && полоса.querySelector('.mb-item[data-tool="' + tool + '"]');
-    const src = своя ? null : document.querySelector('#board-toolbar .tool[data-tool="' + tool + '"] svg');
+    // В перемещении рука пустая — на «+» просто плюс, а не значок ластика.
+    const своя = в && полоса && полоса.querySelector('.mb-item[data-tool="' + в + '"]');
+    const src = (в && !своя) ? document.querySelector('#board-toolbar .tool[data-tool="' + в + '"] svg') : null;
     mobFab.innerHTML = src ? src.outerHTML : FAB_PLUS;
   }
 
