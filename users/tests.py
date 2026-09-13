@@ -964,3 +964,133 @@ class ОтправкаТолькоПоНажатию(SimpleTestCase):
         начало = self.разметка.index('data-correct-answer')
         кусок = self.разметка[начало - 400:начало]
         self.assertIn('{% if slot.is_correct is not None %}', кусок)
+
+
+class ЗакреплённыеНомераГенераторов(TestCase):
+    """Сайт исполняет файл users/generators/g<id>.py ПО НОМЕРУ генератора.
+
+    Команды 6–19 номер не задавали, и на чистом сервере «Задание 16» получало
+    id 1–18 — под id=3 исполнялись линейные уравнения из №9. Тесты держат
+    главный инвариант: у генератора с данным именем тот номер, чей файл
+    написан ровно для него.
+    """
+
+    def _команда(self, имя, *аргументы):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        вывод = StringIO()
+        call_command(имя, *аргументы, stdout=вывод, stderr=вывод)
+        return вывод.getvalue()
+
+    def _имя_в_файле(self, номер):
+        """Какой генератор записан в шапке файла g<номер>.py."""
+        import os
+        import re
+
+        from django.conf import settings
+
+        путь = os.path.join(settings.BASE_DIR, 'users', 'generators',
+                            'g%d.py' % номер)
+        with io.open(путь, encoding='utf-8') as f:
+            шапка = f.read(600)
+        найдено = re.search(
+            r'AUTO-GENERATED из ProblemGenerator id=(\d+): (.*)', шапка)
+        return (int(найдено.group(1)), найдено.group(2).strip()) if найдено else None
+
+    def test_у_каждого_закреплённого_номера_свой_файл(self):
+        from users.generator_ids import ЗАКРЕПЛЁННЫЕ
+
+        self.assertEqual(len(ЗАКРЕПЛЁННЫЕ), 167)
+        self.assertEqual(len(set(ЗАКРЕПЛЁННЫЕ.values())), 167)
+        for имя, номер in ЗАКРЕПЛЁННЫЕ.items():
+            self.assertEqual(self._имя_в_файле(номер), (номер, имя))
+
+    def test_на_чистой_базе_номера_совпадают_с_файлами(self):
+        """Порядок как при выкладке сервера: 16–19 раньше 6–15."""
+        from users.generator_ids import ЗАКРЕПЛЁННЫЕ
+        from users.models import ProblemGenerator
+
+        self._команда('seed_oge_course')
+        for команда in ('seed_oge16', 'seed_oge19', 'seed_oge6', 'populate_oge9',
+                        'populate_oge10', 'seed_oge10_new'):
+            self._команда(команда)
+
+        генераторы = list(ProblemGenerator.objects.all())
+        self.assertEqual(len(генераторы), 18 + 1 + 4 + 7 + 7 + 9)
+        for генератор in генераторы:
+            self.assertEqual(генератор.id, ЗАКРЕПЛЁННЫЕ[генератор.name],
+                             генератор.name)
+            self.assertEqual(self._имя_в_файле(генератор.id),
+                             (генератор.id, генератор.name))
+
+    def test_сервер_под_чужими_номерами_чинится_без_потери_заданий(self):
+        """Ровно то, что лежит на сервере, наполненном до закрепления."""
+        from django.contrib.auth import get_user_model
+
+        from users.generator_ids import ЗАКРЕПЛЁННЫЕ
+        from users.models import Assignment, GeneratedProblem, ProblemGenerator
+
+        self._команда('seed_oge_course')
+        self._команда('seed_oge6')
+
+        # Разводим генераторы по чужим номерам, как их раздала бы старая
+        # команда, и оставляем на них задания.
+        for i, генератор in enumerate(list(ProblemGenerator.objects.order_by('id'))):
+            имя = генератор.name
+            задания = list(Assignment.objects.filter(problem_generator=генератор))
+            генератор.name = имя + ' [уходит]'
+            генератор.save()
+            копия = ProblemGenerator.objects.create(
+                id=5000 + i, name=имя, generator_type=генератор.generator_type,
+                python_code=генератор.python_code, config={})
+            Assignment.objects.filter(id__in=[з.id for з in задания]).update(
+                problem_generator=копия)
+            генератор.delete()
+
+        задание = Assignment.objects.filter(problem_generator__id=5000).get()
+        ученик = get_user_model().objects.create_user(
+            username='ученик_номера', password='x', role='student')
+        выданная = GeneratedProblem.objects.create(
+            student=ученик, assignment=задание, task_data={},
+            condition_text='уже выдана', correct_answer='1', status='new')
+
+        до = self._команда('check_generator_ids')
+        self.assertIn('должен под', до)
+
+        self._команда('seed_oge6')
+
+        for генератор in ProblemGenerator.objects.all():
+            self.assertEqual(генератор.id, ЗАКРЕПЛЁННЫЕ[генератор.name])
+        self.assertFalse(ProblemGenerator.objects.filter(id__gte=5000).exists())
+        self.assertEqual(
+            Assignment.objects.filter(lesson__title='Задание 6',
+                                      problem_generator__isnull=True).count(), 0)
+        self.assertEqual(
+            Assignment.objects.filter(lesson__title='Задание 6').count(), 4)
+        # Выданная ученику задача и её задание остались на месте.
+        выданная.refresh_from_db()
+        self.assertEqual(выданная.assignment_id, задание.id)
+
+        после = self._команда('check_generator_ids')
+        self.assertIn('Все заведённые генераторы на своих номерах', после)
+
+    def test_чужой_генератор_на_закреплённом_номере_не_затирается(self):
+        from django.core.management.base import CommandError
+
+        from users.generator_ids import ЗАКРЕПЛЁННЫЕ
+        from users.models import ProblemGenerator
+
+        self._команда('seed_oge_course')
+        номер = min(н for имя, н in ЗАКРЕПЛЁННЫЕ.items() if имя.startswith('OGE6:'))
+        ProblemGenerator.objects.create(
+            id=номер, name='Чужой генератор', generator_type='python_function',
+            python_code='', config={})
+
+        with self.assertRaises(CommandError):
+            self._команда('seed_oge6')
+        self.assertEqual(ProblemGenerator.objects.get(id=номер).name,
+                         'Чужой генератор')
+        self.assertFalse(ProblemGenerator.objects.filter(
+            name__startswith='OGE6:').exists())

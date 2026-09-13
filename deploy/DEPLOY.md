@@ -141,7 +141,8 @@ sudo -u tutor venv/bin/python manage.py collectstatic --noinput
 ### 5.A. (рекомендуется) Переустановка контента через seed-команды
 
 Все курсы, уроки, генераторы и группы заданий описаны кодом в репозитории
-(`populate_oge15_*.py`, `seed_oge16/17/18/19.py`). Переустановка с нуля:
+(`populate_oge15_*.py` для 1–5, команды `seed_oge*`/`populate_oge*` для 6–25).
+Переустановка с нуля:
 
 ```bash
 cd /opt/tutor
@@ -154,23 +155,43 @@ sudo -u tutor venv/bin/python manage.py seed_oge_course
 # Все 35 групп заданий 1-5 (Шины/Дороги/План/Печи/Форматы/Квартира)
 sudo -u tutor venv/bin/python manage.py populate_oge15_run_all
 
-# Задания 16-19 (Окружность, Четырёхугольники, Клетки, Высказывания)
-sudo -u tutor venv/bin/python manage.py seed_oge16
-sudo -u tutor venv/bin/python manage.py seed_oge17
-sudo -u tutor venv/bin/python manage.py seed_oge18
-sudo -u tutor venv/bin/python manage.py seed_oge19
+# Первая часть: №6–19. Сайт исполняет файл users/generators/g<id>.py ПО
+# НОМЕРУ генератора, поэтому номера у них закреплены (users/generator_ids.py).
+# Сначала 16–19, потом 6–15: на сервере, наполненном до закрепления, 16–19
+# лежат под чужими номерами, и 6–15 займут их, только когда 16–19 переедут.
+# На чистом сервере порядок ничего не меняет.
+for n in 16 17 18 19; do
+  sudo -u tutor venv/bin/python manage.py seed_oge$n
+done
+sudo -u tutor venv/bin/python manage.py seed_oge6
+sudo -u tutor venv/bin/python manage.py seed_oge7
+sudo -u tutor venv/bin/python manage.py populate_oge8
+sudo -u tutor venv/bin/python manage.py populate_oge9
+# Для №10 нужны ОБЕ команды и в этом порядке: вторая дополняет урок первой.
+sudo -u tutor venv/bin/python manage.py populate_oge10
+sudo -u tutor venv/bin/python manage.py seed_oge10_new
+for n in 11 12 13 14 15; do
+  sudo -u tutor venv/bin/python manage.py seed_oge$n
+done
 
 # Вторая часть: №20-25 (122 задания с генераторами)
 for n in 20 21 22 23 24 25; do
   sudo -u tutor venv/bin/python manage.py seed_oge$n
 done
 
+# Проверка: каждый генератор 6–19 под своим номером и со своим файлом.
+# Только читает — её же стоит запускать ДО наполнения, чтобы увидеть, что было.
+sudo -u tutor venv/bin/python manage.py check_generator_ids
+
 # Прочие seed-скрипты, если нужны:
-# sudo -u tutor venv/bin/python manage.py seed_oge6
-# ... seed_oge7, seed_oge8, seed_oge9, ...
 # sudo -u tutor venv/bin/python manage.py populate_ege1
 # ... populate_ege2, ...
 ```
+
+**Не запускайте `sync_generators` без `--check`.** Она переписывает файлы
+`users/generators/g<id>.py` из поля `python_code` в базе, а у №20–25 в базе
+лежит только заглушка, и настоящие файлы 901–1315 написаны руками — команда
+затрёт все 122 штуки.
 
 Список всех доступных скриптов:
 ```bash

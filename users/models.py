@@ -1,4 +1,6 @@
 # users/models.py
+import logging
+
 from django.db import models
 from django.db.models import Q
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
@@ -466,6 +468,12 @@ class ProblemGenerator(models.Model):
             except Exception as e:
                 # Тестовая задача, если генератор недоступен/сломан
                 # (например, legacy-генератор без generate_task).
+                # Ученик при этом ошибки не видит — поэтому она обязана
+                # попасть в журнал. Раньше молчала, и генераторы 16–19,
+                # вставшие на сервере под номера без файлов, никто не заметил.
+                logging.getLogger(__name__).exception(
+                    'Генератор id=%s («%s») не исполнился — ученику выдана '
+                    'тестовая задача', self.id, self.name)
                 return {
                     'error': str(e),
                     'test_data': {

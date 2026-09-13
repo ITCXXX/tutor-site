@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from users.models import Course, Module, Lesson, ProblemGenerator, Assignment
+from users.generator_ids import закрепить_генератор
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -232,8 +233,8 @@ class Command(BaseCommand):
             lesson.save(update_fields=['order'])
         existing_by_order = {a.order: a for a in lesson.assignments.all()}
         for order, gen_name, asg_title, code in PROTOTYPES:
-            generator, _ = ProblemGenerator.objects.update_or_create(
-                name=gen_name,
+            generator, _ = закрепить_генератор(
+                gen_name,
                 defaults={'generator_type': 'python_function',
                           'python_code': code, 'config': {}},
             )

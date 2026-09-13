@@ -13,6 +13,7 @@ from django.db import transaction
 from django.db.models import Max
 
 from users.models import Lesson, ProblemGenerator, Assignment
+from users.generator_ids import закрепить_генератор
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -845,8 +846,8 @@ class Command(BaseCommand):
         # переименован вручную в «Тип N».
         new_count = 0
         for gen_name, asg_title, code in PROTOTYPES:
-            generator, _ = ProblemGenerator.objects.update_or_create(
-                name=gen_name,
+            generator, _ = закрепить_генератор(
+                gen_name,
                 defaults={
                     "generator_type": "python_function",
                     "python_code": code,

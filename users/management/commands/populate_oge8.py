@@ -15,6 +15,7 @@ Usage:
 
 from django.core.management.base import BaseCommand
 from users.models import Course, Module, Lesson, Assignment, ProblemGenerator
+from users.generator_ids import закрепить_генератор
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -905,8 +906,8 @@ class Command(BaseCommand):
 
         for i, (key, group, title, code) in enumerate(PROTOTYPES, start=1):
             gen_name = f'OGE8: {key}'
-            gen, _ = ProblemGenerator.objects.update_or_create(
-                name=gen_name,
+            gen, _ = закрепить_генератор(
+                gen_name,
                 defaults={
                     'generator_type': 'python_function',
                     'python_code': code,
