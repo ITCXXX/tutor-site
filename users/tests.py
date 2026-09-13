@@ -1094,3 +1094,60 @@ class ЗакреплённыеНомераГенераторов(TestCase):
                          'Чужой генератор')
         self.assertFalse(ProblemGenerator.objects.filter(
             name__startswith='OGE6:').exists())
+
+
+class СтраницыОшибок(TestCase):
+    """Обработчики ошибок Django берёт только из корневого urls.py.
+
+    Они стояли в users/urls.py и молча игнорировались: на любом ненайденном
+    адресе боевой сайт отдавал голую «Not Found» — 179 байт без меню и кнопки
+    назад.
+    """
+
+    def test_ненайденный_адрес_показывает_страницу_сайта(self):
+        ответ = self.client.get('/no-such-page-xyz/', HTTP_HOST='127.0.0.1')
+        self.assertEqual(ответ.status_code, 404)
+        self.assertTemplateUsed(ответ, 'users/404.html')
+        self.assertNotIn('The requested resource was not found',
+                         ответ.content.decode())
+
+    def test_обработчики_подключены_в_корне(self):
+        from django.urls import get_resolver
+
+        from users import views
+
+        self.assertIs(get_resolver().resolve_error_handler(404), views.handler404)
+        self.assertIs(get_resolver().resolve_error_handler(500), views.handler500)
+
+    def test_пятисотка_не_падает_сама_когда_шаблон_не_рисуется(self):
+        from unittest import mock
+
+        from django.test import RequestFactory
+
+        from users import views
+
+        запрос = RequestFactory().get('/')
+        with mock.patch('users.views.render', side_effect=RuntimeError('база легла')):
+            with self.assertLogs('users.views', level='ERROR') as журнал:
+                ответ = views.handler500(запрос)
+        self.assertEqual(ответ.status_code, 500)
+        # Молча скатываться на запасной текст нельзя: иначе сломанный 500.html
+        # прятался бы годами.
+        self.assertIn('не нарисовалась', журнал.output[0])
+
+    def test_пятисотка_обычно_рисуется_страницей_сайта(self):
+        """Запасной ответ — на крайний случай. Если бы обычная отрисовка падала
+        всегда, сайт молча вернулся бы к голой странице, а тест на запасную
+        ветку остался бы зелёным."""
+        from django.contrib.auth.models import AnonymousUser
+        from django.test import RequestFactory
+
+        from users import views
+
+        запрос = RequestFactory().get('/', HTTP_HOST='127.0.0.1')
+        запрос.user = AnonymousUser()
+        ответ = views.handler500(запрос)
+        разметка = ответ.content.decode()
+        self.assertEqual(ответ.status_code, 500)
+        self.assertIn('Внутренняя ошибка', разметка)
+        self.assertNotIn('<h1>Ошибка на сервере</h1>', разметка)

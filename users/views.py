@@ -1,4 +1,5 @@
 # users/views.py
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -18,7 +19,7 @@ from .models import (
     HomeworkExtension, Notification, Grade,
     TestQuestion, AnswerOption, ProblemGenerator, GeneratedProblem,
 )
-from django.http import JsonResponse, HttpResponse, Http404
+from django.http import JsonResponse, HttpResponse, Http404, HttpResponseServerError
 from urllib.parse import quote
 from django.views.decorators.http import require_POST
 from .decorators import student_required, teacher_required
@@ -2515,8 +2516,24 @@ def handler404(request, exception):
     return render(request, 'users/404.html', status=404)
 
 def handler500(request):
-    """Обработчик 500 ошибки"""
-    return render(request, 'users/500.html', status=500)
+    """Обработчик 500 ошибки.
+
+    Страница рисуется в оформлении сайта, то есть через контекст-процессоры, а
+    они ходят в базу (счётчик уведомлений). Если ошибка как раз в базе — скажем,
+    на сервере не применены миграции, — отрисовка упадёт сама, и человек не
+    получит вообще ничего. Поэтому запасной ответ — простой текст без базы и
+    шаблонов.
+    """
+    try:
+        return render(request, 'users/500.html', status=500)
+    except Exception:
+        # Первая ошибка к этому моменту уже в журнале: Django пишет её до вызова
+        # обработчика. А почему не нарисовалась сама страница ошибки — нет.
+        # Без этой записи сломанный 500.html прятался бы за запасным текстом.
+        logging.getLogger(__name__).exception('Страница ошибки 500 не нарисовалась')
+        return HttpResponseServerError(
+            '<h1>Ошибка на сервере</h1><p>Попробуйте обновить страницу позже.</p>',
+            content_type='text/html; charset=utf-8')
 
 # =========== API ДЛЯ PDF-ПРОСМОТРЩИКА ===========
 

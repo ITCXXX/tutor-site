@@ -157,7 +157,3 @@ urlpatterns = [
     path('chat/question/<int:assignment_id>/', views_chat.chat_toggle_question, name='chat_toggle_question'),
     path('chat/<int:thread_id>/', views_chat.chat_thread, name='chat_thread'),
 ]
-
-# ===== 3. ОБРАБОТЧИКИ ОШИБОК =====
-handler404 = views.handler404
-handler500 = views.handler500

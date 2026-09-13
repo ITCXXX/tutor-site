@@ -1128,3 +1128,81 @@ class ЦенаСтраницы(TestCase):
             'значит, запрос уходит в цикле' % (мало, много))
         self.assertLess(мало, self.ПРЕДЕЛ,
                         'запросов и так многовато: %d' % мало)
+
+
+class ГостьУКолоды(TestCase):
+    """Гость без доступа идёт ко входу, а не в «Not Found».
+
+    Встроенный браузер мессенджера не видит входа из обычного браузера, и
+    колода, открытая из сообщения без ключа, отвечала голым «Not Found» — даже
+    владельцу.
+    """
+
+    def setUp(self):
+        self.автор = User.objects.create_user('автор_гость', 'пароль')
+        self.колода = Deck.objects.create(title='Формулы', owner=self.автор)
+        Card.objects.create(deck=self.колода, front='Площадь круга', back='pi R^2')
+        Card.objects.create(deck=self.колода, front='Длина окружности', back='2 pi R')
+
+    def _куда_вернёт(self, ответ):
+        from urllib.parse import parse_qs, urlparse
+
+        return parse_qs(urlparse(ответ['Location']).query)['next'][0]
+
+    def test_гостя_без_ключа_отправляют_ко_входу(self):
+        # study здесь нет нарочно: её 302 даёт @login_required, а не помощник,
+        # и она прошла бы и без правки.
+        for имя in ('deck', 'learn', 'test', 'match'):
+            ответ = self.client.get(reverse('cards:%s' % имя, args=[self.колода.pk]))
+            self.assertEqual(ответ.status_code, 302, имя)
+            self.assertTrue(ответ['Location'].startswith(reverse('login')), имя)
+            self.assertIn('next=', ответ['Location'], имя)
+
+    def test_после_входа_владелец_попадает_на_свою_колоду(self):
+        """Через настоящую форму входа, а не force_login: иначе тест не заметил
+        бы, если вход перестанет учитывать next или отвергнет адрес колоды."""
+        адрес = reverse('cards:deck', args=[self.колода.pk])
+        куда = self._куда_вернёт(self.client.get(адрес))
+        self.assertEqual(куда, адрес)
+
+        форма = self.client.get(reverse('login'), {'next': куда})
+        self.assertContains(форма, 'name="next" value="%s"' % куда)
+
+        ответ = self.client.post(
+            reverse('login'),
+            {'username': 'автор_гость', 'password': 'пароль', 'next': куда},
+            follow=True)
+        self.assertEqual(ответ.status_code, 200)
+        self.assertEqual(ответ.redirect_chain[-1][0], адрес)
+        self.assertTemplateUsed(ответ, 'cards/deck_detail.html')
+
+    def test_несуществующая_колода_гостю_тоже_вход(self):
+        """Иначе по разнице «вход / не найдено» перебирались бы номера колод."""
+        ответ = self.client.get(reverse('cards:deck', args=[999999]))
+        self.assertEqual(ответ.status_code, 302)
+
+    def test_ключ_гостю_по_прежнему_открывает_сразу(self):
+        ответ = self.client.get(reverse('cards:deck', args=[self.колода.pk]),
+                                {'k': self.колода.share_token})
+        self.assertEqual(ответ.status_code, 200)
+
+    def test_адрес_возврата_сохраняет_ключ(self):
+        адрес = reverse('cards:deck', args=[self.колода.pk])
+        ответ = self.client.get(адрес, {'k': 'wrong-key'})
+        self.assertEqual(ответ.status_code, 302)
+        self.assertEqual(self._куда_вернёт(ответ), адрес + '?k=wrong-key')
+
+    def test_вошедшему_чужому_по_прежнему_404(self):
+        чужой = User.objects.create_user('чужой_гость', 'пароль')
+        self.client.force_login(чужой)
+        ответ = self.client.get(reverse('cards:deck', args=[self.колода.pk]))
+        self.assertEqual(ответ.status_code, 404)
+
+    def test_проверка_ответа_гостю_не_перенаправляется(self):
+        """Проверка — запрос со страницы, а не страница: вход ей не поможет."""
+        карточка = self.колода.cards.first()
+        ответ = self.client.post(
+            reverse('cards:check', args=[self.колода.pk]),
+            data=json.dumps({'card': карточка.pk, 'typed': 'x'}),
+            content_type='application/json')
+        self.assertEqual(ответ.status_code, 404)

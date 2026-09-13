@@ -17,3 +17,9 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Обработчики ошибок Django берёт ТОЛЬКО из корневого urls.py. Раньше они стояли
+# в users/urls.py и молча игнорировались: на любом ненайденном адресе боевой
+# сайт отдавал голую страницу «Not Found» без меню и кнопки назад.
+handler404 = 'users.views.handler404'
+handler500 = 'users.views.handler500'
