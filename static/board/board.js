@@ -3341,14 +3341,15 @@
   }
   // Ненавязчивая всплывающая подсказка вверху холста (~1.6 c). Монохром, без иконок.
   let hintEl = null, hintTimer = null;
-  function boardHint(msg) {
+  function boardHint(msg, мс) {
     if (!hintEl) {
       hintEl = document.createElement('div');
       hintEl.style.cssText = 'position:fixed;left:50%;top:76px;transform:translateX(-50%);background:#1f2937;color:#fff;font:13px/1.4 sans-serif;padding:6px 12px;border-radius:8px;z-index:60;pointer-events:none;opacity:0;transition:opacity .15s;box-shadow:0 6px 24px rgba(0,0,0,.18);';
       document.body.appendChild(hintEl);
     }
     hintEl.textContent = msg; hintEl.style.opacity = '1';
-    clearTimeout(hintTimer); hintTimer = setTimeout(() => { hintEl.style.opacity = '0'; }, 1600);
+    // мс — сколько держать; длинную подсказку за полторы секунды не прочитать.
+    clearTimeout(hintTimer); hintTimer = setTimeout(() => { hintEl.style.opacity = '0'; }, мс || 1600);
   }
 
   // Экранные окошки вместо системных alert/confirm/prompt. Системные («сайт
@@ -10633,6 +10634,17 @@
   // строкой, а при вставке узнаём их по этой метке.
   const CLIP_TAG = 'TUTORBOARD/v1:';
   const CLIP_MAX = 2 * 1024 * 1024;   // очень большую пачку в буфер не пишем
+  // Легла ли своя запись в системный буфер. От этого зависит, что СВЕЖЕЕ при
+  // вставке — системный буфер или своя копия:
+  //   'нет'        — в этой вкладке ничего не копировали;
+  //   'ждёт'       — запись отправлена, браузер ещё не подтвердил;
+  //   'легла'      — системный буфер держит нашу копию или что-то скопированное
+  //                  ПОЗЖЕ неё; в обоих случаях верить надо ему;
+  //   'не удалась' — браузер отказал или пачка слишком велика: в системном
+  //                  буфере лежит что-то СТАРОЕ, и свежее — своя копия.
+  // Номер записи нужен, чтобы подтверждение прошлого копирования не
+  // перетёрло состояние нового.
+  let записьВБуфер = 'нет', номерЗаписи = 0;
   function copySelected(cut) {
     if (!selected.size) { boardHint('Сначала выделите объекты'); return; }
     boardClip = Array.from(selected)
@@ -10643,12 +10655,15 @@
     // Кладём и в системный буфер: иначе Ctrl+V подхватит чужой текст, который
     // лежал там с прошлого раза. Заодно объекты станут переноситься между
     // досками и вкладками.
+    const номер = ++номерЗаписи;
+    const отметить = (итог) => { if (номер === номерЗаписи) записьВБуфер = итог; };
+    записьВБуфер = 'ждёт';
     try {
       const строка = CLIP_TAG + JSON.stringify(boardClip);
       if (строка.length <= CLIP_MAX && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(строка).catch(() => {});
-      }
-    } catch (e) {}
+        navigator.clipboard.writeText(строка).then(() => отметить('легла'), () => отметить('не удалась'));
+      } else отметить('не удалась');
+    } catch (e) { отметить('не удалась'); }
     boardHint((cut ? 'Вырезано: ' : 'Скопировано: ') + boardClip.length);
     if (cut) deleteSelected();
   }
@@ -10692,40 +10707,93 @@
   }
   function ctxWorldOrCentre() { return worldPoint() || viewportCenterWorld(); }
 
-  window.addEventListener('paste', (e) => {
-    if (viewOnly) return;
-    // Внутри поля ввода вставка — дело самого поля, не доски.
-    const t = e.target;
-    if (t && t.matches && t.matches('input, textarea, [contenteditable], [contenteditable] *')) return;
-    const dt = e.clipboardData; if (!dt) return;
-    const at = ctxWorldOrCentre();
+  // ── ОДНА ЛЕСТНИЦА ВСТАВКИ ────────────────────────────────────────────
+  // Узнать в тексте буфера СВОЮ запись — объекты доски. Возвращает:
+  //   null — это не наши объекты (обычный текст или пусто);
+  //   []   — наши, но разобрать не вышло (запись обрезана или испорчена);
+  //   массив — наши объекты, можно вставлять.
+  //
+  // Раньше метку узнавал только Ctrl+V на пустом месте доски. Пункт меню
+  // «Вставить» её не проверял и вставлял запись ТЕКСТОМ, а Ctrl+V в текстовом
+  // поле отдавал её полю — и человек видел служебную строку вместо объекта.
+  // Теперь вопрос «наши ли это объекты» задаётся в одном месте.
+  function объектыИзБуфера(text) {
+    if (!text) return null;
+    let t = String(text);
+    // Менеджеры буфера и удалённые рабочие столы иногда дописывают в начало
+    // пробел, перевод строки или невидимую метку порядка байт (код FEFF).
+    // Строгая проверка «с первого символа» на этом промахивалась.
+    let i = 0;
+    while (i < t.length && (t.charCodeAt(i) <= 32 || t.charCodeAt(i) === 0xFEFF)) i++;
+    t = t.slice(i);
+    if (t.indexOf(CLIP_TAG) !== 0) return null;
+    try {
+      const пачка = JSON.parse(t.slice(CLIP_TAG.length));
+      return Array.isArray(пачка) ? пачка.filter((c) => c && c.type && c.data) : [];
+    } catch (err) { return []; }
+  }
 
+  // ЧТО ВСТАВЛЯТЬ — решается здесь, для всех путей: Ctrl+V на доске, Ctrl+V в
+  // поле на доске, пункт меню. Раньше у Ctrl+V и у меню были свои лестницы, и
+  // они разошлись. Возвращает true, если вставка состоялась — или если запись
+  // узнана как наша: тогда текстом её вставлять нельзя ни при каких условиях.
+  // Своя копия свежее системного буфера: скопировали на доске, а в системный
+  // буфер запись не легла или ещё не подтверждена.
+  function своёСвежее() {
+    return boardClip.length > 0 && (записьВБуфер === 'ждёт' || записьВБуфер === 'не удалась');
+  }
+  function вставитьИзБуфера(text, files, at) {
+    if (files && files.length) { importFiles(files); return true; }
+    // Своя запись в системный буфер не легла — значит там лежит что-то СТАРОЕ
+    // (прежний текст или прежняя запись объектов), и вставлять надо своё.
+    if (своёСвежее() && pasteBoardClip(at)) return true;
+    const наши = объектыИзБуфера(text);
+    if (наши) {
+      if (наши.length) { boardClip = наши; pasteBoardClip(at); }
+      else boardHint('Не удалось разобрать скопированные объекты — скопируйте их ещё раз');
+      return true;
+    }
+    // В системном буфере обычный текст, а своя запись туда легла РАНЬШЕ — значит
+    // текст скопировали позже, и вставлять надо его. Раньше здесь всегда
+    // выигрывала своя копия, и фразу из Word на доску было не вставить:
+    // появлялась фигура, скопированная час назад.
+    if (text && text.trim()) { pasteTextAt(text, at); return true; }
+    // Системный буфер пуст или не прочитался — остаётся своя копия.
+    if (boardClip.length && pasteBoardClip(at)) return true;
+    return false;
+  }
+
+  window.addEventListener('paste', (e) => {
+    const dt = e.clipboardData; if (!dt) return;
+    const text = dt.getData ? dt.getData('text/plain') : '';
+    const t = e.target;
+    if (t && t.matches && t.matches('input, textarea, [contenteditable], [contenteditable] *')) {
+      // Внутри поля вставка — дело самого поля. КРОМЕ наших объектов: их
+      // служебная строка не должна попадать в текст никогда. Раньше попадала:
+      // скопировал объект, фокус остался в только что правленном тексте — и
+      // Ctrl+V вписывал в него код.
+      const наши = объектыИзБуфера(text);
+      if (!наши) return;
+      e.preventDefault();
+      if (!наши.length) { boardHint('Не удалось разобрать скопированные объекты — скопируйте их ещё раз'); return; }
+      // Поле на самой доске (текст, стикер, таблица) — человек хотел объект,
+      // кладём его на доску. Поле в окне поверх доски (подпись, пароль, чат) —
+      // объекту там не место: только не пишем в него код.
+      if (t.closest && t.closest('#widget-layer') && !viewOnly) {
+        // Своя копия свежее — в системном буфере старая запись, берём своё.
+        if (!своёСвежее()) boardClip = наши;
+        pasteBoardClip(ctxWorldOrCentre());
+      }
+      else boardHint('Это объекты доски — вставьте их на пустое место доски');
+      return;
+    }
+    if (viewOnly) return;
     const files = [];
     if (dt.files && dt.files.length) Array.prototype.push.apply(files, Array.from(dt.files));
     else if (dt.items) Array.from(dt.items).forEach((it) => {
       if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
     });
-    if (files.length) { e.preventDefault(); importFiles(files); return; }
-
-    const text = dt.getData && dt.getData('text/plain');
-    // Своя запись узнаётся по метке и разбирается ПЕРВОЙ. Раньше здесь сразу
-    // проверялся текст, и объекты, скопированные по Ctrl+C, никогда не
-    // доходили до вставки — вместо них появлялся чужой текст из буфера.
-    if (text && text.indexOf(CLIP_TAG) === 0) {
-      e.preventDefault();
-      try {
-        const пачка = JSON.parse(text.slice(CLIP_TAG.length));
-        if (Array.isArray(пачка) && пачка.length) { boardClip = пачка; pasteBoardClip(at); return; }
-      } catch (err) { boardHint('Не удалось разобрать скопированные объекты'); return; }
-      return;
-    }
-    // Свой буфер полон, а в системном лежит текст — значит доступ к буферу нам
-    // не дали при копировании. Своё всё равно важнее: человек только что нажал
-    // Ctrl+C на объектах доски.
-    if (boardClip.length && pasteBoardClip(at)) { e.preventDefault(); return; }
-    if (text && text.trim()) { e.preventDefault(); pasteTextAt(text, at); return; }
-
-    if (pasteBoardClip(at)) e.preventDefault();
+    if (вставитьИзБуфера(text, files, ctxWorldOrCentre())) e.preventDefault();
   });
 
   // ── Обрезка картинки ───────────────────────────────────────────────────
@@ -10981,6 +11049,112 @@
   const arrangeGap = 20; // зазор между объектами при авто-раскладке в сетку (импорт), мир. ед.
   // ── Контекстное меню (правый клик) ─────────────────────────────────────
   const ctxMenu = document.createElement('div'); ctxMenu.id = 'ctx-menu'; ctxMenu.style.display = 'none'; document.body.appendChild(ctxMenu);
+  // ── СКАЧАТЬ КАРТИНКУ ИЛИ PDF С ДОСКИ ─────────────────────────────────
+  // Файл на сервере лежит под именем-хешем, а человеку нужен файл с понятным
+  // именем. Поэтому адрес не открываем, а забираем сам файл и отдаём его
+  // браузеру под исходным именем — тем, с которым его загружали.
+  //
+  // Обрезанная картинка скачивается ТАКОЙ, КАКОЙ ВИДНА на доске: окно обрезки
+  // вырезается из исходника. Нужна целиком — «Сбросить обрезку» и скачать.
+  const СКАЧИВАЕМЫЕ = { image: 1, pdf: 1 };
+  const ТИП_В_РАСШИРЕНИЕ = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
+    'image/gif': 'gif', 'image/svg+xml': 'svg', 'application/pdf': 'pdf' };
+  function скачиваемые(ids) {
+    return ids.map((id) => elements.get(id))
+      .filter((el) => el && СКАЧИВАЕМЫЕ[el.type] && el.data && el.data.url);
+  }
+  function подписьСкачивания(ids) {
+    const список = скачиваемые(ids);
+    if (!список.length) return '';
+    const картинок = список.filter((e) => e.type === 'image').length;
+    if (картинок === список.length) return картинок === 1 ? 'Скачать картинку' : 'Скачать картинки';
+    if (!картинок) return список.length === 1 ? 'Скачать PDF' : 'Скачать PDF-файлы';
+    return 'Скачать файлы';
+  }
+  // Расширение по адресу файла — без регулярных выражений, строковыми
+  // операциями: так в исходнике нет обратных слешей, теряющихся при переносе.
+  function расширениеПоАдресу(url) {
+    const путь = String(url || '').split('?')[0].split('#')[0];
+    const хвост = путь.slice(путь.lastIndexOf('/') + 1);
+    const точка = хвост.lastIndexOf('.');
+    return точка > 0 ? хвост.slice(точка + 1).toLowerCase() : '';
+  }
+  // Имя файла: исходное, без запрещённых в Windows знаков, с ВЕРНЫМ
+  // расширением — тем, что у файла на самом деле, а не тем, что было в имени.
+  function имяДляСкачивания(el, расширение, приписка) {
+    const ЗАПРЕТ = '/:*?"<>|' + String.fromCharCode(92);
+    const имя = String((el.data && el.data.name) || '').split('')
+      .filter((ch) => ЗАПРЕТ.indexOf(ch) < 0 && ch.charCodeAt(0) >= 32).join('').trim();
+    const точка = имя.lastIndexOf('.');
+    let основа = (точка > 0 ? имя.slice(0, точка) : имя).trim();
+    if (!основа) основа = (el.type === 'pdf') ? 'документ-с-доски' : 'картинка-с-доски';
+    if (основа.length > 120) основа = основа.slice(0, 120);
+    return основа + (приписка ? '-' + приписка : '') + '.' + расширение;
+  }
+  function отдатьФайл(blob, имя) {
+    const адрес = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = адрес; a.download = имя; a.rel = 'noopener'; a.style.display = 'none';
+    document.body.appendChild(a); a.click(); a.remove();
+    // Сразу отзывать адрес нельзя: на медленном устройстве браузер не успел бы
+    // забрать файл.
+    setTimeout(() => URL.revokeObjectURL(адрес), 60000);
+  }
+  function скачатьИсходник(el) {
+    return fetch(el.data.url, { credentials: 'same-origin' })
+      .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.blob(); })
+      .then((blob) => {
+        const расш = ТИП_В_РАСШИРЕНИЕ[blob.type] || расширениеПоАдресу(el.data.url) || (el.type === 'pdf' ? 'pdf' : 'png');
+        отдатьФайл(blob, имяДляСкачивания(el, расш));
+        return true;
+      })
+      .catch(() => { boardHint('Не удалось скачать: файла на сервере нет или пропала связь'); return false; });
+  }
+  function скачатьОдин(el) {
+    const n = nodes.get(el.id), c = el.data.crop;
+    const обрезана = el.type === 'image' && c && c.w > 0 && c.h > 0;
+    // Вырезать можно только из НАСТОЯЩЕЙ, догруженной картинки. Пока она
+    // перезагружается, в узле ещё заглушка «не загрузилась», и обрезка
+    // вырезалась бы из неё.
+    const im = (n && !n._imgFail) ? n.image() : null;
+    const загружена = !!(im && im instanceof HTMLImageElement && im.complete && im.naturalWidth > 0);
+    if (обрезана && !загружена) boardHint('Картинка ещё не загрузилась — скачиваю файл целиком');
+    if (обрезана && загружена) {
+      try {
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(c.w)); cv.height = Math.max(1, Math.round(c.h));
+        cv.getContext('2d').drawImage(im, c.x, c.y, c.w, c.h, 0, 0, cv.width, cv.height);
+        return new Promise((готово) => cv.toBlob((blob) => {
+          if (blob) { отдатьФайл(blob, имяДляСкачивания(el, 'png', 'обрезка')); готово(true); }
+          else готово(скачатьИсходник(el));
+        }, 'image/png'));
+      } catch (err) {
+        // Холст отказался отдать пиксели (картинка с чужого адреса) — тогда
+        // честно отдаём исходный файл целиком.
+      }
+    }
+    return скачатьИсходник(el);
+  }
+  function скачатьФайлы(ids) {
+    const список = скачиваемые(ids);
+    if (!список.length) { boardHint('Выделите картинку или PDF'); return; }
+    // По одному и с паузой: разом браузер может слить скачивания или
+    // потерять часть. Но разрешения это не отменяет: второй и следующие файлы
+    // Chrome и Яндекс.Браузер придерживают и спрашивают, можно ли скачать
+    // несколько. Сколько файлов браузер в самом деле сохранил, отсюда не
+    // видно — поэтому подсказка говорит, сколько отправлено и что нажать.
+    let цепь = Promise.resolve(), вышло = 0;
+    список.forEach((el, i) => {
+      цепь = цепь.then(() => скачатьОдин(el)).then((ok) => { if (ok) вышло++; }, () => {})
+        .then(() => (i < список.length - 1) ? new Promise((r) => setTimeout(r, 400)) : null);
+    });
+    цепь.then(() => {
+      if (!вышло) return;
+      if (вышло === 1) boardHint('Файл отправлен на скачивание');
+      else boardHint('Отправлено на скачивание: ' + вышло + '. Если браузер спросит про несколько файлов — нажмите «Разрешить»', 6000);
+    });
+  }
+
   const CTX_ITEMS = [
     { label: 'Копировать', key: 'Ctrl+C', act: function () { copySelected(false); } },
     { label: 'Вырезать', key: 'Ctrl+X', act: function () { copySelected(true); } },
@@ -10995,6 +11169,7 @@
     { label: 'Обрезать', act: () => { const id = Array.from(selected)[0]; if (id) startCropMode(id); } },
     { label: 'Сбросить обрезку', act: () => { Array.from(selected).forEach(resetCrop); } },
     { label: 'Загрузить картинку снова', act: () => { Array.from(selected).forEach(reloadImage); } },
+    { label: 'Скачать картинку', act: () => скачатьФайлы(Array.from(selected)) },
     { label: 'Копировать ссылку', act: () => { const id = Array.from(selected)[0]; if (id) copyText(boardLink(id), 'Ссылка на объект:'); } },
     { label: 'Связать с…', act: () => askLinkFor(Array.from(selected)) },
     { label: 'Комментировать', act: () => insertComment(ctxWorld) },
@@ -11074,10 +11249,13 @@
           .then((blob) => { files.push(new File([blob], 'вставка.png', { type: blob.type })); });
       });
       return chain.then(() => {
-        if (files.length) { importFiles(files); return null; }
+        if (files.length) { вставитьИзБуфера('', files, at); return null; }
         return navigator.clipboard.readText().then((txt) => {
-          if (txt && txt.trim()) pasteTextAt(txt, at);
-          else if (!pasteBoardClip(at)) boardHint('Буфер пуст');
+          // Та же лестница, что у Ctrl+V: сперва — не наши ли это объекты.
+          // Раньше отсюда запись объектов вставлялась ТЕКСТОМ — это и был
+          // «вставился код вместо объекта». На планшете, где Ctrl+V нет, так
+          // выходило всегда.
+          if (!вставитьИзБуфера(txt, [], at)) boardHint('Буфер пуст');
         });
       });
     }).catch(() => {
@@ -11108,6 +11286,17 @@
     ];
   }
   function hideCtxMenu() { ctxMenu.style.display = 'none'; }
+  // Меню не должно уходить за край экрана. Раньше верх ограничивался «высотой
+  // окна минус 260», а меню у картинки выше 500 пикселей: нижние пункты, в том
+  // числе «Скачать», оказывались за краем. Теперь меряем само меню; если оно
+  // выше окна, стили дают ему прокрутку.
+  function поставитьМеню(x, y) {
+    ctxMenu.style.left = '0px'; ctxMenu.style.top = '0px';
+    ctxMenu.style.display = 'block';
+    const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
+    ctxMenu.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+    ctxMenu.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + 'px';
+  }
   function showCtxMenu(x, y, onEmpty) {
     ctxMenu.innerHTML = '';
     const put = (it) => {
@@ -11122,9 +11311,7 @@
     };
     if (onEmpty) {
       ctxEmptyItems().forEach(put);
-      ctxMenu.style.left = Math.min(x, window.innerWidth - 230) + 'px';
-      ctxMenu.style.top = Math.min(y, window.innerHeight - 330) + 'px';
-      ctxMenu.style.display = 'block';
+      поставитьМеню(x, y);
       return;
     }
     if (selected.size === 1) {
@@ -11141,6 +11328,12 @@
     // «Загрузить снова» имеет смысл только для картинки — прочим он бы мешал.
     const _естьКартинка = _ids.some((id) => { const e = elements.get(id); return e && e.type === 'image'; });
     CTX_ITEMS.forEach((it) => {
+      if (it.label === 'Скачать картинку') {
+        // Подпись по составу выделенного: картинка, картинки, PDF или файлы.
+        const подпись = подписьСкачивания(_ids);
+        if (подпись) put(Object.assign({}, it, { label: подпись }));
+        return;
+      }
       if (it.label === 'Загрузить картинку снова' || it.label === 'Обрезать') { if (_естьКартинка) put(it); return; }
       if (it.label === 'Сбросить обрезку') {
         const есть = _ids.some((id) => { const e2 = elements.get(id); return e2 && e2.type === 'image' && e2.data && e2.data.crop; });
@@ -11150,9 +11343,7 @@
       if (it.label === 'Заблокировать') put(Object.assign({}, it, { label: allLocked(_ids) ? 'Разблокировать' : 'Заблокировать' }));
       else put(it);
     });
-    ctxMenu.style.left = Math.min(x, window.innerWidth - 210) + 'px';
-    ctxMenu.style.top = Math.min(y, window.innerHeight - 260) + 'px';
-    ctxMenu.style.display = 'block';
+    поставитьМеню(x, y);
   }
   document.addEventListener('click', hideCtxMenu);
   // Сторож закрывает меню при нажатии мимо доски. Слой виджетов сюда тоже
@@ -12297,6 +12488,7 @@
   const oaLock = document.getElementById('oa-lock');
   const oaGroup = document.getElementById('oa-group');
   const oaDup = document.getElementById('oa-dup');
+  const oaSave = document.getElementById('oa-save');
   const oaDel = document.getElementById('oa-del');
 
   function выделенныеЭлементы() {
@@ -12349,6 +12541,13 @@
     // Дублировать умеет не всё: у таблицы, голосования и таймера живое
     // состояние, и копия сбивала бы с толку. Нечего дублировать — кнопки нет.
     if (oaDup) oaDup.hidden = !выделенныеЭлементы().some(canDuplicate);
+    // Скачать — у картинок и PDF: за ними стоит файл. На планшете это
+    // единственный путь, правой кнопки там нет.
+    if (oaSave) {
+      const подпись = подписьСкачивания(ids);
+      oaSave.hidden = !подпись;
+      if (подпись) { oaSave.title = подпись; oaSave.setAttribute('aria-label', подпись); }
+    }
   }
   function positionObjActions() {
     if (!objActs || objActs.classList.contains('ps-hidden')) return;
@@ -12383,6 +12582,7 @@
     syncObjActions();
   });
   if (oaDup) oaDup.addEventListener('click', (e) => { e.stopPropagation(); duplicateSelected(); });
+  if (oaSave) oaSave.addEventListener('click', (e) => { e.stopPropagation(); скачатьФайлы(Array.from(selected)); });
   if (oaDel) oaDel.addEventListener('click', (e) => { e.stopPropagation(); deleteSelected(); });
 
   function positionStrokePanel(el) {
