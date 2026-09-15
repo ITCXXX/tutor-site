@@ -457,6 +457,10 @@
     #voice-btn:hover { background: #e4e8f5; }
     #voice-btn.on { background: #e6f7ee; border-color: #2ec07c; color: #1f8f5b; }
     #voice-panel { position: fixed; top: 48px; right: 16px; z-index: 60; width: 250px; background: #fff; border: 1px solid #e0e0e6; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 10px 12px; font-size: 13px; }
+    /* Телефон горизонтально: панель выше экрана, и без прокрутки кнопка
+       «Переподключить микрофон» уходила за нижний край. dvh — видимая высота
+       с учётом панелей браузера; старым браузерам хватит строки с vh. */
+    #voice-panel { max-height: calc(100vh - 60px); max-height: calc(100dvh - 60px); overflow-y: auto; }
     #voice-panel[hidden] { display: none; }
     .vp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
     .vp-title { font-weight: 600; color: #2b2b33; flex: 1; }
@@ -484,6 +488,14 @@
     .vp-vol-num { font-size: 11px; color: #6b6b76; width: 38px; text-align: right; flex: none; }
     .vp-vol-ic { font-size: 13px; flex: none; }
 
+    /* Шумодав: голос перед отправкой проходит через нейросеть. Как устроен и
+       почему сам отключается при сбое — board.js, раздел «Шумодав». */
+    .vp-noise { display: flex; align-items: center; gap: 7px; margin-top: 8px; cursor: pointer; user-select: none; }
+    .vp-noise input { margin: 0; flex: none; accent-color: #2ec07c; }
+    .vp-noise-name { flex: 1; min-width: 0; color: #3a3a42; }
+    .vp-noise-state { font-size: 11px; color: #9a9aa4; flex: none; }
+    .vp-noise-state.bad { color: #d63333; }
+
     /* Свёрнутая панель — компактная зелёная плашка. Разговор идёт, панель не
        занимает угол доски и не закрывает записи. */
     #voice-panel.folded { width: auto; padding: 5px 8px; background: #e6f7ee; border-color: #2ec07c; }
@@ -492,6 +504,7 @@
     #voice-panel.folded #vp-list,
     #voice-panel.folded #vp-reacquire,
     #voice-panel.folded .vp-vol,
+    #voice-panel.folded .vp-noise,
     #voice-panel.folded .vp-hint,
     #voice-panel.folded #vp-mute,
     #voice-panel.folded #vp-leave { display: none; }
@@ -1997,6 +2010,12 @@
                title="Громкость входящего голоса. Выше 100% — усиление: помогает, когда телефон крутит громкость медиа, а голос всё равно тихий">
         <span class="vp-vol-num" id="vp-volume-num">100%</span>
     </div>
+    <label class="vp-noise" title="Шумодав ВАШЕГО микрофона: убирает из вашего голоса ровный фон и гул, а в паузах между фразами — стук и клавиатуру. Шум собеседника убирает только его собственный шумодав: у кого он выключен, в списке написано «шумодав выкл.», а «шумодав недоступен» — его браузер шумодав не умеет. Если голос звучит странно — выключите, разговор не прервётся.">
+        <input type="checkbox" id="vp-noise">
+        <span class="vp-noise-name">Мой шумодав</span>
+        <span class="vp-noise-state" id="vp-noise-state"></span>
+    </label>
+    <div class="vp-hint vp-noise-hint">Голоса и телевизор рядом лучше всего убирает гарнитура. На iPhone и iPad, а на Mac в Safari помогает ещё «Изоляция голоса»: Пункт управления → Режим микрофона.</div>
     <button type="button" id="vp-reacquire" class="vp-fix" title="Взять микрофон заново, не выходя из разговора. Помогает, если микрофон был занят другим приложением (Zoom) в момент включения голоса.">Переподключить микрофон</button>
     <div class="vp-hint">Звук идёт напрямую между браузерами, минуя сервер. Вас не слышно — нажмите «Переподключить микрофон»: частая причина в том, что микрофон держало другое приложение (Zoom), и взятая тогда дорожка звука не даёт.</div>
 </div>
@@ -2442,6 +2461,12 @@ window.BOARD_CONFIG = {
     pdfFonts: "{{ pdf_fonts_url }}",
     html2canvas: "{% static 'vendor/html2canvas-1.4.1.min.js' %}",
     jspdf: "{% static 'vendor/jspdf-2.5.2.umd.min.js' %}",
+    // Шумодав голоса: обработчик звука и два варианта нейросети (быстрый SIMD и
+    // обычный — браузер берёт один). Откуда файлы — static/vendor/web-noise-suppressor-0.4.0/NOTICE.md.
+    // Адреса считает вьюха: пропавший файл даёт пустой адрес, а не ошибку 500.
+    noiseWorklet: "{{ noise_worklet_url }}",
+    noiseWasm: "{{ noise_wasm_url }}",
+    noiseWasmSimd: "{{ noise_wasm_simd_url }}",
 };
 </script>
 {% endblock %}

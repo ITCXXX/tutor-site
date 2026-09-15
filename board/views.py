@@ -24,6 +24,7 @@ from django.contrib.auth.decorators import login_required
 from django.db.models import Q
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.templatetags.static import static
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import ensure_csrf_cookie
 
@@ -234,6 +235,28 @@ def board_join(request, code=None):
     return redirect('board:room', code=board.code)
 
 
+# Файлы шумодава голоса (static/vendor/web-noise-suppressor-0.4.0). Адреса
+# считаем здесь, а не {% static %} в шаблоне: на проде строгий манифест, и файл,
+# пропавший из него, уронил бы ВСЮ страницу доски ошибкой 500. Пустые адреса
+# board.js понимает как «шумодав недоступен» — доска работает без него.
+ШУМОДАВ_ФАЙЛЫ = {
+    'noise_worklet_url': 'vendor/web-noise-suppressor-0.4.0/rnnoise-worklet.js',
+    'noise_wasm_url': 'vendor/web-noise-suppressor-0.4.0/rnnoise.wasm',
+    'noise_wasm_simd_url': 'vendor/web-noise-suppressor-0.4.0/rnnoise_simd.wasm',
+}
+
+
+def _шумодав_адреса():
+    адреса = {}
+    for ключ, путь in ШУМОДАВ_ФАЙЛЫ.items():
+        try:
+            адреса[ключ] = static(путь)
+        except ValueError:
+            # Без любого из трёх файлов шумодав не заработает — отдаём пустые все.
+            return {к: '' for к in ШУМОДАВ_ФАЙЛЫ}
+    return адреса
+
+
 @login_required
 @ensure_csrf_cookie  # чтобы загрузка файлов (fetch) могла прислать CSRF-токен
 def board_room(request, code):
@@ -279,6 +302,7 @@ def board_room(request, code):
         # Серверы для голосовой связи. Пропуск к ретранслятору временный,
         # поэтому выдаётся здесь, а не лежит в статике.
         'ice_servers': ice_servers(user),
+        **_шумодав_адреса(),
     })
 
 

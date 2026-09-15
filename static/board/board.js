@@ -14452,6 +14452,20 @@
   let voiceCtx = null;            // для определения, кто сейчас говорит
   let voiceTimer = null;
   const voicePeers = new Map();   // peerId → { pc, label, audio, analyser, buf, pending, speaking }
+  // Шумодав на отправке (раздел «Шумодав» ниже). Контекст, обработчик и выходная
+  // дорожка живут, пока включён голос; при сбое разбираются целиком.
+  const шум = {
+    ctx: null, модуль: null, node: null, dest: null, track: null,
+    src: null, anIn: null, anOut: null, bufIn: null, bufOut: null,
+    активен: false,   // собеседникам сейчас уходит обработанная дорожка
+    сбой: '',         // почему шумодав отключился сам ('' — не отключался)
+    пауза: false,     // звук страницы приостановил сам браузер; шумодав вернётся сам
+    сторож: null, времяБыло: 0, стенаБыло: 0, застой: 0, громкиеНули: [],
+    попытка: 0,       // номер сборки: ответ устаревшей сборки выбрасываем
+  };
+  let шумНеУмеет = false;            // браузер не умеет того, что нужно шумодаву, — до перезагрузки не пробуем
+  let шумВключён = шумНастройка();   // хочет ли человек шумодав сейчас
+  let шумWasm = null;                // нейросеть качаем один раз на страницу
 
   function rtcSend(kind, to, data) { send({ action: 'rtc', kind: kind, to: to || null, data: data || null }); }
 
@@ -14548,7 +14562,9 @@
     };
     voicePeers.set(pid, p);
 
-    if (localStream) localStream.getTracks().forEach((t) => addTrackTo(p, t, localStream, 'mic'));
+    // Микрофон — одной дорожкой: обработанной, если шумодав работает, иначе
+    // сырой. Иначе вошедший позже слышал бы шум, который остальным уже убрали.
+    if (localStream) { const mt = micSendTrack(); if (mt) addTrackTo(p, mt, micSendStream(), 'mic'); }
     if (screenStream) screenStream.getTracks().forEach((t) => addTrackTo(p, t, screenStream, 'screen'));
 
     pc.onicecandidate = (e) => { if (e.candidate) rtcSend('ice', pid, e.candidate.toJSON ? e.candidate.toJSON() : e.candidate); };
@@ -14668,7 +14684,14 @@
   // который просто открыл доску и голос не включал, значился в списке «на
   // связи» — соединение-то есть, оно нужно и для показа экрана, — и было
   // непонятно, почему тишина.
-  function sendMicState(to) { rtcSend('mic', to || null, { on: !!(voiceOn && !voiceMuted) }); }
+  // Вместе с микрофоном — работает ли шумодав: иначе учитель видит у себя
+  // «Шумодав · работает» и не знает, что шум ученика никто не убирает
+  // (галочка чистит только СВОЙ микрофон). noise: true — работает, false —
+  // выключен или ещё включается, 'нет' — браузер шумодав не умеет (просить
+  // включить бесполезно). Старые вкладки поле noise не шлют.
+  function sendMicState(to) {
+    rtcSend('mic', to || null, { on: !!(voiceOn && !voiceMuted), noise: шум.активен ? true : (шумПоддержан() ? false : 'нет') });
+  }
 
   function handleRtc(m) {
     if (!m || !m.peer || m.peer === myPeer) return;
@@ -14686,7 +14709,12 @@
     }
     if (m.kind === 'mic') {
       const p0 = voicePeers.get(pid);
-      if (p0) { p0.micOn = !!(m.data && m.data.on); renderVoiceList(); }
+      if (p0) {
+        p0.micOn = !!(m.data && m.data.on);
+        const nz = m.data ? m.data.noise : undefined;
+        p0.noise = (typeof nz === 'boolean' || nz === 'нет') ? nz : undefined;
+        renderVoiceList();
+      }
       return;
     }
     // Дальше — служебные сообщения переговоров. Отвечаем на них всегда: даже
@@ -14886,6 +14914,394 @@
     updateScreenUI();
   })();
 
+  // ── Шумодав ───────────────────────────────────────────────────────────
+  // Встроенный шумодав браузера (noiseSuppression в MIC_REQ) старый, без
+  // нейросети: гул и шипение убирает, а стук, клавиатуру и голоса рядом почти
+  // не трогает. Поэтому голос перед отправкой проходит ещё и через нейросеть
+  // RNNoise (static/vendor/web-noise-suppressor-0.4.0; откуда и что — в NOTICE.md).
+  //
+  // Цена: голос уходит собеседникам уже не прямо с микрофона, а через звуковой
+  // движок страницы (Web Audio). Движок умеет «засыпать» — свернули браузер,
+  // пришёл звонок, погас экран iPad, — и тогда собеседник слышит тишину, а
+  // ошибки нигде нет: со стороны точь-в-точь беда с занятым Zoom микрофоном.
+  // Поэтому держимся трёх правил:
+  //  1) голос сначала уходит СЫРЫМ, как раньше, а шумодав подменяет дорожку,
+  //     только когда доказал, что живой;
+  //  2) сторож раз в секунду проверяет обработку и при сбое сам возвращает
+  //     сырую дорожку;
+  //  3) у человека есть переключатель: решает он, а не автоматика.
+  //
+  // Контекст у шумодава СВОЙ, на 48 кГц (RNNoise режет звук на кадры ровно под
+  // эту частоту), а не общий voiceCtx: сломавшийся контекст отправки закрываем и
+  // собираем заново, не трогая звук собеседников и измерители.
+  const ШУМ_ПРОЦЕССОР = '@sapphi-red/web-noise-suppressor/rnnoise';   // имя внутри файла ворклета
+  // Крошечный модуль WebAssembly с командой SIMD — та же проверка, что в пакете:
+  // понимает браузер SIMD — берём быструю сборку нейросети.
+  const ШУМ_SIMD_ПРОБА = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
+
+  // Техника Apple: iPhone, iPad (iPadOS 13+ представляется компьютером Mac —
+  // выдаёт его сенсорный экран) и Safari на Mac. Все браузеры на iPhone и iPad
+  // работают на движке Safari, поэтому Chrome там тоже сюда попадает.
+  function шумЯблоко() {
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod/.test(ua)) return true;
+    if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true;
+    return /Safari\//.test(ua) && !/Chrome\/|Chromium\/|CriOS\/|FxiOS\/|Edg\/|EdgiOS\/|OPR\/|YaBrowser\/|Android/.test(ua);
+  }
+  // Выбор человека важнее умолчания. Умолчание на технике Apple — выключено:
+  // звук через звуковой движок страницы там известен сбоями (особенно с
+  // AirPods), а живой проверки ещё не было.
+  function шумНастройка() {
+    try {
+      const v = localStorage.getItem('boardVoiceNoise');
+      if (v === '1') return true;
+      if (v === '0') return false;
+    } catch (e) {}
+    return !шумЯблоко();
+  }
+  function шумПоддержан() {
+    return !!(!шумНеУмеет && window.AudioContext && window.AudioWorkletNode && window.WebAssembly && window.isSecureContext
+      && cfg.noiseWorklet && cfg.noiseWasm && cfg.noiseWasmSimd);
+  }
+
+  // Будить контекст надо СИНХРОННО, прямо в щелчке: Safari пускает звук только
+  // по свежему жесту человека, а к ответу микрофона жест уже «остывает».
+  // хочет — будить ли; не задано — если шумодав сейчас включён.
+  function шумРазбудить(хочет) {
+    if (!(хочет === undefined ? шумВключён : хочет) || !шумПоддержан()) return;
+    try {
+      if (!шум.ctx) {
+        const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+        шум.ctx = ctx;
+        ctx.onstatechange = () => {
+          if (ctx !== шум.ctx) return;
+          if (ctx.state === 'running') шумПослеПаузы();
+          else if (ctx.state !== 'closed' && (шум.активен || (voiceOn && шумВключён && шум.node))) шумПауза();
+        };
+      }
+      if (шум.ctx.state === 'suspended') шум.ctx.resume().catch(() => {});
+    } catch (e) {
+      шумНесовместим(e);
+    }
+  }
+
+  // Что отдавать собеседникам: обработанную дорожку, если шумодав работает,
+  // иначе сырую с микрофона.
+  function micSendTrack() {
+    if (шум.активен && шум.track && шум.track.readyState === 'live') return шум.track;
+    return localStream ? (localStream.getAudioTracks()[0] || null) : null;
+  }
+  function micSendStream() {
+    return (шум.активен && шум.dest) ? шум.dest.stream : localStream;
+  }
+  // Подменить дорожку у всех, кому уже отдаём микрофон. replaceTrack переговоры
+  // не трогает: связь не пересогласуется, разговор не рвётся. Подмена идёт не
+  // мгновенно — возвращаем обещание, что она закончилась.
+  //
+  // Подменяем ВСЕГДА, не сверяясь с s.track: браузер обновляет его, только когда
+  // подмена доехала, и пока встречная подмена в пути, сверка соврала бы —
+  // собеседнику осталась бы погашенная дорожка, то есть тишина. Подмены
+  // выполняются по порядку вызова, побеждает последняя.
+  function отправлятьМикрофон(track) {
+    const ждём = [];
+    if (!track) return Promise.resolve();
+    voicePeers.forEach((p) => {
+      (p.senders.mic || []).forEach((s) => {
+        try {
+          const r = s.replaceTrack(track);
+          if (r && r.then) ждём.push(r.catch((e) => { try { console.warn('голос: подмена дорожки не удалась', e); } catch (_) {} }));
+        } catch (e) {}
+      });
+    });
+    return Promise.all(ждём);
+  }
+
+  function шумЗагрузитьНейросеть() {
+    if (!шумWasm) {
+      let simd = false;
+      try { simd = WebAssembly.validate(ШУМ_SIMD_ПРОБА); } catch (e) {}
+      const p = fetch(simd ? cfg.noiseWasmSimd : cfg.noiseWasm).then((r) => {
+        if (!r.ok) throw new Error('нейросеть шумодава: ответ ' + r.status);
+        return r.arrayBuffer();
+      });
+      шумWasm = p;
+      // Не доехала — забываем, чтобы следующая сборка попробовала снова.
+      p.catch(() => { if (шумWasm === p) шумWasm = null; });
+    }
+    return шумWasm;
+  }
+  // Есть ли в последнем кусочке звука хоть один ненулевой отсчёт. Обработчик,
+  // который не загрузился или умер, выдаёт РОВНЫЕ нули.
+  function естьЗвук(an, buf) {
+    if (!an || !buf) return false;
+    an.getFloatTimeDomainData(buf);
+    for (let i = 0; i < buf.length; i++) if (buf[i] !== 0) return true;
+    return false;
+  }
+  // Среднеквадратичная громкость последнего кусочка — та же мера, что у
+  // индикатора «кто говорит» (SPEAK_LEVEL).
+  function громкость(an, buf) {
+    if (!an || !buf) return 0;
+    an.getFloatTimeDomainData(buf);
+    let s = 0;
+    for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+    return Math.sqrt(s / buf.length);
+  }
+
+  // Собрать шумодав поверх сырой дорожки. Зовётся, когда сырой голос уже ушёл
+  // собеседникам: пока шумодав грузится и проверяется, разговор идёт как раньше.
+  function шумСобрать(stream) {
+    if (!voiceOn || !шумВключён || !шумПоддержан()) return;
+    const raw = stream && stream.getAudioTracks()[0];
+    if (!raw) return;
+    шумРазбудить();
+    const ctx = шум.ctx;
+    if (!ctx) return;
+    const номер = ++шум.попытка;
+    шум.сбой = '';
+    updateNoiseUI();
+    // Источник подключаем первым делом, ещё до загрузки нейросети: Firefox до
+    // версии 148 бросает здесь NotSupportedError, если частота микрофона не
+    // 48 кГц, — тогда и качать нечего.
+    let src;
+    try {
+      src = ctx.createMediaStreamSource(new MediaStream([raw]));
+    } catch (e) {
+      if (e && e.name === 'NotSupportedError') шумНесовместим(e);
+      else шумОткат('загрузка');
+      return;
+    }
+    try {
+      if (!шум.модуль) шум.модуль = ctx.audioWorklet.addModule(cfg.noiseWorklet);
+    } catch (e) { шумОткат('загрузка'); return; }
+    Promise.all([шум.модуль, шумЗагрузитьНейросеть()]).then((готово) => {
+      if (номер !== шум.попытка || ctx !== шум.ctx || !voiceOn || !шумВключён) return;
+      if (!шум.node) {
+        const node = new AudioWorkletNode(ctx, ШУМ_ПРОЦЕССОР, {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+          // Стерео-микрофон сводим в моно ДО нейросети: она чистит только первый
+          // канал, и без сведения второй ушёл бы пустым — голос стал бы вдвое тише.
+          channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+          processorOptions: { maxChannels: 1, wasmBinary: готово[1] },
+        });
+        node.onprocessorerror = () => { if (ctx === шум.ctx) шумОткат('обработчик'); };
+        const dest = ctx.createMediaStreamDestination();
+        dest.channelCount = 1;
+        node.connect(dest);
+        const anIn = ctx.createAnalyser(), anOut = ctx.createAnalyser();
+        anIn.fftSize = 4096; anOut.fftSize = 4096;
+        node.connect(anOut);
+        шум.node = node; шум.dest = dest; шум.anIn = anIn; шум.anOut = anOut;
+        шум.bufIn = new Float32Array(anIn.fftSize); шум.bufOut = new Float32Array(anOut.fftSize);
+        шум.track = dest.stream.getAudioTracks()[0];
+      }
+      if (шум.src) { try { шум.src.disconnect(); } catch (e) {} }
+      шум.src = src;
+      src.connect(шум.node); src.connect(шум.anIn);
+      шум.track.enabled = !voiceMuted;
+      шумЖдатьГотовности(номер, performance.now());
+    }).catch((e) => {
+      if (номер !== шум.попытка) return;
+      try { console.warn('голос: шумодав не собрался', e); } catch (_) {}
+      шумОткат('загрузка');
+    });
+  }
+  // Ждём, пока обработчик оживёт: нейросеть грузится внутри него своим ходом, и
+  // до этого на выходе ровные нули. Подменять дорожку раньше — отдать тишину.
+  function шумЖдатьГотовности(номер, начало) {
+    let молчит = 0, прошлый = performance.now(), жил = false;
+    // Звуковые часы на старте. Готовность принимаем, только когда движок
+    // обработал свежий звук: анализатор отдаёт последний записанный кусок, и
+    // после паузы там лежит звук ДО неё — такое «доказательство» было бы ложным.
+    const часыС = шум.ctx ? шум.ctx.currentTime : 0;
+    const шаг = () => {
+      if (номер !== шум.попытка || !voiceOn || !шумВключён || !шум.ctx) return;
+      const сейчас = performance.now(), dt = сейчас - прошлый;
+      прошлый = сейчас;
+      const st = шум.ctx.state;
+      if (st === 'running') жил = true;
+      if (st === 'interrupted') {
+        // Звук держит сам браузер (закрыта крышка, звонок) — это не поломка:
+        // ждём, не считая время.
+        начало = сейчас;
+      } else if (st !== 'running') {
+        // Контекст уже работал и встал — это пауза браузера, а не «не запустился».
+        if (жил) { шумПауза(); return; }
+        шум.ctx.resume().catch(() => {});
+        if (сейчас - начало > 5000) { шумОткат('не запустился'); return; }
+      } else if (шум.ctx.currentTime - часыС > 0.1 && естьЗвук(шум.anOut, шум.bufOut)) {
+        шумВключитьОтправку();
+        return;
+      } else if (громкость(шум.anIn, шум.bufIn) >= SPEAK_LEVEL) {
+        // Человек говорит, а обработчик молчит — копим, но не сразу судим:
+        // загрузка нейросети на слабом планшете занимает время.
+        молчит += dt;
+        if (молчит > 4000) { шумОткат('обработчик молчит'); return; }
+      }
+      // Иначе на входе тишина или тихий фон. Живая нейросеть на тихом фоне тоже
+      // может выдавать ровные нули — судить не по чему, ждём дальше: голос тем
+      // временем идёт сырым.
+      setTimeout(шаг, 200);
+    };
+    setTimeout(шаг, 200);
+  }
+  function шумВключитьОтправку() {
+    if (!voiceOn || !шумВключён || !шум.ctx || !шум.track || шум.track.readyState !== 'live') return;
+    шум.track.enabled = !voiceMuted;
+    шум.активен = true;
+    шум.сбой = ''; шум.пауза = false;
+    отправлятьМикрофон(шум.track);
+    шум.времяБыло = шум.ctx.currentTime; шум.стенаБыло = performance.now();
+    шум.застой = 0; шум.громкиеНули = [];
+    if (шум.сторож) clearInterval(шум.сторож);
+    шум.сторож = setInterval(шумСторож, 1000);
+    updateNoiseUI();
+    шумСообщить();
+  }
+  function шумСторож() {
+    const ctx = шум.ctx;
+    if (!шум.активен || !ctx) return;
+    const сейчас = performance.now();
+    // Таймер иногда срабатывает дважды подряд (страница была занята), а за
+    // миллисекунды звуковые часы сдвинуться не успевают — это не поломка.
+    if (сейчас - шум.стенаБыло < 500) return;
+    if (ctx.state !== 'running') { шумПауза(); return; }
+    // Движок бывает «жив» по состоянию, но часы у него стоят (iPad после
+    // возврата в браузер) — звука тогда нет. Одну такую проверку прощаем: часы
+    // могли запнуться при смене наушников.
+    if (ctx.currentTime <= шум.времяБыло) {
+      if (++шум.застой >= 2) { шумОткат('застыл'); return; }
+    } else {
+      шум.застой = 0;
+    }
+    шум.времяБыло = ctx.currentTime; шум.стенаБыло = сейчас;
+    if (!шум.track || шум.track.readyState !== 'live') { шумОткат('дорожка'); return; }
+    // Умерший обработчик выдаёт ровные нули. Но живая нейросеть на тихом фоне
+    // тоже гасит всё до нуля, поэтому судим только по моментам, когда человек
+    // говорит: три раза «говорит, а на выходе ноль» за десять секунд — поломка.
+    if (естьЗвук(шум.anOut, шум.bufOut)) {
+      шум.громкиеНули = [];
+    } else if (громкость(шум.anIn, шум.bufIn) >= SPEAK_LEVEL) {
+      шум.громкиеНули = шум.громкиеНули.filter((t) => сейчас - t < 10000);
+      шум.громкиеНули.push(сейчас);
+      if (шум.громкиеНули.length >= 3) { шумОткат('обработчик молчит'); return; }
+    }
+  }
+  // Браузер сам приостановил звук страницы: закрыли крышку ноутбука, другая
+  // программа забрала звук, на iPad — звонок или уход в фон. Это пауза, а не
+  // поломка. Обработанная дорожка сейчас немая, поэтому собеседникам сразу
+  // уходит сырой голос, но шумодав не разбираем: когда браузер вернёт звук,
+  // шумодав проверит себя заново и вернётся сам.
+  function шумПауза() {
+    const сырая = localStream ? localStream.getAudioTracks()[0] : null;
+    if (сырая) отправлятьМикрофон(сырая);
+    шумПриостановить();
+    шум.пауза = true;
+    updateNoiseUI();
+    шумСообщить();
+  }
+  function шумПослеПаузы() {
+    if (!шум.пауза) return;
+    шум.пауза = false;
+    if (voiceOn && шумВключён && шум.node && !шум.активен) шумЖдатьГотовности(++шум.попытка, performance.now());
+    updateNoiseUI();
+  }
+  // Шумодав сломался — вернуть собеседникам сырой голос и разобрать всё.
+  function шумОткат(причина) {
+    const сырая = localStream ? localStream.getAudioTracks()[0] : null;
+    шумРазобрать(сырая ? отправлятьМикрофон(сырая) : null);
+    шумВключён = false;   // сохранённую настройку не трогаем: в следующий раз попробуем снова
+    шум.сбой = причина || 'сбой';
+    try { console.warn('голос: шумодав отключился —', шум.сбой); } catch (e) {}
+    if (voiceOn) {
+      boardHint(шум.сбой === 'загрузка'
+        ? 'Шумодав не загрузился — голос идёт без него. Попробовать снова можно галочкой в панели голоса'
+        : 'Шумодав отключился: звук в браузере дал сбой. Голос идёт без шумодава — включить снова можно в панели голоса', 8000);
+    }
+    updateNoiseUI();
+    шумСообщить();
+  }
+  // Браузер не умеет того, что нужно шумодаву, и это само не пройдёт (Firefox до
+  // версии 148 не подключает микрофон к звуку на 48 кГц). Говорим об этом один
+  // раз и до перезагрузки больше не пробуем: иначе на каждом входе в голос
+  // выскакивало бы «сбой, включите снова», а включить нельзя.
+  function шумНесовместим(e) {
+    try { console.warn('голос: шумодав недоступен в этом браузере', e); } catch (_) {}
+    const сырая = localStream ? localStream.getAudioTracks()[0] : null;
+    шумРазобрать(сырая ? отправлятьМикрофон(сырая) : null);
+    const впервые = !шумНеУмеет;
+    шумНеУмеет = true;
+    шум.сбой = '';
+    if (voiceOn && впервые) boardHint('В этом браузере шумодав не работает — голос идёт без него. Помогает обновление браузера', 8000);
+    updateNoiseUI();
+    шумСообщить();
+  }
+  // Остановить отправку обработанного звука, не разбирая контекст.
+  function шумПриостановить() {
+    шум.попытка++;
+    if (шум.сторож) { clearInterval(шум.сторож); шум.сторож = null; }
+    шум.активен = false;
+  }
+  // после — обещание, что собеседникам уже ушла сырая дорожка. Гасить
+  // обработанную раньше нельзя: на этот миг у них была бы тишина. Ждём не дольше
+  // секунды — зависшая подмена не должна оставить контекст жить вечно.
+  //
+  // Команду 'destroy' обработчику не шлём: в версии 0.4.0 он её не слышит (порт
+  // у него не запущен). Память нейросети освобождает закрытие контекста.
+  function шумРазобрать(после) {
+    шумПриостановить();
+    шум.пауза = false; шум.застой = 0; шум.громкиеНули = [];
+    const ctx = шум.ctx, узлы = [шум.src, шум.node, шум.anIn, шум.anOut], track = шум.track;
+    if (ctx) ctx.onstatechange = null;
+    шум.ctx = null; шум.модуль = null; шум.node = null; шум.dest = null; шум.track = null; шум.src = null;
+    шум.anIn = null; шум.anOut = null; шум.bufIn = null; шум.bufOut = null;
+    const погасить = () => {
+      узлы.forEach((n) => { if (n) { try { n.disconnect(); } catch (e) {} } });
+      if (track) { try { track.stop(); } catch (e) {} }
+      if (ctx) { try { ctx.close().catch(() => {}); } catch (e) {} }
+    };
+    if (после) Promise.race([после, new Promise((r) => setTimeout(r, 1000))]).then(погасить);
+    else погасить();
+  }
+  // Соседям — работает ли у нас шумодав (вместе с состоянием микрофона).
+  function шумСообщить() { if (voiceOn) sendMicState(null); }
+  // Галочка в панели голоса.
+  function setNoise(on) {
+    шумВключён = !!on;
+    try { localStorage.setItem('boardVoiceNoise', шумВключён ? '1' : '0'); } catch (e) {}
+    шум.сбой = '';
+    if (voiceOn && localStream) {
+      if (шумВключён) {
+        // Контекст, с которого браузер так и не снял паузу, не чиним: щелчок даёт
+        // право собрать новый.
+        if (шум.ctx && шум.ctx.state !== 'running' && !шум.активен) шумРазобрать();
+        шумСобрать(localStream);   // контекст будится внутри — мы в щелчке
+      } else {
+        const сырая = localStream.getAudioTracks()[0];
+        шумРазобрать(сырая ? отправлятьМикрофон(сырая) : null);
+      }
+    }
+    updateNoiseUI();
+    шумСообщить();
+  }
+  function updateNoiseUI() {
+    const можно = шумПоддержан();
+    const cb = document.getElementById('vp-noise');
+    if (cb) { cb.checked = можно && шумВключён; cb.disabled = !можно; }
+    const st = document.getElementById('vp-noise-state');
+    if (!st) return;
+    let текст, пояснение = '';
+    if (!можно) { текст = 'недоступен'; пояснение = 'В этом браузере шумодав не работает'; }
+    else if (шум.активен) текст = 'работает';
+    else if (шум.пауза) { текст = 'пауза'; пояснение = 'Браузер приостановил звук страницы. Пока голос идёт без шумодава — он вернётся сам'; }
+    else if (шумВключён) текст = voiceOn ? 'включается…' : '';
+    else if (шум.сбой) { текст = 'сбой'; пояснение = 'Шумодав отключился из-за сбоя. Поставьте галочку, чтобы включить снова'; }
+    else текст = 'выкл.';
+    st.textContent = текст;
+    st.title = пояснение;
+    st.classList.toggle('bad', текст === 'сбой');
+  }
+
   // ── Вход и выход из разговора ──────────────────────────────────────────
   // Почему не вышло взять микрофон. Отдельно назван самый частый у нас случай:
   // микрофон держит другое приложение (Zoom) — из общего «не удалось» человек
@@ -14914,17 +15330,30 @@
       boardHint('Браузер не даёт доступ к микрофону (нужен https)');
       return;
     }
+    // Контекст шумодава будим прямо в щелчке, а включён ли шумодав, решаем,
+    // когда микрофон ответит.
+    шумРазбудить(шумНастройка());
     navigator.mediaDevices.getUserMedia(MIC_REQ).then((stream) => {
+      // Второй щелчок по «Голос», пока браузер отдавал микрофон, дал второй
+      // поток — он лишний: без этого он горел бы до перезагрузки и уходил
+      // собеседникам вторым отправителем.
+      if (voiceOn) { stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); return; }
       localStream = stream;
       voiceOn = true; voiceMuted = false;
       stream.getAudioTracks().forEach(setupMicTrack);
       watchLevel(localHolder, stream);
       startVoiceMeter();
+      // Новый вход — новая попытка шумодава, даже если в прошлый раз был сбой.
+      шумВключён = шумНастройка(); шум.сбой = '';
       updateVoiceUI();
       localStream.getTracks().forEach((t) => addTrackEverywhere(t, localStream, 'mic'));
       rtcAnnounce();   // объявляемся всем, кто уже на связи
       boardHint('Вы в разговоре');
-    }).catch((err) => boardHint(micErrText(err)));
+      шумСобрать(stream);   // голос уже идёт сырым; шумодав подменит его, когда оживёт
+    }).catch((err) => {
+      if (!voiceOn) шумРазобрать();   // микрофон не дали — разбуженный контекст не нужен
+      boardHint(micErrText(err));
+    });
   }
   // Взять микрофон ЗАНОВО, НЕ выходя из разговора. Ради этого всё и затевалось:
   // дорожка, взятая пока микрофон держал Zoom, звука не даёт и сама не оживает,
@@ -14936,10 +15365,24 @@
       boardHint('Браузер не даёт доступ к микрофону (нужен https)');
       return;
     }
+    // Контекст шумодава будим в щелчке. Застрявший (браузер так и не снял паузу)
+    // не чиним — собираем новый. А решение «включён ли шумодав» принимаем, когда
+    // микрофон ответит: если он откажет, всё должно остаться как было.
+    const разобрали = !!(шум.ctx && шум.ctx.state !== 'running' && !шум.активен);
+    if (разобрали) шумРазобрать();
+    шумРазбудить(шумНастройка());
     navigator.mediaDevices.getUserMedia(MIC_REQ).then((stream) => {
+      // Пока браузер отдавал микрофон, человек вышел из разговора. Новый
+      // микрофон никому не нужен: без этой проверки он снова ушёл бы
+      // собеседникам (связь с ними держит показ экрана) и горел до перезагрузки.
+      if (!voiceOn) { stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); return; }
       const track = stream.getAudioTracks()[0];
       if (!track) { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) {} boardHint('Микрофон не дал дорожку'); return; }
       setupMicTrack(track);
+      // Шумодав тоже перезапускаем: сначала всем уходит новая сырая дорожка, а
+      // обработанная вернётся, когда шумодав проверит себя на новом микрофоне.
+      // Живой контекст оставляем (так на iPad не нужен новый жест).
+      шумПриостановить();
       voicePeers.forEach((p) => {
         const list = p.senders.mic || [];
         // Собеседнику, который подключился, когда дорожки ещё не было, её
@@ -14950,16 +15393,32 @@
       if (localStream) localStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });
       localStream = stream;
       watchLevel(localHolder, stream);
+      шумВключён = шумНастройка(); шум.сбой = ''; шум.пауза = false;
+      // Выключили в другой вкладке — контекст с нейросетью не должен крутиться
+      // впустую до выхода из голоса. Сырая дорожка собеседникам уже ушла.
+      if (!шумВключён && шум.ctx) шумРазобрать();
       sendMicState(null);
+      шумСобрать(stream);
       updateVoiceUI();
       boardHint('Микрофон переподключён');
-    }).catch((err) => boardHint(micErrText(err)));
+    }).catch((err) => {
+      // Микрофон не дали — впустую разбуженный контекст закрываем, а шумодав,
+      // который работал или собирается, не трогаем.
+      if (!шумВключён && шум.ctx && !шум.node) шумРазобрать();
+      // А если шумодав разобрали в этом щелчке (стоял на паузе), собираем его
+      // заново на прежнем микрофоне: иначе «включается…» висело бы вечно.
+      // Контекст разбужен тем же щелчком — Safari пропустит.
+      else if (разобрали && voiceOn && шумВключён && localStream) шумСобрать(localStream);
+      updateNoiseUI();
+      boardHint(micErrText(err));
+    });
   }
   function voiceStop() {
     if (!voiceOn) return;
     voiceOn = false;             // чтобы соседям ушло честное «микрофон выключен»
     sendMicState(null);
     removeTracksEverywhere('mic');
+    шумРазобрать();   // свой контекст шумодава; общий voiceCtx не трогаем
     // Соединение рвём, только если и экран не показываем: иначе показ оборвётся.
     if (!screenOn) { rtcSend('bye', null, null); closeAllPeers(); }
     stopVoiceMeter();
@@ -14973,6 +15432,9 @@
     if (!voiceOn || !localStream) return;
     voiceMuted = !voiceMuted;
     localStream.getAudioTracks().forEach((t) => { t.enabled = !voiceMuted; });
+    // И обработанной: у неё свой флаг, и хвост звука из обработчика иначе
+    // успел бы уйти после нажатия.
+    if (шум.track) шум.track.enabled = !voiceMuted;
     sendMicState(null);   // выключенный кнопкой микрофон по трафику неотличим от речи
     updateVoiceUI();
   }
@@ -15070,6 +15532,7 @@
     if (p) p.hidden = !voiceOn;
     applyVoiceFold();
     applyVoiceVolume();
+    updateNoiseUI();
     const mute = document.getElementById('vp-mute');
     if (mute) { mute.textContent = voiceMuted ? 'Включить микрофон' : 'Выключить микрофон'; mute.classList.toggle('off', voiceMuted); }
     renderVoiceList();
@@ -15085,6 +15548,8 @@
     // принятой дорожке я пробовал — признак muted врёт: соединение принимало
     // сотни килобайт звука, а дорожка всё равно числилась заглушённой.
     if (p.micOn === false) return 'микрофон выключен';
+    if (p.noise === 'нет') return 'шумодав недоступен';
+    if (p.noise === false) return 'шумодав выкл.';
     return 'на связи';
   }
   function renderVoiceList() {
@@ -15124,8 +15589,26 @@
       vol.addEventListener('input', () => setVoiceVolume((+vol.value || 0) / 100));
       vol.value = Math.round(voiceVolume * 100);
     }
+    const noise = document.getElementById('vp-noise');
+    if (noise) noise.addEventListener('change', () => {
+      setNoise(noise.checked);
+      // Щелчок мышью не должен оставлять фокус на галочке: иначе пробел (им
+      // двигают доску) переключал бы шумодав, а горячие клавиши доски молчали.
+      // Пришли с клавиатуры (Tab) — фокус оставляем.
+      let сКлавиатуры = false;
+      try { сКлавиатуры = noise.matches(':focus-visible'); } catch (e) {}
+      if (!сКлавиатуры) noise.blur();
+    });
+    // Браузер приостановил звук, пока вкладка была скрыта, — пробуем вернуть,
+    // как только человек снова на странице (Safari пустит только по касанию).
+    const разбудитьПаузу = () => {
+      if (шум.пауза && шум.ctx && шум.ctx.state === 'suspended') шум.ctx.resume().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) разбудитьПаузу(); });
+    document.addEventListener('pointerdown', разбудитьПаузу, true);
     applyVoiceFold();
     applyVoiceVolume();
+    updateNoiseUI();
     // Уходим со страницы — вежливо прощаемся, чтобы у соседей не висел «мертвец».
     window.addEventListener('pagehide', () => { if (voiceOn) { try { rtcSend('bye', null, null); } catch (e) {} closeAllPeers(); } });
   })();
