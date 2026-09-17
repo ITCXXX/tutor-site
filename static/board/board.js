@@ -992,6 +992,14 @@
     if (node) {
       node._bbox = null; node._bboxK = null; node._culled = false;
       setNodeShown(node);
+      // Курсор-палец у объекта со ссылкой: иначе о том, что по нему можно
+      // щёлкнуть, догадаться нечем. Своё пространство имён у событий — чтобы
+      // снимать их, когда ссылку убрали, и не задеть чужие обработчики.
+      node.off('mouseenter.ссылка mouseleave.ссылка');
+      if (el.data && el.data.link) {
+        node.on('mouseenter.ссылка', () => { if (вРуке() === 'select') stageEl.style.cursor = 'pointer'; });
+        node.on('mouseleave.ссылка', () => { stageEl.style.cursor = курсорИнструмента(); });
+      }
     }
     if (typeof renderAnchors === 'function' && selected.has(el.id)) renderAnchors();
     // Во время рисования трогаем только лёгкий слой. Разница не косметическая:
@@ -7639,14 +7647,27 @@
     const p = stage.getPointerPosition();
     clickDownAt = p ? { x: p.x, y: p.y } : null;
   });
-  stage.on('click tap', () => {
+  stage.on('click tap', (e) => {
     // «Что в руке», а не tool: в перемещении tool может быть «Выделением», но
     // касание пальцем там возит доску, а не выбирает объект и не открывает ссылку.
     if (вРуке() !== 'select' || !clickDownAt) return;
     const p = stage.getPointerPosition();
     if (!p || Math.hypot(p.x - clickDownAt.x, p.y - clickDownAt.y) > 4) return;  // это было перетаскивание
+    if (Date.now() - последняяПротяжкаВ < 400) return;   // только что тянули за угол
     const w = stage.getRelativePointerPosition();
-    const g = w ? pickObjectAtWorld(w) : null;
+    let g = w ? pickObjectAtWorld(w) : null;
+    // pickObjectAtWorld знает только точки и геометрию внутри окна с осями.
+    // Поэтому у штриха, картинки, фигуры, линии и формулы ссылка щелчком не
+    // открывалась вовсе — её можно было поставить и нельзя было открыть.
+    // Запасной путь обычный: от того, во что ткнули, вверх до узла с
+    // известным id (тот же приём, что у двойного щелчка ниже).
+    if (!(g && g.data && g.data.link) && e) {
+      let n = e.target;
+      while (n && n !== stage && !(n.id && nodes.has(n.id()))) n = n.getParent();
+      const id = (n && n.id && nodes.has(n.id())) ? n.id() : null;
+      const эл = id ? elements.get(id) : null;
+      if (эл && эл.data && эл.data.link) g = эл;
+    }
     if (g && g.data && g.data.link) openObjectLink(g);
   });
   // Двойной щелчок по не загрузившейся картинке — попробовать ещё раз.
@@ -9299,12 +9320,17 @@
     layer.batchDraw();
     updateDebug('resize s=' + s.toFixed(2) + ' объектов ' + resizeState.уч.length);
   }
+  // Когда закончилась последняя протяжка за угол. Нужно щелчку: кружок гасит
+  // нажатие у себя, поэтому обычные сторожа до щелчка по сцене не доходят, и
+  // отпускание после растягивания открывало бы ссылку объекта под указателем.
+  let последняяПротяжкаВ = 0;
   // Второй палец лёг на доску посреди протяжки — это начало жеста (зум доски),
   // а не «конец растягивания». Раньше размер фиксировался на полпути, и вернуть
   // его можно было только отменой. Теперь возвращаем всё как было: без шага
   // истории и без рассылки соседям, потому что ничего и не менялось.
   function откатитьМасштаб() {
     if (!resizeState) return;
+    последняяПротяжкаВ = Date.now();
     const было = resizeState.histBefore2, уч = resizeState.уч || [], шло = resizeState.пошло;
     resizeState = null;
     clearGuides();
@@ -9319,6 +9345,7 @@
   }
   function endResize() {
     if (!resizeState) return;
+    последняяПротяжкаВ = Date.now();
     // Нажали и отпустили, не сдвинув, — ничего не произошло: ни шага отмены, ни
     // правки соседям (см. мёртвую зону).
     if (!resizeState.пошло) { resizeState = null; clearGuides(); return; }
@@ -11393,6 +11420,10 @@
         }
       }
       histUpd(before, el); send({ action: 'element_update', element: el });
+      // Кнопка должна сразу показать, что ссылка есть, а у объекта — появиться
+      // курсор-палец: обработчики наведения ставит upsertNode.
+      if (nodes.get(el.id)) upsertNode(el);
+      if (typeof syncObjActions === 'function') syncObjActions();
     });
   }
   // ── Выравнивание выделенных объектов (по рамкам) ───────────────────────
@@ -12886,6 +12917,10 @@
   const oaGroup = document.getElementById('oa-group');
   const oaDup = document.getElementById('oa-dup');
   const oaSave = document.getElementById('oa-save');
+  // Ссылки жили только в правом меню, а на планшете правой кнопки нет вовсе.
+  // Кнопки зовут ТЕ ЖЕ функции, что и меню: править придётся одно место.
+  const oaLink = document.getElementById('oa-link');
+  const oaCopy = document.getElementById('oa-copy');
   const oaDel = document.getElementById('oa-del');
 
   function выделенныеЭлементы() {
@@ -12938,6 +12973,18 @@
     // Дублировать умеет не всё: у таблицы, голосования и таймера живое
     // состояние, и копия сбивала бы с толку. Нечего дублировать — кнопки нет.
     if (oaDup) oaDup.hidden = !выделенныеЭлементы().some(canDuplicate);
+    // Ссылка — только у ОДНОГО объекта: askLinkFor и сам требует одного, а
+    // «копировать ссылку» на несколько объектов смысла не имеет.
+    const одинЭл = ids.length === 1 ? elements.get(ids[0]) : null;
+    if (oaLink) {
+      oaLink.hidden = !одинЭл;
+      const естьСсылка = !!(одинЭл && одинЭл.data && одинЭл.data.link);
+      oaLink.classList.toggle('cn-on', естьСсылка);
+      oaLink.title = естьСсылка
+        ? 'Ссылка задана — изменить или убрать'
+        : 'Связать с… — адрес сайта или другой объект этой доски';
+    }
+    if (oaCopy) oaCopy.hidden = !одинЭл;
     // Скачать — у картинок и PDF: за ними стоит файл. На планшете это
     // единственный путь, правой кнопки там нет.
     if (oaSave) {
@@ -12979,6 +13026,12 @@
     e.stopPropagation();
     if (группаВыделенного()) ungroupSelected(); else groupSelected();
     syncObjActions();
+  });
+  if (oaLink) oaLink.addEventListener('click', (e) => { e.stopPropagation(); askLinkFor(Array.from(selected)); });
+  if (oaCopy) oaCopy.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const id = Array.from(selected)[0];
+    if (id) copyText(boardLink(id), 'Ссылка на объект:');
   });
   if (oaDup) oaDup.addEventListener('click', (e) => { e.stopPropagation(); duplicateSelected(); });
   if (oaSave) oaSave.addEventListener('click', (e) => { e.stopPropagation(); скачатьФайлы(Array.from(selected)); });
