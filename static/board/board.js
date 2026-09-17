@@ -6833,6 +6833,8 @@
     }
   }
 
+  // К чему прицепится конец рисуемой линии, если отпустить прямо сейчас.
+  let рисуемаяЦель = null;
   function moveDraw(shift) {
     if (!drawing) return;
     // Указателя может не быть вовсе: Konva забывает его позицию, когда курсор
@@ -6876,6 +6878,22 @@
         rx = proj * ux; ry = proj * uy;
       }
       d.points = [0, 0, rx, ry];
+      // Кружки-якоря во время рисования. Раньше их не было видно вовсе:
+      // целиться было не во что, а свежая линия привязку не запоминала.
+      // Разделителю привязка запрещена — она сломала бы его строгую ось.
+      if (!d.divider) {
+        const конец = { x: d.x + rx, y: d.y + ry };
+        const цель = anchorTargetAt(конец.x, конец.y, drawing.id);
+        const рядом = цель || anchorTargetAt(конец.x, конец.y, drawing.id, зонаПоказаЯкорей());
+        const показать = рядом ? рядом.id : null;
+        if (anchorShowFor !== показать) { anchorShowFor = показать; renderAnchors(); }
+        highlightAnchorTarget(цель);
+        рисуемаяЦель = цель || null;
+        if (цель) {
+          const tb = objBox(цель.id);
+          if (tb) { const A = anchorPoint(tb, цель.side); d.points = [0, 0, A.x - d.x, A.y - d.y]; }
+        }
+      }
     } else if (drawing.type === 'frame') {
       // Создание окна — тот же снап угла: края/центры + равные интервалы к соседям.
       const F = { x: d._ax, y: d._ay };
@@ -6910,6 +6928,10 @@
 
   function endDraw() {
     if (!drawing) return;
+    // Кружки, показанные во время рисования, гасим на ЛЮБОМ выходе, включая
+    // отказные и аварийные: сюда же приходит обрыв ввода.
+    if (anchorShowFor) { anchorShowFor = null; renderAnchors(); }
+    highlightAnchorTarget(null);
     settleDrawNode(drawing.id);
     clearGuides(); // убрать направляющие создания окна (если были)
     // Случайный «клик» рамкой без протяжки — не создаём вырожденное окно.
@@ -6942,10 +6964,20 @@
       // непрозрачную рамку — не то, чего человек хотел.
       if (drawing.data.marker !== true && smartЗаменить(drawing)) { drawing = null; return; }
     }
+    // Конец лёг на кружок-якорь — запоминаем привязку: дальше стрелка сама
+    // пойдёт за объектом, как если бы её прицепили вручную.
+    if ((drawing.type === 'line' || drawing.type === 'arrow') && рисуемаяЦель && !drawing.data.divider) {
+      drawing.data.to = { id: рисуемаяЦель.id, side: рисуемаяЦель.side };
+      recomputeConnectors();
+    }
+    рисуемаяЦель = null;
     // Нарисовали поверх картинки — значит рисунок её. Записываем это здесь и
     // навсегда: потом картинку можно возить куда угодно, и разбор поедет с ней,
     // а вот случайно оказавшееся под ней чужое — нет.
-    пометитьНоситель(drawing.id);
+    // У ПРИВЯЗАННОЙ стрелки хозяин уже есть — тот объект, к которому она
+    // прицеплена. Второй хозяин означал бы, что её конец при перетаскивании и
+    // растягивании считают дважды: сперва гомотетия, следом пересчёт привязки.
+    if (!(drawing.data && (drawing.data.to || drawing.data.from))) пометитьНоситель(drawing.id);
     send({ action: 'element_update', element: stripPrivate(drawing) });
     histAdd(stripPrivate(drawing));
     drawing = null;
@@ -8451,23 +8483,46 @@
   // рамки рукой (а тем более пальцем) трудно, и без допуска стрелка не
   // цеплялась именно тогда, когда её подводят вплотную — то есть ровно в тот
   // момент, ради которого привязка и нужна.
-  function anchorTargetAt(wx, wy, excludeId, допуск) {
-    const доп = допуск || 0;
+  // Чем последним трогали доску: палец толще курсора, и зона притяжения ему
+  // нужна больше. Спрашивать у сцены нельзя — кружок якоря лежит рядом с ней.
+  let последнийВидУказателя = 'mouse';
+  window.addEventListener('pointerdown', (e) => { последнийВидУказателя = (e && e.pointerType) || 'mouse'; }, true);
+  // Радиус притяжения к кружку якоря, в мировых единицах (экранные делим на
+  // зум). Для мыши и пера — та же зона, что у угловой ручки размера.
+  const ЯКОРЬ_ЗОНА_МЫШЬ = 16, ЯКОРЬ_ЗОНА_ПАЛЕЦ = 26;
+  function зонаЯкоря(пальцем) {
+    const s = stage.scaleX() || 1;
+    return (пальцем ? ЯКОРЬ_ЗОНА_ПАЛЕЦ : ЯКОРЬ_ЗОНА_МЫШЬ) / s;
+  }
+  function пальцемСейчас() { return последнийВидУказателя === 'touch'; }
+  // Кружки ПОКАЗЫВАЕМ раньше, чем притягиваем: иначе целиться не во что.
+  function зонаПоказаЯкорей() { return зонаЯкоря(пальцемСейчас()) * 3; }
+  // Цель притяжения — САМ КРУЖОК, а не площадь объекта. Раньше цель
+  // засчитывалась по попаданию внутрь рамки (плюс допуск), сторона выбиралась
+  // по ближайшему краю, а конец ставился в СЕРЕДИНУ этой стороны: на картинке
+  // 800×600 конец улетал от указателя на сотни точек. Отсюда и жалоба
+  // «притягивается, даже если далеко».
+  function anchorTargetAt(wx, wy, excludeId, радиус) {
+    const s = stage.scaleX() || 1;
+    const R = (радиус == null) ? зонаЯкоря(пальцемСейчас()) : радиус;
     let best = null;
     elements.forEach((el) => {
       if (el.id === excludeId || !hasAnchors(el)) return;
+      if (el.data && el.data.locked) return;   // закреплённый объект концов не ловит
       const box = objBox(el.id);
       if (!box) return;
-      if (wx < box.x - доп || wx > box.x + box.width + доп
-          || wy < box.y - доп || wy > box.y + box.height + доп) return;
-      // Ближайшая сторона — по наименьшему расстоянию до края.
-      const dl = wx - box.x, dr = box.x + box.width - wx;
-      const dt = wy - box.y, db = box.y + box.height - wy;
-      const m = Math.min(dl, dr, dt, db);
-      const side = (m === dt) ? 'top' : (m === db) ? 'bottom' : (m === dl) ? 'left' : 'right';
-      // Мельче — значит сверху: берём самый маленький подходящий объект.
-      const area = box.width * box.height;
-      if (!best || area < best.area) best = { id: el.id, side: side, area: area };
+      // У мелкого объекта зону урезаем до половины меньшей стороны, но не ниже
+      // 6 экранных точек — та же мера, что у угловых ручек размера.
+      const мельче = Math.min(box.width, box.height) * s / 2;
+      const rЭкран = Math.max(6, Math.min(R * s, Math.max(мельче, 6)));
+      const r = rЭкран / s;
+      ANCHOR_SIDES.forEach((side) => {
+        const p = anchorDotPoint(box, side, s);
+        const dx = wx - p.x, dy = wy - p.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r * r) return;
+        if (!best || d2 < best.d2) best = { id: el.id, side: side, d2: d2 };
+      });
     });
     return best ? { id: best.id, side: best.side } : null;
   }
@@ -8534,6 +8589,8 @@
     if (!tgt) { if (anchorHalo) anchorHalo.style.display = 'none'; return; }
     const box = objBox(tgt.id);
     if (!box) return;
+    // Какой именно кружок поймает конец — видно по нему самому.
+    if (anchorEls && anchorForId === tgt.id && anchorEls[tgt.side]) anchorEls[tgt.side].classList.add('anch-target');
     if (!anchorHalo) {
       anchorHalo = document.createElement('div');
       anchorHalo.className = 'anch-halo';
@@ -8910,8 +8967,7 @@
       // не показывалось. Прицепить стрелку можно было ровно одним способом —
       // родив её протяжкой от кружка, — а поправить уже нарисованную нельзя.
       if (isEnd) {
-        const допуск = 14 / stage.scaleX();
-        connTarget = anchorTargetAt(h.x(), h.y(), el.id, допуск);
+        connTarget = anchorTargetAt(h.x(), h.y(), el.id, зонаЯкоря(пальцемСейчас()));
         // Показываем якоря того объекта, к которому ведём: выделена сейчас сама
         // стрелка, и её собственные якоря человеку не нужны.
         anchorShowFor = connTarget ? connTarget.id : null;

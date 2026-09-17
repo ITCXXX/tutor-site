@@ -556,6 +556,16 @@
         transition: transform .1s;
     }
     #anchor-layer .anch:hover { transform: scale(1.35); background: #4d7cfe; }
+    /* Во время рисования кружки показываются как мишень, но нажатий не ловят:
+       кружок лежит РЯДОМ с холстом, и указатель, зашедший на него посреди
+       линии, для холста выглядел бы уходом со сцены — а уход обрывает штрих. */
+    body.board-draw #anchor-layer .anch { pointer-events: none; }
+    /* Кружок, который сейчас поймает конец. Все четыре одинаковые, и без
+       отметки понять, куда прицепится стрелка, нельзя. */
+    #anchor-layer .anch.anch-target {
+        background: #4d7cfe; transform: scale(1.45);
+        box-shadow: 0 0 0 4px rgba(77,124,254,.25);
+    }
     /* Подсветка объекта, к которому целится стрелка. */
     #anchor-layer .anch-halo {
         position: absolute; display: none; pointer-events: none;
