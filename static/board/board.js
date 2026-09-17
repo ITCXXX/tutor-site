@@ -8758,6 +8758,16 @@
   }
   const handlesGroup = new Konva.Group({ visible: false });
   layer.add(handlesGroup);
+  // Своя пунктирная рамка. Штатная (Konva.Transformer) обводит только узлы
+  // холста: текст, стикеры и таблицы — это DOM поверх холста, и в группе из
+  // картинки и подписи рамка охватывала бы одну картинку. А ещё трансформер
+  // пересчитывает себя на каждое изменение каждого узла: на пятистах штрихах
+  // одно движение мыши — сотни тысяч замеров, поэтому на время протяжки он
+  // отцепляется, а рамку ведём мы сами, по формуле.
+  const рамкаВыделения = new Konva.Rect({
+    stroke: '#4d7cfe', strokeWidth: 1.5, dash: [4, 4], listening: false, visible: false,
+  });
+  handlesGroup.add(рамкаВыделения);
   // Ручка размера — маленький кружок, центр приходится РОВНО в угол пунктирной
   // рамки. Квадраты приходилось уводить внутрь объекта: они закрывали тот самый
   // угол содержимого, который подгоняют, и спорили за пиксели с якорями стрелок.
@@ -8891,6 +8901,167 @@
   function boxCorners(b) {
     return { tl: { x: b.x, y: b.y }, tr: { x: b.x + b.width, y: b.y }, bl: { x: b.x, y: b.y + b.height }, br: { x: b.x + b.width, y: b.y + b.height } };
   }
+  // ── Кого тянем за угол ────────────────────────────────────────────────
+  // Участники масштаба: выделенные объекты плюс «прицепы» выделенных носителей
+  // (надпись, сделанная НА картинке, едет с ней, даже если её не выделяли, — так
+  // же, как при перетаскивании). Не берём: построения по точкам (перестроятся
+  // сами, когда поедут их точки), объекты внутри матокна (у окна свои
+  // координаты) и скрытых.
+  const МАСШТАБ_ТИПЫ = {
+    freehand: 1, line: 1, arrow: 1, rect: 1, ellipse: 1, circle: 1, shape: 1,
+    venn: 1, image: 1, pdf: 1, latex: 1, text: 1, textbox: 1, frame: 1, point: 1,
+  };
+  function масштабируемыйТип(t) { return !!МАСШТАБ_ТИПЫ[t] || WIDGET_TYPES.indexOf(t) >= 0; }
+  function участникиМасштаба() {
+    const ids = new Set();
+    selected.forEach((id) => {
+      const el = elements.get(id); if (!el) return;
+      ids.add(id);
+      if (el.type === 'image' || el.type === 'pdf') objectsOnCarrier(el).forEach((x) => ids.add(x));
+    });
+    const список = [];
+    ids.forEach((id) => {
+      const el = elements.get(id); if (!el || !el.data) return;
+      if (el.data.hidden || el.data.frame) return;
+      if (isPointBound(el)) return;
+      if (!масштабируемыйТип(el.type)) return;
+      const w = widgetItems.get(id), n = nodes.get(id);
+      if (!w && !n) return;
+      список.push({ id: id, el: el, node: n || null, widget: w || null });
+    });
+    return список;
+  }
+  // Прямоугольник объекта ПО СОДЕРЖИМОМУ, без запаса на толщину линии и тени.
+  // getClientRect раздувает бокс: у линии и стрелки — на постоянные 16 px, и
+  // «неподвижный» угол при растягивании уезжал бы на 16·(s−1).
+  function боксСодержимого(el, node, widget) {
+    const d = el.data || {};
+    if (widget && widget.wrapper) {
+      return { x: d.x || 0, y: d.y || 0, width: widget.wrapper.offsetWidth || 0, height: widget.wrapper.offsetHeight || 0 };
+    }
+    const t = el.type;
+    if (t === 'ellipse') return { x: (d.x || 0) - (d.radiusX || 0), y: (d.y || 0) - (d.radiusY || 0), width: 2 * (d.radiusX || 0), height: 2 * (d.radiusY || 0) };
+    if (t === 'circle') return { x: (d.x || 0) - (d.r || 0), y: (d.y || 0) - (d.r || 0), width: 2 * (d.r || 0), height: 2 * (d.r || 0) };
+    if (t === 'point') return { x: d.x || 0, y: d.y || 0, width: 0, height: 0 };
+    if (d.width && d.height) return { x: d.x || 0, y: d.y || 0, width: d.width, height: d.height };
+    const pts = d.points || [];
+    if (pts.length >= 2) {
+      let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+      for (let i = 0; i + 1 < pts.length; i += 2) {
+        const px = (d.x || 0) + pts[i], py = (d.y || 0) + pts[i + 1];
+        if (px < x1) x1 = px; if (py < y1) y1 = py;
+        if (px > x2) x2 = px; if (py > y2) y2 = py;
+      }
+      return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+    }
+    if (node && typeof node.getClientRect === 'function') return node.getClientRect({ relativeTo: layer });
+    return null;
+  }
+  function боксУчастников(список) {
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    список.forEach((u) => {
+      const b = боксСодержимого(u.el, u.node, u.widget);
+      if (!b) return;
+      x1 = Math.min(x1, b.x); y1 = Math.min(y1, b.y);
+      x2 = Math.max(x2, b.x + b.width); y2 = Math.max(y2, b.y + b.height);
+    });
+    if (!isFinite(x1) || !isFinite(y1)) return null;
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  }
+  // Показывать ли кружки: инструмент выделения, не просмотр, ничего не заперто,
+  // не идёт обрезка. Одиночная линия и стрелка живут своими ручками концов,
+  // одиночная точка тянуться не может.
+  function кружкиМожно(уч) {
+    if (tool !== 'select' || viewOnly || panMode) return false;
+    if (typeof cropId !== 'undefined' && cropId) return false;
+    if (!уч.length) return false;
+    let заперт = false;
+    selected.forEach((id) => { const e = elements.get(id); if (e && e.data && (e.data.locked || e.data.hidden)) заперт = true; });
+    if (заперт) return false;
+    if (уч.length === 1) {
+      const t = уч[0].el.type;
+      if (t === 'line' || t === 'arrow' || t === 'point') return false;
+    }
+    return true;
+  }
+  // Наименьшие размеры по типам: ниже них объект не ужимаем.
+  const МИН_РАЗМЕРЫ = { rect: [1, 1], shape: [1, 1], venn: [120, 90], image: [8, 8], pdf: [8, 8], latex: [2, 2], frame: [80, 60] };
+  // Предел масштаба на всю группу: если ОДИН участник упёрся в свой наименьший
+  // размер, останавливается вся группа — иначе пропорции чертежа разъедутся, а
+  // обратно их уже не вернуть (решение владельца).
+  function пределыМасштаба(уч) {
+    let мин = 0.05;
+    уч.forEach((u) => {
+      const d = u.el.data || {}, t = u.el.type, m = МИН_РАЗМЕРЫ[t];
+      if (m) {
+        if (d.width > 0) мин = Math.max(мин, m[0] / d.width);
+        if (d.height > 0) мин = Math.max(мин, m[1] / d.height);
+      }
+      if (t === 'ellipse') { if (d.radiusX > 0) мин = Math.max(мин, 1 / d.radiusX); if (d.radiusY > 0) мин = Math.max(мин, 1 / d.radiusY); }
+      if (t === 'circle' && d.r > 0) мин = Math.max(мин, 1 / d.r);
+    });
+    return { мин: мин, макс: 40 };
+  }
+  function снимокУчастника(el) {
+    const d = el.data || {};
+    return {
+      x: d.x || 0, y: d.y || 0,
+      points: (d.points || []).slice(),
+      sw: d.strokeWidth, width: d.width, height: d.height,
+      rx: d.radiusX, ry: d.radiusY, r: d.r,
+      wl: d.wl && d.wl.slice(), wm: d.wm && d.wm.slice(), wr: d.wr && d.wr.slice(),
+    };
+  }
+  // Гомотетия одного участника: положение — от неподвижного угла F, размеры — на
+  // коэффициент s. Толщина линии множится ТОЛЬКО у штрихов от руки: штрих — это
+  // рисунок, он должен уменьшаться целиком, а линия, стрелка и фигура — часть
+  // оформления схемы, и их толщина остаётся прежней (решение владельца).
+  function применитьМасштаб(u, s, F) {
+    const el = u.el, d = el.data, ст = u.старт, node = u.node, t = el.type;
+    const nx = F.x + (ст.x - F.x) * s, ny = F.y + (ст.y - F.y) * s;
+    d.x = nx; d.y = ny;
+    if (t === 'freehand') {
+      d.points = ст.points.map((v) => v * s);
+      if (ст.sw) d.strokeWidth = Math.max(0.5, ст.sw * s);
+      if (node) { node.points(d.points); if (d.strokeWidth) node.strokeWidth(d.strokeWidth); node.position({ x: nx, y: ny }); }
+      return;
+    }
+    if (t === 'line' || t === 'arrow') {
+      d.points = ст.points.map((v) => v * s);
+      if (ст.wl) d.wl = [ст.wl[0] * s, ст.wl[1] * s];
+      if (ст.wm) d.wm = [ст.wm[0] * s, ст.wm[1] * s];
+      if (ст.wr) d.wr = [ст.wr[0] * s, ст.wr[1] * s];
+      if (node) node.position({ x: nx, y: ny });
+      return;
+    }
+    if (t === 'ellipse') {
+      d.radiusX = Math.max(1, (ст.rx || 0) * s); d.radiusY = Math.max(1, (ст.ry || 0) * s);
+      if (node) { node.radiusX(d.radiusX); node.radiusY(d.radiusY); node.position({ x: nx, y: ny }); }
+      return;
+    }
+    if (t === 'circle') {
+      d.r = Math.max(1, (ст.r || 0) * s);
+      if (node) { node.radius(d.r); node.position({ x: nx, y: ny }); }
+      return;
+    }
+    if (t === 'point') { if (node) node.position({ x: nx, y: ny }); return; }
+    if (u.widget) { if (typeof repositionWidgets === 'function') u.нуженПеренос = true; return; }
+    const м = МИН_РАЗМЕРЫ[t] || [1, 1];
+    if (ст.width) d.width = Math.max(м[0], ст.width * s);
+    if (ст.height) d.height = Math.max(м[1], ст.height * s);
+    if (t === 'venn') d._labSig = null;
+    if (node) {
+      node.position({ x: nx, y: ny });
+      if (t === 'frame') {
+        node.clipWidth(d.width); node.clipHeight(d.height);
+        const bg = node.findOne('.fbg'); if (bg) bg.size({ width: d.width, height: d.height });
+        const hd = node.findOne('.fheader'); if (hd) hd.width(d.width);
+        const del = node.findOne('.fdel'); if (del) del.x(d.width - 16);
+      } else if (typeof node.width === 'function' && (t === 'rect' || t === 'image' || t === 'pdf' || t === 'latex')) {
+        node.width(d.width); node.height(d.height);
+      }
+    }
+  }
   function snapshotGeom(el) {
     const d = el.data;
     return { width: d.width, height: d.height, radiusX: d.radiusX, radiusY: d.radiusY, r: d.r, points: (d.points || []).slice() };
@@ -8912,7 +9083,9 @@
     const id = Array.from(selected)[0];
     const el = elements.get(id), node = nodes.get(id);
     if (!el || !node) { updateDebug('resize: нет объекта'); return; }
-    const b = elBox(el, node);
+    const уч = участникиМасштаба();
+    const общий = боксУчастников(уч);
+    const b = (уч.length === 1 && уч[0].el.type === 'frame') ? elBox(el, node) : (общий || elBox(el, node));
     const P0 = worldPoint();
     const углы = boxCorners(b);
     // Какой угол тянут, решает БЛИЖАЙШИЙ к указателю, а не имя нажатой ручки:
@@ -8935,7 +9108,22 @@
     // первом же движении прыгал на это смещение — особенно заметно пальцем.
     const C0 = (corner === 'ml' || corner === 'mr') ? null : углы[corner];
     const grab = (C0 && P0) ? { x: P0.x - C0.x, y: P0.y - C0.y } : { x: 0, y: 0 };
-    resizeState = { id, corner, F, grab, w0: Math.max(1, b.width), h0: Math.max(1, b.height), start: snapshotGeom(el), histBefore: clone(el) };
+    // Снимок КАЖДОГО участника: размеры считаем от начального состояния, а не от
+    // текущего, иначе округления копятся за протяжку.
+    уч.forEach((u) => { u.старт = снимокУчастника(u.el); });
+    // Трансформер на время протяжки отцепляем (см. рамкаВыделения): он меряет
+    // все свои узлы на каждое их изменение, а мы ведём рамку сами.
+    tr.nodes([]);
+    const было = new Map();
+    уч.forEach((u) => было.set(u.id, clone(u.el)));
+    // Прилипание к направляющим не нужно штрихам от руки: рисунок ни по чему не
+    // равняется (то же правило, что у перетаскивания).
+    const липнет = уч.some((u) => u.el.type !== 'freehand' && u.el.type !== 'point');
+    resizeState = {
+      id: id, corner: corner, F: F, C0: C0, grab: grab,
+      уч: уч, бокс0: b, бокс: b, пределы: пределыМасштаба(уч), липнет: липнет, histBefore2: было,
+      w0: Math.max(1, b.width), h0: Math.max(1, b.height), start: snapshotGeom(el), histBefore: clone(el),
+    };
     updateDebug('resize СТАРТ ' + corner);
   }
   function doResize() {
@@ -9007,40 +9195,77 @@
       updateDebug('текст ширина ' + Math.round(newW));
       return;
     }
-    const sx = Math.abs(P.x - resizeState.F.x) / resizeState.w0;
-    const sy = Math.abs(P.y - resizeState.F.y) / resizeState.h0;
-    let s = Math.max(0.05, Math.min(40, Math.max(sx, sy))); // равномерно (гомотетия)
-    // Умные направляющие: липнем ближним краём угла к соседям (масштаб один на обе оси).
-    if (!guideRefs) guideRefs = collectGuideRefs([resizeState.id]);
-    const dirX = Math.sign(P.x - resizeState.F.x) || 1, dirY = Math.sign(P.y - resizeState.F.y) || 1;
-    const uni = snapUniformScale(resizeState.F, dirX, dirY, resizeState.w0, resizeState.h0, s);
-    s = uni.s; drawGuides(uni.lines);
-    applyScaledSize(el, node, s, resizeState.start);
-    // двигаем узел так, чтобы противоположный (зафиксированный) угол остался на F
-    const b = node.getClientRect({ relativeTo: layer });
-    const cur = boxCorners(b)[OPP[resizeState.corner]];
-    node.x(node.x() + (resizeState.F.x - cur.x));
-    node.y(node.y() + (resizeState.F.y - cur.y));
-    el.data.x = node.x(); el.data.y = node.y();
+    // ГОМОТЕТИЯ ВСЕГО ВЫДЕЛЕНИЯ. Коэффициент — проекция указателя на диагональ
+    // рамки: у тонкого почти прямого штриха высота рамки близка к нулю, и
+    // прежний max(sx, sy) давал «взрыв» в десятки раз от крошечного сдвига.
+    const F = resizeState.F, C0 = resizeState.C0 || { x: F.x + resizeState.w0, y: F.y + resizeState.h0 };
+    const ux = C0.x - F.x, uy = C0.y - F.y;
+    const дл2 = ux * ux + uy * uy;
+    let s = дл2 > 1e-9 ? ((P.x - F.x) * ux + (P.y - F.y) * uy) / дл2 : 1;
+    if (!Number.isFinite(s)) s = 1;
+    const пр = resizeState.пределы || { мин: 0.05, макс: 40 };
+    s = Math.max(пр.мин, Math.min(пр.макс, s));
+    if (!guideRefs) guideRefs = collectGuideRefs(resizeState.уч.map((u) => u.id));
+    if (resizeState.липнет) {
+      // Направление берём от УГЛА рамки, а не от указателя: у узкой группы
+      // указатель мог оказаться по другую сторону, и прилипание давало скачок.
+      const dirX = Math.sign(ux) || 1, dirY = Math.sign(uy) || 1;
+      const uni = snapUniformScale(F, dirX, dirY, resizeState.w0, resizeState.h0, s);
+      s = Math.max(пр.мин, Math.min(пр.макс, uni.s));
+      drawGuides(uni.lines);
+    } else {
+      drawGuides([]);
+    }
+    let естьВиджеты = false;
+    resizeState.уч.forEach((u) => { применитьМасштаб(u, s, F); if (u.widget) естьВиджеты = true; });
+    // Рамку и кружки ведём ПО ФОРМУЛЕ от стартового бокса: настоящий бокс узлов
+    // считается с запасом на толщину линии, и неподвижный угол «уезжал» бы.
+    const б0 = resizeState.бокс0;
+    resizeState.бокс = {
+      x: F.x + (б0.x - F.x) * s, y: F.y + (б0.y - F.y) * s,
+      width: б0.width * s, height: б0.height * s,
+    };
+    if (естьВиджеты && typeof repositionWidgets === 'function') repositionWidgets();
     recomputeGeometry();
     positionHandles();
-    if (shapeTextItems.has(el.id)) repositionShapeText(el.id); // текст внутри — под новый размер
+    resizeState.уч.forEach((u) => { if (shapeTextItems.has(u.id)) repositionShapeText(u.id); });
     tr.forceUpdate();
     layer.batchDraw();
-    updateDebug('resize s=' + s.toFixed(2));
+    updateDebug('resize s=' + s.toFixed(2) + ' объектов ' + resizeState.уч.length);
   }
   function endResize() {
     if (!resizeState) return;
     const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
-    const hist = resizeState.histBefore, wasText = el && el.type === 'text';
+    const wasText = el && el.type === 'text';
+    const уч = resizeState.уч || [];
+    const было = resizeState.histBefore2;
+    const ids = уч.map((u) => u.id);
     resizeState = null; // сбрасываем ДО финальной перерисовки, чтобы она отправила update
     clearGuides();
-    if (el) {
-      if (wasText && node) renderTextInto(node, el); // финальная перерисовка с переносом (сама шлёт update)
-      else send({ action: 'element_update', element: el });
-      if (hist) histUpd(hist, el);
-    }
-    updateDebug('resize КОНЕЦ');
+    if (wasText && node && el) renderTextInto(node, el); // перенос строк — она же шлёт update
+    // Вся группа — ОДИН шаг отмены: иначе Ctrl+Z возвращал бы объекты по одному,
+    // а чертёж разъезжался бы на каждом шаге.
+    одинШаг(() => {
+      уч.forEach((u) => {
+        const e = elements.get(u.id);
+        if (!e) return;               // сосед стёр этот объект, пока мы тянули
+        const n0 = nodes.get(u.id);
+        // Отсечение невидимого считает рамку объекта один раз и запоминает. После
+        // сильного уменьшения объект въезжает в экран, но остаётся скрытым до
+        // панорамы — поэтому запомненное сбрасываем.
+        if (n0) { n0._bbox = null; n0._bboxK = null; n0._culled = false; setNodeShown(n0); }
+        if (e.type === 'pdf' && n0) { n0._pdfKey = null; renderPdfInto(n0, e); }
+        if (!(wasText && e.type === 'text')) send({ action: 'element_update', element: e });
+        const b = было && было.get(u.id);
+        if (b) histUpd(b, e);
+      });
+    });
+    if (typeof applyCull === 'function') applyCull();
+    recomputeConnectors();
+    syncConnectorsOf(ids);
+    refreshTransformer();   // вернуть узлы штатной рамке (её бордюр остаётся выключенным, пока видны кружки)
+    positionHandles();
+    updateDebug('resize КОНЕЦ, объектов ' + ids.length);
   }
 
   // Версию считает сервер по времени последней правки board.js и передаёт в
@@ -9089,16 +9314,21 @@
     if (strokeEls.length) showStrokePanel(strokeEls[0]); else hideStrokePanel();
     // Действия над выделенным — здесь же: это про выделение, а не про тип.
     if (typeof syncObjActions === 'function') syncObjActions();
-    const node = el && RESIZABLE.includes(el.type) ? nodes.get(ids[0]) : null;
-    if (!node) {
+    // Ручки размера — у любого выделения, а не только у одиночного объекта:
+    // владелец просит растягивать и группу штрихов, и чертёж целиком.
+    const уч = участникиМасштаба();
+    const b = кружкиМожно(уч) ? (resizeState && resizeState.бокс ? resizeState.бокс : боксУчастников(уч)) : null;
+    if (!b || (b.width < 1e-6 && b.height < 1e-6)) {
       if (handlesGroup.visible()) { handlesGroup.hide(); }
+      рамкаВыделения.visible(false);
+      tr.borderEnabled(true);   // своей рамки нет — вернуть штатную
       рисоватьРучки();
       updateDebug();
       return;
     }
-    const b = elBox(el, node);
     const sz = 10 / stage.scaleX();
-    const isText = el.type === 'text';
+    const пад0 = (tr.padding() || 0) / stage.scaleX();
+    const isText = уч.length === 1 && уч[0].el.type === 'text';
     const pts = boxCorners(b);
     const edgePts = { ml: { x: b.x, y: b.y + b.height / 2 }, mr: { x: b.x + b.width, y: b.y + b.height / 2 } };
     // Ручки размера уходят ВНУТРЬ рамки, а кружки-якоря — наружу. Так они не
@@ -9114,6 +9344,7 @@
     // координат указателя, а не от положения ручки.
     const зазор = 4 / stage.scaleX();   // боковые ручки текста по-прежнему наружу
     handlesGroup.getChildren().forEach((h) => {
+      if (h === рамкаВыделения) return;   // пунктир — не ручка
       const name = h.name(), isEdge = (name === 'ml' || name === 'mr');
       h.visible(isText ? isEdge : !isEdge); // текст — боковые ручки, остальное — угловые
       if (isText !== isEdge) return;
@@ -9125,7 +9356,7 @@
       } else {
         // Центр кружка — в углу ПУНКТИРНОЙ рамки: она шире содержимого на
         // padding трансформера, и владелец просил кружки именно в её углах.
-        const пад = (tr.padding() || 0) / stage.scaleX();
+        const пад = пад0;
         const p = pts[name];
         const лево = p.x <= b.x + b.width / 2, верх = p.y <= b.y + b.height / 2;
         h.radius(РУЧКА.r / stage.scaleX());
@@ -9138,6 +9369,13 @@
         h.position({ x: p.x + (лево ? -пад : пад), y: p.y + (верх ? -пад : пад) });
       }
     });
+    // Пунктир ведём сами — по тому же боксу, что и кружки.
+    рамкаВыделения.position({ x: b.x - пад0, y: b.y - пад0 });
+    рамкаВыделения.size({ width: b.width + пад0 * 2, height: b.height + пад0 * 2 });
+    рамкаВыделения.strokeWidth(1.5 / stage.scaleX());
+    рамкаВыделения.dash([4 / stage.scaleX(), 4 / stage.scaleX()]);
+    рамкаВыделения.visible(true);
+    tr.borderEnabled(false);   // пока рисуем свою, штатная не нужна
     handlesGroup.show();
     handlesGroup.moveToTop();
     рисоватьРучки(); // обычно синхронно (rAF может быть не готов) — ручки появляются сразу
