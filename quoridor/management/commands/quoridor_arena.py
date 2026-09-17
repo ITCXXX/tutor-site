@@ -29,6 +29,10 @@ class Command(BaseCommand):
         parser.add_argument('--b-weights', dest='веса_b', default=None,
                             help='то же для второго')
         parser.add_argument('--games', dest='партий', type=int, default=200)
+        parser.add_argument('--size', dest='размер', type=int, default=None,
+                            help='сторона поля; по умолчанию девятка. На '
+                                 'маленьком поле партия идёт в разы быстрее, '
+                                 'и разницу видно за минуты, а не за часы.')
         parser.add_argument('--cores', dest='ядер', type=int, default=None)
         parser.add_argument('--seed', dest='зерно', type=int, default=0)
         parser.add_argument('--gauntlet', dest='перчатка', action='store_true',
@@ -75,7 +79,7 @@ class Command(BaseCommand):
                               'ядер %d'
                               % (первый.имя, len(соперники), п['партий'], ядер))
             итоги, общая = arena.перчатка(первый, соперники, п['партий'], ядер,
-                                          п['зерно'])
+                                          п['зерно'], п['размер'])
             self.stdout.write('')
             for соперник, итог in итоги:
                 self.stdout.write('  ' + итог.словами(первый.имя, соперник.имя))
@@ -84,9 +88,11 @@ class Command(BaseCommand):
                 'Общая доля очков: %.1f%%' % (100 * общая)))
         else:
             второй = self._игрок('B', self._уровень(п['b'], '--b'), п['веса_b'])
-            self.stdout.write('Матч: %s против %s, %d партий, ядер %d'
-                              % (первый.имя, второй.имя, п['партий'], ядер))
-            итог = arena.матч(первый, второй, п['партий'], ядер, п['зерно'])
+            self.stdout.write('Матч: %s против %s, %d партий, поле %d, ядер %d'
+                              % (первый.имя, второй.имя, п['партий'],
+                                 п['размер'] or 9, ядер))
+            итог = arena.матч(первый, второй, п['партий'], ядер, п['зерно'],
+                              n=п['размер'])
             self.stdout.write('')
             self.stdout.write(итог.словами(первый.имя, второй.имя))
             if not итог.значимо:
