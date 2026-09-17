@@ -14431,13 +14431,55 @@
   // Список серверов связи присылает сервер (см. board/turn.py): пропуск к
   // ретранслятору временный, а состав списка — вопрос настройки, а не кода.
   // Запасной вариант нужен только на случай, если сервер ничего не прислал.
-  const VOICE_ICE = (cfg && cfg.iceServers && cfg.iceServers.length)
+  let VOICE_ICE = (cfg && cfg.iceServers && cfg.iceServers.length)
     ? cfg.iceServers
     : [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
   // Есть ли в списке сервер-ретранслятор. Без него примерно у каждого пятого
   // домашний роутер прямую связь не пропускает — и человеку стоит сказать
   // именно это, а не «не удалось соединиться».
-  const HAS_TURN = VOICE_ICE.some((s) => [].concat(s.urls || s.url || []).some((u) => /^turns?:/i.test(String(u))));
+  function естьРетранслятор(список) {
+    return список.some((s) => [].concat(s.urls || s.url || []).some((u) => /^turns?:/i.test(String(u))));
+  }
+  let HAS_TURN = естьРетранслятор(VOICE_ICE);
+  // ПРОПУСК К РЕТРАНСЛЯТОРУ ВРЕМЕННЫЙ — и это ломало голос на длинных занятиях.
+  // Сервер выдаёт пропуск на TURN_TTL (по умолчанию час), а список серверов
+  // страница брала один раз, при открытии. Через час ретранслятор начинал
+  // отказывать (в его журнале «Cannot find credentials»), и у кого прямая связь
+  // не проходит — телефон на мобильном интернете, строгий роутер — голос уже не
+  // поднимался: замер на сервере, 147 отказов за один вечерний урок.
+  // Поэтому список обновляем, пока доска открыта: раз в полчаса, при
+  // восстановлении связи с сервером, при возврате на вкладку, перед входом в
+  // разговор и после сорванного соединения. Сервер не ответил — остаётся
+  // прежний список, хуже, чем было, не станет.
+  const ICE_СВЕЖЕСТЬ = 30 * 60 * 1000;
+  let iceВзятВ = Date.now();
+  let iceИдёт = false;
+  function iceНужен() { return voiceOn || screenOn || voicePeers.size > 0; }
+  function обновитьICE(сейчасЖе) {
+    if (iceИдёт || !cfg || !cfg.code || typeof fetch !== 'function') return;
+    if (!сейчасЖе && Date.now() - iceВзятВ < ICE_СВЕЖЕСТЬ) return;
+    iceИдёт = true;
+    fetch('/board/' + encodeURIComponent(cfg.code) + '/ice/', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d || !d.iceServers || !d.iceServers.length) return;
+        VOICE_ICE = d.iceServers;
+        HAS_TURN = естьРетранслятор(VOICE_ICE);
+        iceВзятВ = Date.now();
+        // Живым соединениям новый список сам по себе не достаётся: браузер
+        // запомнил тот, с которым соединение создавали. Подставляем — пригодится
+        // при пересборке маршрута (restartIce) после обрыва.
+        voicePeers.forEach((p) => {
+          if (!p.pc || !p.pc.setConfiguration) return;
+          try { p.pc.setConfiguration({ iceServers: VOICE_ICE }); } catch (e) {}
+        });
+      })
+      .catch(() => {})
+      .then(() => { iceИдёт = false; });
+  }
+  // Пока идёт разговор или показ экрана, следим за свежестью сами: человек может
+  // не трогать вкладку часами.
+  setInterval(() => { if (iceНужен()) обновитьICE(); }, 5 * 60 * 1000);
   // Сейчас все соединяются со всеми — при двух-трёх это лучший вариант. Дальше
   // растёт квадратично, поэтому честно предупреждаем, а не молча тормозим.
   const MESH_SOFT_LIMIT = 5;
@@ -14598,6 +14640,9 @@
       p.state = (st === 'connected') ? 'на связи' : (st === 'connecting' ? 'связываемся' : st);
       if (st === 'connected') петляЕщё();
       if (st === 'failed') {
+        // Пропуск к ретранслятору мог протухнуть за урок — берём свежий, иначе
+        // пересборка маршрута пойдёт со старым и упрётся в тот же отказ.
+        обновитьICE(true);
         // Одна попытка пересобрать маршрут: обрыв часто лечится этим сам.
         if (!p.retried && pc.restartIce) {
           p.retried = true; p.state = 'пересобираем связь';
@@ -15342,6 +15387,8 @@
       boardHint('Браузер не даёт доступ к микрофону (нужен https)');
       return;
     }
+    // Доска могла быть открыта с утра, а пропуск к ретранслятору живёт меньше.
+    обновитьICE(true);
     // Контекст шумодава будим прямо в щелчке, а включён ли шумодав, решаем,
     // когда микрофон ответит.
     шумРазбудить(шумНастройка());
@@ -16081,6 +16128,8 @@
   // Мгновенный реконнект при возврате сети/вкладки (не ждём таймер бэкоффа).
   window.addEventListener('online', () => { reconnectDelay = 1000; if (!ws || ws.readyState > 1) connect(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && (!ws || ws.readyState > 1)) { reconnectDelay = 1000; connect(); } });
+  // Вернулись на вкладку после перерыва: пропуск к ретранслятору мог протухнуть.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && iceНужен()) обновитьICE(); });
 
   const PERSIST_ACTIONS = { element_add: 1, element_update: 1, element_delete: 1 };
   function send(obj) {
@@ -16143,7 +16192,7 @@
         // Новый id соединения: прежние голосовые связи к нему уже не относятся.
         if (myPeer && myPeer !== msg.peer) closeAllPeers();
         myPeer = msg.peer || null;
-        if (rtcSending()) rtcAnnounce();   // после переподключения объявляемся заново
+        if (rtcSending()) { rtcAnnounce(); обновитьICE(); }   // объявляемся заново и проверяем свежесть пропуска
         boardIsOwner = !!msg.is_owner;
         boardDefaultRole = msg.default_role || 'editor';
         boardRoles = msg.roles || {};

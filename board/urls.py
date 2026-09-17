@@ -15,5 +15,6 @@ urlpatterns = [
     path('<str:code>/leave/', views.board_leave, name='leave'),
     path('<str:code>/duplicate/', views.board_duplicate, name='duplicate'),
     path('<str:code>/upload/', views.board_upload, name='upload'),
+    path('<str:code>/ice/', views.board_ice, name='ice'),
     path('<str:code>/', views.board_room, name='room'),
 ]

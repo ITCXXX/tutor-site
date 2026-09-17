@@ -307,6 +307,29 @@ def board_room(request, code):
 
 
 @login_required
+def board_ice(request, code):
+    """Свежий пропуск к серверам голосовой связи.
+
+    Пропуск к ретранслятору временный (TURN_TTL), а занятие длится дольше.
+    Страница брала список серверов один раз при открытии — и ровно через час
+    ретранслятор начинал отказывать («Cannot find credentials» в его журнале):
+    у кого прямая связь не проходит, голос после этого уже не поднимался.
+    Теперь страница просит новый пропуск, пока доска открыта.
+
+    Доступ — тот же, что и к самой доске. В участники здесь НЕ добавляем:
+    присоединяет только открытие доски, иначе ссылка на пропуск тихо делала бы
+    участником любого, кто её дёрнет.
+    """
+    board = get_object_or_404(Board, code=code)
+    user = request.user
+    if board.is_banned(user):
+        return JsonResponse({'error': 'no_access'}, status=403)
+    if not board.password_passed(user, request.session):
+        return JsonResponse({'error': 'password'}, status=403)
+    return JsonResponse({'iceServers': ice_servers(user)})
+
+
+@login_required
 @require_POST
 def board_rename(request, code):
     """Переименовать доску (только владелец)."""
