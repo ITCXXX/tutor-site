@@ -9124,11 +9124,18 @@
   function scheduleTextRender(el, node) { const now = Date.now(); if (now - _txtRenderAt >= 80) { _txtRenderAt = now; renderTextInto(node, el); } }
   function startResize(corner, ev) {
     const id = Array.from(selected)[0];
-    const el = elements.get(id), node = nodes.get(id);
-    if (!el || !node) { updateDebug('resize: нет объекта'); return; }
+    const el = elements.get(id), node = nodes.get(id) || null;
+    // У стикера, карточки, таблицы и текста узла на холсте НЕТ: они живут в
+    // отдельном слое HTML. Раньше здесь стояло «нет узла — выходим», и
+    // одиночный стикер не тянулся вовсе: кружки показывались, а протяжка молча
+    // не начиналась.
+    if (!el || (!node && !widgetItems.get(id))) { updateDebug('resize: нет объекта'); return; }
     const уч = участникиМасштаба();
     const общий = боксУчастников(уч);
-    const b = (уч.length === 1 && уч[0].el.type === 'frame') ? elBox(el, node) : (общий || elBox(el, node));
+    const b = (уч.length === 1 && уч[0].el.type === 'frame' && node)
+      ? elBox(el, node)
+      : (общий || (node ? elBox(el, node) : null));
+    if (!b) { updateDebug('resize: нет рамки'); return; }
     const P0 = worldPoint();
     const углы = boxCorners(b);
     // Какой угол тянут, решает БЛИЖАЙШИЙ к указателю, а не имя нажатой ручки:
@@ -9178,8 +9185,8 @@
     updateDebug('resize СТАРТ ' + corner);
   }
   function doResize() {
-    const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
-    if (!el || !node) return;
+    const el = elements.get(resizeState.id), node = nodes.get(resizeState.id) || null;
+    if (!el) return;   // узел нужен не всем: стикер и текст — это HTML, не холст
     const указатель = worldPoint();
     if (!resizeState.пошло) {
       const P0 = resizeState.P0;
@@ -9193,7 +9200,7 @@
     const зх = (resizeState.grab && resizeState.grab.x) || 0;
     const зy = (resizeState.grab && resizeState.grab.y) || 0;
     const P = { x: указатель.x - зх, y: указатель.y - зy };
-    if (el.type === 'frame') {
+    if (el.type === 'frame' && node) {
       // Окно: меняем размер прямоугольника (произвольно по осям), масштаб
       // плоскости (unit) и центр не трогаем — видно больше/меньше плоскости.
       const F = resizeState.F;
@@ -9218,7 +9225,7 @@
       updateDebug('окно ' + Math.round(w) + '×' + Math.round(h));
       return;
     }
-    if (el.type === 'text') {
+    if (el.type === 'text' && node) {
       // Текст: тянем ширину строки (перенос), высота — под содержимое. Правим wrapWidth.
       const F = resizeState.F;
       // Направляющие при растягивании текста. У картинок и фигур они есть
