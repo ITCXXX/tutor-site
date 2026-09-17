@@ -8758,9 +8758,23 @@
   }
   const handlesGroup = new Konva.Group({ visible: false });
   layer.add(handlesGroup);
+  // Ручка размера — маленький кружок, центр приходится РОВНО в угол пунктирной
+  // рамки. Квадраты приходилось уводить внутрь объекта: они закрывали тот самый
+  // угол содержимого, который подгоняют, и спорили за пиксели с якорями стрелок.
+  // Кружок мельче, стоит в самом углу и содержимое не закрывает.
+  const РУЧКА = { r: 5, fill: '#eeeef2', stroke: '#a4a4ae', sw: 1.25, hit: 16 };
   const HCORNERS = ['tl', 'tr', 'bl', 'br'];
   HCORNERS.forEach((c) => {
-    const h = new Konva.Rect({ name: c, width: 10, height: 10, fill: '#fff', stroke: '#4d7cfe', strokeWidth: 1.5, cornerRadius: 1 });
+    const h = new Konva.Circle({ name: c, radius: РУЧКА.r, fill: РУЧКА.fill, stroke: РУЧКА.stroke, strokeWidth: РУЧКА.sw });
+    // Зона попадания больше кружка: в пять пикселей пальцем не попасть. Радиус
+    // зоны считает positionHandlesCore — у мелкого объекта он урезан, иначе
+    // четыре зоны накрывают объект целиком и его нельзя перетащить.
+    h.hitFunc(function (ctx) {
+      ctx.beginPath();
+      ctx.arc(0, 0, h._hitR || РУЧКА.hit, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.fillStrokeShape(this);
+    });
     h.on('mousedown touchstart', (e) => { e.cancelBubble = true; startResize(c); });
     h.on('mouseenter', () => { stageEl.style.cursor = (c === 'tl' || c === 'br') ? 'nwse-resize' : 'nesw-resize'; });
     h.on('mouseleave', () => { stageEl.style.cursor = курсорИнструмента(); });
@@ -8783,7 +8797,10 @@
   const connHandles = new Konva.Group({ visible: false });
   layer.add(connHandles);
   const connHandleEls = {};
-  const CONN_HANDLES = ['a', 'b', 'm', 'l', 'r'];
+  // Порядок важен: он же порядок наложения. Концы (a, b) создаём ПОСЛЕДНИМИ,
+  // чтобы они лежали поверх путевых точек — на короткой линии средняя точка
+  // сидит почти там же, где концы, и перехватывала нажатие: конец было не взять.
+  const CONN_HANDLES = ['m', 'l', 'r', 'a', 'b'];
   const CONN_SLOT = { m: 'wm', l: 'wl', r: 'wr' };
   const CONN_FRAC = { m: 0.5, l: 0.25, r: 0.75 };
   function connSelectedEl() { if (selected.size !== 1) return null; const el = elements.get(Array.from(selected)[0]); return (el && (el.type === 'line' || el.type === 'arrow')) ? el : null; }
@@ -8896,18 +8913,39 @@
     const el = elements.get(id), node = nodes.get(id);
     if (!el || !node) { updateDebug('resize: нет объекта'); return; }
     const b = elBox(el, node);
+    const P0 = worldPoint();
+    const углы = boxCorners(b);
+    // Какой угол тянут, решает БЛИЖАЙШИЙ к указателю, а не имя нажатой ручки:
+    // у мелкого объекта зоны нажатия соседних кружков перекрываются, и нажатие
+    // доставалось не тому углу — объект прыгал через рамку.
+    if (corner !== 'ml' && corner !== 'mr' && P0) {
+      let лучший = corner, ближе = Infinity;
+      HCORNERS.forEach((c) => {
+        const p = углы[c], d = (p.x - P0.x) * (p.x - P0.x) + (p.y - P0.y) * (p.y - P0.y);
+        if (d < ближе) { ближе = d; лучший = c; }
+      });
+      corner = лучший;
+    }
     // Боковые ручки текста: фиксирован противоположный край (по X).
     let F;
     if (corner === 'ml') F = { x: b.x + b.width, y: b.y };
     else if (corner === 'mr') F = { x: b.x, y: b.y };
     else F = boxCorners(b)[OPP[corner]];
-    resizeState = { id, corner, F, w0: Math.max(1, b.width), h0: Math.max(1, b.height), start: snapshotGeom(el), histBefore: clone(el) };
+    // Захват: где именно палец лёг относительно угла. Без этого объект на
+    // первом же движении прыгал на это смещение — особенно заметно пальцем.
+    const C0 = (corner === 'ml' || corner === 'mr') ? null : углы[corner];
+    const grab = (C0 && P0) ? { x: P0.x - C0.x, y: P0.y - C0.y } : { x: 0, y: 0 };
+    resizeState = { id, corner, F, grab, w0: Math.max(1, b.width), h0: Math.max(1, b.height), start: snapshotGeom(el), histBefore: clone(el) };
     updateDebug('resize СТАРТ ' + corner);
   }
   function doResize() {
     const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
     if (!el || !node) return;
-    const P = worldPoint();
+    const указатель = worldPoint();
+    // Считаем не от указателя, а от угла: вычитаем захват (см. startResize).
+    const зх = (resizeState.grab && resizeState.grab.x) || 0;
+    const зy = (resizeState.grab && resizeState.grab.y) || 0;
+    const P = { x: указатель.x - зх, y: указатель.y - зy };
     if (el.type === 'frame') {
       // Окно: меняем размер прямоугольника (произвольно по осям), масштаб
       // плоскости (unit) и центр не трогаем — видно больше/меньше плоскости.
@@ -9085,14 +9123,19 @@
         h.size({ width: ew, height: eh }); h.strokeWidth(1.5 / stage.scaleX());
         h.position({ x: p.x - ew / 2 + наружу, y: p.y - eh / 2 });
       } else {
+        // Центр кружка — в углу ПУНКТИРНОЙ рамки: она шире содержимого на
+        // padding трансформера, и владелец просил кружки именно в её углах.
+        const пад = (tr.padding() || 0) / stage.scaleX();
         const p = pts[name];
-        // Угловая ручка уходит по диагонали К ЦЕНТРУ объекта: смещение ровно в
-        // половину её размера, значит ручка целиком внутри рамки, а её внешний
-        // край приходится вровень с границей.
-        const зх = (p.x <= b.x + b.width / 2 ? 1 : -1) * (sz / 2);
-        const зy = (p.y <= b.y + b.height / 2 ? 1 : -1) * (sz / 2);
-        h.size({ width: sz, height: sz }); h.strokeWidth(1.5 / stage.scaleX());
-        h.position({ x: p.x - sz / 2 + зх, y: p.y - sz / 2 + зy });
+        const лево = p.x <= b.x + b.width / 2, верх = p.y <= b.y + b.height / 2;
+        h.radius(РУЧКА.r / stage.scaleX());
+        h.strokeWidth(РУЧКА.sw / stage.scaleX());
+        // Зона нажатия — не больше половины меньшей стороны рамки: иначе у
+        // мелкого объекта зоны соседних кружков сходятся в его середине, и
+        // объект нельзя ни перетащить, ни взять за нужный угол.
+        const мельче = Math.min(b.width, b.height) * stage.scaleX() / 2;
+        h._hitR = Math.max(6, Math.min(РУЧКА.hit, мельче)) / stage.scaleX();
+        h.position({ x: p.x + (лево ? -пад : пад), y: p.y + (верх ? -пад : пад) });
       }
     });
     handlesGroup.show();
