@@ -12680,7 +12680,14 @@
     let snap = null;
     const start = () => { const el = connSelectedEl(); snap = el ? clone(el) : null; };
     const live = (v) => {
-      v = Math.max(1, Math.min(24, parseInt(v, 10) || 1)); range.value = v; num.value = v;
+      // parseFloat и предел ПО МЕСТУ: толщины бывают дробными (1,5), а после
+      // растягивания группы линия может оказаться толще прежнего предела в 24.
+      // Целое округление и жёсткий потолок молча портили бы то, что человек
+      // только что получил.
+      const потолок = Math.max(24, parseFloat(range.max) || 24);
+      v = Math.max(0.5, Math.min(потолок, parseFloat(v) || 1));
+      range.step = 0.5; num.step = 0.5;
+      range.value = v; num.value = v;
       const el = connSelectedEl(); if (!el) return;
       el.data.strokeWidth = v; const node = nodes.get(el.id); if (node) node.draw(); layer.batchDraw();
     };
@@ -12747,7 +12754,9 @@
     const el = connSelectedEl(); if (!el) return;
     const d = el.data, isArrow = el.type === 'arrow';
     const w = d.strokeWidth || 2;
-    document.getElementById('cn-width-range').value = w; document.getElementById('cn-width-num').value = w;
+    const cnR = document.getElementById('cn-width-range'), cnN = document.getElementById('cn-width-num');
+    [cnR, cnN].forEach((эл) => { if (!эл) return; эл.max = Math.max(parseFloat(эл.max) || 24, Math.ceil(w)); эл.step = 0.5; });
+    cnR.value = w; cnN.value = w;
     const col = d.stroke || d.color || '#1f2937';
     document.getElementById('cn-color-dot').style.background = col;
     document.querySelectorAll('#cn-colors .cp-sw').forEach((sw) => sw.classList.toggle('cp-sel', sw.dataset.color.toLowerCase() === col.toLowerCase()));
@@ -12836,6 +12845,11 @@
     if (dot) dot.style.background = d.stroke || d.color || '#1f2937';
     const w = d.strokeWidth == null ? 3 : d.strokeWidth;
     const range = document.getElementById('st-width-range'), num = document.getElementById('st-width-num');
+    // Растянутый штрих бывает толще предела ползунка и дробным (2,25). Ползунок
+    // подрезал бы такое значение молча, и первое же касание испортило бы
+    // толщину, которую человек только что получил растягиванием.
+    const предел = (эл) => { if (!эл) return; эл.max = Math.max(parseFloat(эл.max) || 40, Math.ceil(w)); };
+    предел(range); предел(num);
     if (range) range.value = w; if (num) num.value = w;
     // Прозрачность — только у маркера: у карандаша её нет вовсе.
     const orow = document.getElementById('st-opacity-row');
@@ -12930,9 +12944,11 @@
     const r = рамкаВыделенияНаЭкране(); if (!r) return;
     const w = objActs.offsetWidth || 160, h = objActs.offsetHeight || 44;
     // ПОД выделенным: панели свойств встают НАД ним, и так они не спорят за
-    // одно место.
-    let top = r.bottom + 12;
-    if (top + h > window.innerHeight - 8) top = Math.max(70, r.top - h - 12);
+    // одно место. Отступ больше зоны нажатия угловых кружков (16 экранных px),
+    // иначе панель накрывает нижние углы и за них нельзя взяться.
+    const зазорОтУгла = 24;
+    let top = r.bottom + зазорОтУгла;
+    if (top + h > window.innerHeight - 8) top = Math.max(70, r.top - h - зазорОтУгла);
     let left = (r.left + r.right) / 2 - w / 2;
     left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
     top = Math.max(70, Math.min(top, window.innerHeight - h - 8));
