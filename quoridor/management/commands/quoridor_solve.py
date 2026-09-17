@@ -38,6 +38,10 @@ class Command(BaseCommand):
         parser.add_argument('--size', dest='размер', type=int, default=5)
         parser.add_argument('--walls', dest='заборов', type=int, default=1,
                             help='заборов на игрока')
+        parser.add_argument('--walls-red', dest='заборов_красных', type=int,
+                            help='заборов у первого, если не поровну')
+        parser.add_argument('--walls-blue', dest='заборов_синих', type=int,
+                            help='заборов у второго, если не поровну')
         parser.add_argument('--ladder', dest='лестница', action='store_true',
                             help='посчитать всё, что успевается')
         parser.add_argument('--line', dest='линия', action='store_true',
@@ -47,7 +51,12 @@ class Command(BaseCommand):
                             help='считать поражением позицию, где ходить нечем')
 
     def handle(self, *args, **п):
-        задачи = ЛЕСТНИЦА if п['лестница'] else [(п['размер'], п['заборов'])]
+        свои = (п.get('заборов_красных'), п.get('заборов_синих'))
+        если_разное = [(п['размер'], (свои[0] if свои[0] is not None else п['заборов'],
+                                      свои[1] if свои[1] is not None else п['заборов']))]
+        задачи = (ЛЕСТНИЦА if п['лестница']
+                  else (если_разное if any(з is not None for з in свои)
+                        else [(п['размер'], п['заборов'])]))
         for n, заборов in задачи:
             if n < 3 or n % 2 == 0:
                 raise CommandError('сторона поля должна быть нечётной и не '
@@ -61,10 +70,12 @@ class Command(BaseCommand):
         исход, тупиков = задача.решить(тупик_проигрыш=тупик_проигрыш)
         старт = задача.начальная()
 
+        подпись = ('по %d' % заборов if not isinstance(заборов, tuple)
+                   else 'у первого %d, у второго %d' % заборов)
         self.stdout.write(
-            '%dx%d, заборов по %d: %-28s  позиций %d, полуходов до конца %d, '
+            '%dx%d, заборов %s: %-28s  позиций %d, полуходов до конца %d, '
             'тупиков %d, %.0f с'
-            % (n, n, заборов, ИМЕНА[исход[старт]], задача.всего,
+            % (n, n, подпись, ИМЕНА[исход[старт]], задача.всего,
                задача.глубина[старт], тупиков, time.perf_counter() - начало))
 
         if показать_линию:
