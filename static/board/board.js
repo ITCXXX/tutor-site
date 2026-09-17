@@ -7520,7 +7520,9 @@
     const clickedEl = elements.get(id);
     let carry = [];
     if (clickedEl && (clickedEl.type === 'image' || clickedEl.type === 'pdf')) {
-      carry = objectsOnCarrier(clickedEl).filter((x) => x !== id && !selected.has(x));
+      // Пока выбран вид, картинка не тащит написанное на ней: иначе команда
+      // «оставить только картинки» выполнялась бы наполовину.
+      carry = активныйВид ? [] : objectsOnCarrier(clickedEl).filter((x) => x !== id && !selected.has(x));
     }
     if ((selected.has(id) && selected.size > 1) || carry.length) {
       const lead = nodes.get(id);
@@ -8975,7 +8977,7 @@
     selected.forEach((id) => {
       const el = elements.get(id); if (!el) return;
       ids.add(id);
-      if (el.type === 'image' || el.type === 'pdf') objectsOnCarrier(el).forEach((x) => ids.add(x));
+      if (!активныйВид && (el.type === 'image' || el.type === 'pdf')) objectsOnCarrier(el).forEach((x) => ids.add(x));
     });
     const список = [];
     ids.forEach((id) => {
@@ -9507,6 +9509,12 @@
     });
   }
   function refreshTransformer() {
+    // Состав выделения сменился — выбранный вид больше не про него. Сброс
+    // именно здесь: syncObjActions при пустом выделении, в «пустой руке» и в
+    // просмотре выходит РАНЬШЕ отрисовки, и пометка «активный вид» осталась бы
+    // висеть, а запрет прицепов ниже работал бы уже без всякого фильтра.
+    const ключ = ключВыделения();
+    if (ключ !== составВыделения) { составВыделения = ключ; активныйВид = null; выделениеДоФильтра = null; }
     // Построения (линии ±∞) и окружности в трансформер не берём (рамка/ресайз не нужны).
     const sel = Array.from(selected).map((id) => nodes.get(id))
       .filter((n) => { const e = n && elements.get(n.id()); return e && !(e.type === 'point' || e.type === 'angle' || CONSTRUCT_LINES.indexOf(e.type) >= 0 || e.type === 'circ' || isFilledPoly(e.type)); });
@@ -12919,6 +12927,7 @@
   const oaSave = document.getElementById('oa-save');
   // Ссылки жили только в правом меню, а на планшете правой кнопки нет вовсе.
   // Кнопки зовут ТЕ ЖЕ функции, что и меню: править придётся одно место.
+  const oaKind = document.getElementById('oa-kind');
   const oaLink = document.getElementById('oa-link');
   const oaCopy = document.getElementById('oa-copy');
   const oaDel = document.getElementById('oa-del');
@@ -12954,6 +12963,85 @@
     const els = выделенныеЭлементы();
     return els.some((e) => e.data && e.data.groupId != null);
   }
+  // ── Виды объектов: «оставить только …» ────────────────────────────────
+  // Обвели рамкой кусок доски — и в выделении каша: две картинки, три линии,
+  // десяток штрихов. Разобрать её было нечем. Кнопка со списком видов
+  // оставляет в выделении один вид; «Все» возвращает то, что было.
+  const ВИДЫ = [
+    { id: 'stroke', имя: 'Штрихи от руки', типы: ['freehand'] },
+    { id: 'line', имя: 'Линии и стрелки', типы: ['line', 'arrow'] },
+    { id: 'shape', имя: 'Фигуры', типы: ['rect', 'ellipse', 'shape', 'venn'] },
+    { id: 'image', имя: 'Картинки и PDF', типы: ['image', 'pdf'] },
+    { id: 'text', имя: 'Тексты и формулы', типы: ['text', 'textbox', 'latex'] },
+    { id: 'note', имя: 'Стикеры и карточки', типы: ['sticky', 'card', 'comment'] },
+    { id: 'geo', имя: 'Геометрия по точкам', типы: ['point', 'angle', 'mark', 'circ', 'circle', 'polygon', 'regpoly', 'vector', 'measure', 'conic'].concat(CONSTRUCT_LINES) },
+    { id: 'frame', имя: 'Окна и графики', типы: ['frame', 'func', 'implicit', 'region', 'xcurve', 'ftangent', 'farea', 'fintersect'] },
+    { id: 'widget', имя: 'Прочие виджеты', типы: ['table', 'kanban', 'timer', 'wheel', 'slider', 'embed', 'poll', 'screen', 'geogebra'] },
+  ];
+  const ВИД_ПО_ТИПУ = (() => { const m = {}; ВИДЫ.forEach((v) => v.типы.forEach((t) => { m[t] = v.id; })); return m; })();
+  function видОбъекта(el) { return (el && ВИД_ПО_ТИПУ[el.type]) || 'widget'; }
+  let активныйВид = null;         // какой вид сейчас оставлен
+  let выделениеДоФильтра = null;  // что было выделено до выбора вида
+  let составВыделения = '';       // состав, при котором вид выбирали
+  function ключВыделения() { return Array.from(selected).sort().join(','); }
+  function видыВВыделении() {
+    const источник = выделениеДоФильтра || Array.from(selected);
+    const счёт = new Map();
+    источник.forEach((id) => { const el = elements.get(id); if (!el) return; const v = видОбъекта(el); счёт.set(v, (счёт.get(v) || 0) + 1); });
+    return ВИДЫ.filter((v) => счёт.has(v.id)).map((v) => ({ id: v.id, имя: v.имя, сколько: счёт.get(v.id) }));
+  }
+  function оставитьВид(vid) {
+    if (!vid) {
+      const вернуть = (выделениеДоФильтра || Array.from(selected)).filter((id) => elements.get(id));
+      selected.clear(); вернуть.forEach((id) => selected.add(id));
+      активныйВид = null; выделениеДоФильтра = null;
+    } else {
+      if (!активныйВид) выделениеДоФильтра = Array.from(selected);
+      const оставить = (выделениеДоФильтра || []).filter((id) => { const el = elements.get(id); return el && видОбъекта(el) === vid; });
+      if (!оставить.length) return;
+      selected.clear(); оставить.forEach((id) => selected.add(id));
+      активныйВид = vid;
+    }
+    // Состав сменили МЫ САМИ — запоминаем его, иначе пересчёт ниже примет это
+    // за чужое выделение и тут же сбросит вид.
+    составВыделения = ключВыделения();
+    refreshTransformer();
+    positionHandles();
+    syncObjActions();
+  }
+  function закрытьВиды() {
+    const p = document.getElementById('oa-kind-pop');
+    if (p) p.classList.add('ps-hidden');
+    if (oaKind) oaKind.classList.remove('cn-open');
+  }
+  function отрисоватьВиды() {
+    const поп = document.getElementById('oa-kind-pop'); if (!поп) return;
+    const виды = видыВВыделении();
+    const всего = (выделениеДоФильтра || Array.from(selected)).length;
+    поп.innerHTML = '';
+    const строка = (подпись, галочка, действие) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'ctx-item';
+      b.innerHTML = '<span class="ctx-tick">' + (галочка ? '✓' : '') + '</span>' + подпись;
+      b.addEventListener('click', (e) => { e.stopPropagation(); закрытьВиды(); действие(); });
+      поп.appendChild(b);
+    };
+    строка('Все (' + всего + ')', !активныйВид, () => оставитьВид(null));
+    виды.forEach((v) => строка(v.имя + ' (' + v.сколько + ')', активныйВид === v.id, () => оставитьВид(v.id)));
+  }
+  if (oaKind) oaKind.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const p = document.getElementById('oa-kind-pop'); if (!p) return;
+    const былЗакрыт = p.classList.contains('ps-hidden');
+    закрытьВиды();
+    if (былЗакрыт) { отрисоватьВиды(); p.classList.remove('ps-hidden'); oaKind.classList.add('cn-open'); }
+  });
+  document.addEventListener('click', (e) => {
+    const p = document.getElementById('oa-kind-pop');
+    if (!p || p.classList.contains('ps-hidden')) return;
+    if (p.contains(e.target) || (oaKind && oaKind.contains(e.target))) return;
+    закрытьВиды();
+  });
   function renderObjActions() {
     const ids = Array.from(selected);
     const заперто = allLocked(ids);
@@ -12973,6 +13061,15 @@
     // Дублировать умеет не всё: у таблицы, голосования и таймера живое
     // состояние, и копия сбивала бы с толку. Нечего дублировать — кнопки нет.
     if (oaDup) oaDup.hidden = !выделенныеЭлементы().some(canDuplicate);
+    // Кнопка видов — когда видов больше одного или когда вид уже выбран
+    // (иначе нечем вернуться к «Все»).
+    if (oaKind) {
+      const виды = видыВВыделении();
+      oaKind.hidden = виды.length < 2 && !активныйВид;
+      oaKind.classList.toggle('cn-on', !!активныйВид);
+      const п = document.getElementById('oa-kind-pop');
+      if (п && !п.classList.contains('ps-hidden')) отрисоватьВиды();
+    }
     // Ссылка — только у ОДНОГО объекта: askLinkFor и сам требует одного, а
     // «копировать ссылку» на несколько объектов смысла не имеет.
     const одинЭл = ids.length === 1 ? elements.get(ids[0]) : null;
@@ -13012,7 +13109,7 @@
     if (!objActs) return;
     const надо = selected.size > 0 && tool === 'select' && !panMode && !viewOnly
       && !(typeof sbView !== 'undefined' && sbView);
-    if (!надо) { objActs.classList.add('ps-hidden'); return; }
+    if (!надо) { objActs.classList.add('ps-hidden'); закрытьВиды(); return; }
     renderObjActions();
     objActs.classList.remove('ps-hidden');
     positionObjActions();
