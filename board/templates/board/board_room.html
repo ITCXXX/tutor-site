@@ -1213,6 +1213,12 @@
     #widget-layer { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 23; overflow: hidden; }
     /* На время протяжки рамки выделения DOM-объекты «прозрачны» для мыши. */
     #widget-layer.marquee-thru, #widget-layer.marquee-thru * { pointer-events: none !important; }
+    /* Выделено несколько объектов: у текста и виджетов свои ручки и крестики
+       сидят ровно в углах и перехватывали бы угол ГРУППЫ — прячем их. */
+    #widget-layer.sel-many .mtext-grip,
+    #widget-layer.sel-many .mtext-wrap,
+    #widget-layer.sel-many .mtext-del,
+    #widget-layer.sel-many .wgt-del { display: none !important; }
     /* Инструмент рисования в руке — текст и тела виджетов пропускают штрих на
        холст. Иначе обвести слово или клетку таблицы невозможно: нажатие
        достаётся тексту. Кнопки виджетов (Старт, Крутить, ×) остаются живыми,

@@ -7089,7 +7089,7 @@
       removeNode(drawing.id);
       drawing = null;
     }
-    endMarquee(); endFrameDrag(); endResize(); laserUp(); eraserUp(); lassoUp();
+    endMarquee(); endFrameDrag(); откатитьМасштаб(); laserUp(); eraserUp(); lassoUp();
   }
 
   function markPenSeen() {
@@ -7768,7 +7768,22 @@
     if (вр === 'polygon' && polyPicks.length) updatePolyPreview(worldPoint());
   });
   stage.on('mouseup touchend', (e) => { if (touchBlocked(e)) return; abortActiveInput(); });
-  stage.on('mouseleave', () => { abortActiveInput(); });
+  stage.on('mouseleave', () => {
+    // Во время протяжки за угол указатель нарочно уходит за край объекта и
+    // нередко попадает на текст, стикер или панель: они лежат ОТДЕЛЬНЫМ слоем
+    // над холстом, и Konva считает это уходом со сцены. Раньше протяжка на этом
+    // обрывалась на полпути — и чем больше объект, тем вернее.
+    if (resizeState) return;
+    abortActiveInput();
+  });
+  // Пока тянут за угол, движение ловим на ОКНЕ: над текстом и панелями события
+  // до сцены не доходят вовсе.
+  window.addEventListener('pointermove', (e) => {
+    if (!resizeState) return;
+    if (resizeState.pointerId != null && e.pointerId !== resizeState.pointerId) return;
+    try { stage.setPointersPositions(e); } catch (err) { return; }
+    doResize();
+  }, true);
 
   // Закрыть любое начатое действие. Вызывается и со сцены, и из страховки на
   // уровне окна, поэтому все end-функции внутри устроены так, что повторный
@@ -8797,7 +8812,17 @@
       ctx.closePath();
       ctx.fillStrokeShape(this);
     });
-    h.on('mousedown touchstart', (e) => { e.cancelBubble = true; startResize(c); });
+    h.on('mousedown touchstart', (e) => {
+      e.cancelBubble = true;
+      // Те же сторожа, что и у холста. Без них ладонь, легшая на кружок во время
+      // письма пером, начинала растягивать выделение, а жест двумя пальцами
+      // (зум доски) дёргал объекты.
+      if (viewOnly || panMode || resizeState) return;
+      if (typeof gesture !== 'undefined' && gesture) return;
+      if (typeof cropId !== 'undefined' && cropId) return;
+      if (typeof touchBlocked === 'function' && touchBlocked(e)) return;
+      startResize(c, e);
+    });
     h.on('mouseenter', () => { stageEl.style.cursor = (c === 'tl' || c === 'br') ? 'nwse-resize' : 'nesw-resize'; });
     h.on('mouseleave', () => { stageEl.style.cursor = курсорИнструмента(); });
     handlesGroup.add(h);
@@ -9097,7 +9122,7 @@
   }
   let _txtRenderAt = 0;
   function scheduleTextRender(el, node) { const now = Date.now(); if (now - _txtRenderAt >= 80) { _txtRenderAt = now; renderTextInto(node, el); } }
-  function startResize(corner) {
+  function startResize(corner, ev) {
     const id = Array.from(selected)[0];
     const el = elements.get(id), node = nodes.get(id);
     if (!el || !node) { updateDebug('resize: нет объекта'); return; }
@@ -9137,7 +9162,15 @@
     // Прилипание к направляющим не нужно штрихам от руки: рисунок ни по чему не
     // равняется (то же правило, что у перетаскивания).
     const липнет = уч.some((u) => u.el.type !== 'freehand' && u.el.type !== 'point');
+    // Мёртвая зона: пока указатель не ушёл дальше порога, ничего не меняем —
+    // иначе касание пером по кружку или двойной щелчок мышью «растягивают» на
+    // доли пикселя, пишут шаг в отмену и шлют правку соседям. Пальцу и перу
+    // порог больше: рука дрожит сильнее мыши.
+    const сыр = ev && ev.evt;
+    const вид = (сыр && сыр.pointerType) || (сыр && сыр.touches ? 'touch' : 'mouse');
     resizeState = {
+      pointerId: (сыр && typeof сыр.pointerId === 'number') ? сыр.pointerId : null,
+      P0: P0, порог: вид === 'touch' ? 8 : (вид === 'pen' ? 6 : 3), пошло: false,
       id: id, corner: corner, F: F, C0: C0, grab: grab,
       уч: уч, бокс0: b, бокс: b, пределы: пределыМасштаба(уч), липнет: липнет, histBefore2: было,
       w0: Math.max(1, b.width), h0: Math.max(1, b.height), start: snapshotGeom(el), histBefore: clone(el),
@@ -9148,7 +9181,15 @@
     const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
     if (!el || !node) return;
     const указатель = worldPoint();
-    // Считаем не от указателя, а от угла: вычитаем захват (см. startResize).
+    if (!resizeState.пошло) {
+      const P0 = resizeState.P0;
+      if (P0) {
+        const dx = (указатель.x - P0.x) * stage.scaleX(), dy = (указатель.y - P0.y) * stage.scaleY();
+        if (Math.sqrt(dx * dx + dy * dy) < (resizeState.порог || 3)) return;
+      }
+      resizeState.пошло = true;
+    }
+    // Считаем не от угла указателя, а от угла рамки: вычитаем захват (см. startResize).
     const зх = (resizeState.grab && resizeState.grab.x) || 0;
     const зy = (resizeState.grab && resizeState.grab.y) || 0;
     const P = { x: указатель.x - зх, y: указатель.y - зy };
@@ -9251,8 +9292,29 @@
     layer.batchDraw();
     updateDebug('resize s=' + s.toFixed(2) + ' объектов ' + resizeState.уч.length);
   }
+  // Второй палец лёг на доску посреди протяжки — это начало жеста (зум доски),
+  // а не «конец растягивания». Раньше размер фиксировался на полпути, и вернуть
+  // его можно было только отменой. Теперь возвращаем всё как было: без шага
+  // истории и без рассылки соседям, потому что ничего и не менялось.
+  function откатитьМасштаб() {
+    if (!resizeState) return;
+    const было = resizeState.histBefore2, уч = resizeState.уч || [], шло = resizeState.пошло;
+    resizeState = null;
+    clearGuides();
+    if (шло && было) {
+      уч.forEach((u) => { const b = было.get(u.id); if (b) upsertNode(clone(b)); });
+      if (typeof repositionWidgets === 'function') repositionWidgets();
+      recomputeGeometry();
+    }
+    refreshTransformer();
+    positionHandles();
+    layer.batchDraw();
+  }
   function endResize() {
     if (!resizeState) return;
+    // Нажали и отпустили, не сдвинув, — ничего не произошло: ни шага отмены, ни
+    // правки соседям (см. мёртвую зону).
+    if (!resizeState.пошло) { resizeState = null; clearGuides(); return; }
     const el = elements.get(resizeState.id), node = nodes.get(resizeState.id);
     const wasText = el && el.type === 'text';
     const уч = resizeState.уч || [];
@@ -9418,6 +9480,9 @@
     tr.moveToTop();
     // DOM-объекты (текст/виджеты) трансформер не оборачивает — показываем рамку через класс.
     if (widgetItems.size) widgetItems.forEach((it, id) => it.wrapper.classList.toggle('wsel', selected.has(id)));
+    // Выделено несколько объектов — прячем собственные ручки и крестики текста и
+    // виджетов: они сидят ровно в углах и перехватывали бы угол ГРУППЫ.
+    if (widgetLayerEl) widgetLayerEl.classList.toggle('sel-many', selected.size > 1);
     syncTboxFieldBar();
     renderAnchors();   // якоря показываем у одиночного выделенного объекта
     if (typeof syncVennBar === 'function') syncVennBar();
