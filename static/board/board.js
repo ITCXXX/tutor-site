@@ -1118,7 +1118,7 @@
       // и доска равнялась по тому, чего на экране нет: направляющая появлялась
       // «из ниоткуда», а объект прыгал к невидимому краю.
       if (it.el.data && it.el.data.hidden && !revealHidden) return;
-      const d = it.el.data, w = it.wrapper.offsetWidth, h = it.wrapper.offsetHeight;
+      const d = it.el.data, w = размерВиджета(it).w, h = размерВиджета(it).h;
       if (w && h) refs.push({ x: d.x || 0, y: d.y || 0, w: w, h: h });
     });
     return refs;
@@ -2435,7 +2435,7 @@
       if (rectsIntersect(box, b)) ids.push(id);
     });
     widgetItems.forEach((it, id) => {
-      const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0;
+      const d = it.el.data, w = размерВиджета(it).w, h = размерВиджета(it).h;
       if (!w && !h) return;
       if (rectsIntersect(box, { x: d.x || 0, y: d.y || 0, width: w, height: h })) ids.push(id);
     });
@@ -3632,11 +3632,23 @@
   // Вынесено отдельно, потому что зовётся на КАЖДОМ кадре панорамы и зума
   // (scheduleViewRedraw). Всё тяжёлое — пересчёт стрелок и якорей — осталось в
   // repositionWidgets ниже: во время движения оно не нужно.
+  // Размер виджета НА ДОСКЕ. У стикера, карточки, таблицы и текста нет полей
+  // ширины и высоты: их размер задаёт содержимое. Чтобы растягивать их вместе с
+  // выделением, у них есть собственный коэффициент d.scale — он множит и рамку,
+  // и шрифт внутри, то есть стикер меняется целиком, как картинка. Все, кто
+  // меряет виджет (выделение, направляющие, прицепы, якоря, границы доски),
+  // спрашивают размер здесь.
+  function размерВиджета(it) {
+    if (!it || !it.wrapper) return { w: 0, h: 0 };
+    const k = (it.el && it.el.data && it.el.data.scale) || 1;
+    return { w: (it.wrapper.offsetWidth || 0) * k, h: (it.wrapper.offsetHeight || 0) * k };
+  }
   function положитьВиджеты() {
     const s = stage.scaleX();
     widgetItems.forEach((it) => {
       const d = it.el.data;
-      it.wrapper.style.transform = 'translate(' + ((d.x || 0) * s + stage.x()) + 'px,' + ((d.y || 0) * s + stage.y()) + 'px) scale(' + s + ')';
+      const k = (d.scale || 1);
+      it.wrapper.style.transform = 'translate(' + ((d.x || 0) * s + stage.x()) + 'px,' + ((d.y || 0) * s + stage.y()) + 'px) scale(' + (s * k) + ')';
     });
     if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
     if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
@@ -7556,8 +7568,8 @@
     let cx, cy;
     const w = widgetItems.get(eid);
     if (w && w.wrapper) {
-      cx = (el.data.x || 0) + (w.wrapper.offsetWidth || 0) / 2;
-      cy = (el.data.y || 0) + (w.wrapper.offsetHeight || 0) / 2;
+      cx = (el.data.x || 0) + размерВиджета(w).w / 2;
+      cy = (el.data.y || 0) + размерВиджета(w).h / 2;
     } else {
       const n = nodes.get(eid);
       if (!n || typeof n.getClientRect !== 'function') return null;
@@ -7607,7 +7619,7 @@
       if (isPointBound(el)) return;                  // следует за своими точками
       const w = widgetItems.get(eid);
       if (w && w.wrapper) {                          // текст, стикер, таблица — DOM
-        const ww = w.wrapper.offsetWidth || 0, wh = w.wrapper.offsetHeight || 0;
+        const ww = размерВиджета(w).w, wh = размерВиджета(w).h;
         if (внутри((el.data.x || 0) + ww / 2, (el.data.y || 0) + wh / 2)) res.push(eid);
         return;
       }
@@ -8253,7 +8265,7 @@
     if (!el) return null;
     const w = widgetItems.get(id);
     if (w) {
-      const ww = w.wrapper.offsetWidth || 0, hh = w.wrapper.offsetHeight || 0;
+      const ww = размерВиджета(w).w, hh = размерВиджета(w).h;
       if (!ww && !hh) return null;
       return { x: el.data.x || 0, y: el.data.y || 0, width: ww, height: hh };
     }
@@ -8937,7 +8949,7 @@
   function боксСодержимого(el, node, widget) {
     const d = el.data || {};
     if (widget && widget.wrapper) {
-      return { x: d.x || 0, y: d.y || 0, width: widget.wrapper.offsetWidth || 0, height: widget.wrapper.offsetHeight || 0 };
+      return { x: d.x || 0, y: d.y || 0, width: размерВиджета(widget).w, height: размерВиджета(widget).h };
     }
     const t = el.type;
     if (t === 'ellipse') return { x: (d.x || 0) - (d.radiusX || 0), y: (d.y || 0) - (d.radiusY || 0), width: 2 * (d.radiusX || 0), height: 2 * (d.radiusY || 0) };
@@ -8999,6 +9011,7 @@
       }
       if (t === 'ellipse') { if (d.radiusX > 0) мин = Math.max(мин, 1 / d.radiusX); if (d.radiusY > 0) мин = Math.max(мин, 1 / d.radiusY); }
       if (t === 'circle' && d.r > 0) мин = Math.max(мин, 1 / d.r);
+      if (u.widget) мин = Math.max(мин, 0.2 / (d.scale || 1));
     });
     return { мин: мин, макс: 40 };
   }
@@ -9008,7 +9021,7 @@
       x: d.x || 0, y: d.y || 0,
       points: (d.points || []).slice(),
       sw: d.strokeWidth, width: d.width, height: d.height,
-      rx: d.radiusX, ry: d.radiusY, r: d.r,
+      rx: d.radiusX, ry: d.radiusY, r: d.r, scale: d.scale,
       wl: d.wl && d.wl.slice(), wm: d.wm && d.wm.slice(), wr: d.wr && d.wr.slice(),
     };
   }
@@ -9045,7 +9058,12 @@
       return;
     }
     if (t === 'point') { if (node) node.position({ x: nx, y: ny }); return; }
-    if (u.widget) { if (typeof repositionWidgets === 'function') u.нуженПеренос = true; return; }
+    if (u.widget) {
+      // Стикеры, карточки, таблицы и текст растягиваются целиком, вместе со
+      // шрифтом: у них нет ширины и высоты в данных, зато есть свой коэффициент.
+      d.scale = Math.max(0.2, Math.min(10, (ст.scale || 1) * s));
+      return;
+    }
     const м = МИН_РАЗМЕРЫ[t] || [1, 1];
     if (ст.width) d.width = Math.max(м[0], ст.width * s);
     if (ст.height) d.height = Math.max(м[1], ст.height * s);
@@ -10453,7 +10471,7 @@
     });
     // DOM-объекты (текст/виджеты) — их нет в nodes; берём по мировой рамке обёртки.
     widgetItems.forEach((it, id) => {
-      const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0;
+      const d = it.el.data, w = размерВиджета(it).w, h = размерВиджета(it).h;
       if (!w && !h) return;
       if (rectsIntersect(box, { x: d.x || 0, y: d.y || 0, width: w, height: h })) picked.add(id);
     });
@@ -11488,7 +11506,7 @@
     widgetItems.forEach((it) => {
       const d = it.el.data;
       if (d && d.hidden && !revealHidden) return;
-      const w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0;
+      const w = размерВиджета(it).w, h = размерВиджета(it).h;
       if (w || h) take(d.x || 0, d.y || 0, w, h);
     });
     if (!isFinite(minX)) { boardHint('На доске пока пусто'); return; }
@@ -14583,7 +14601,7 @@
       const b = n.getClientRect({ relativeTo: layer });
       if (b.width || b.height) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); any = true; }
     });
-    widgetItems.forEach((it) => { const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0; if (w || h) { x0 = Math.min(x0, d.x || 0); y0 = Math.min(y0, d.y || 0); x1 = Math.max(x1, (d.x || 0) + w); y1 = Math.max(y1, (d.y || 0) + h); any = true; } });
+    widgetItems.forEach((it) => { const d = it.el.data, w = размерВиджета(it).w, h = размерВиджета(it).h; if (w || h) { x0 = Math.min(x0, d.x || 0); y0 = Math.min(y0, d.y || 0); x1 = Math.max(x1, (d.x || 0) + w); y1 = Math.max(y1, (d.y || 0) + h); any = true; } });
     if (!any) return null;
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }
@@ -14626,7 +14644,7 @@
       const n = nodes.get(id);
       if (n) { const b = n.getClientRect({ relativeTo: layer }); if (b.width || b.height) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); any = true; } }
       const it = widgetItems.get(id);
-      if (it) { const d = it.el.data, w = it.wrapper.offsetWidth || 0, h = it.wrapper.offsetHeight || 0; if (w || h) { x0 = Math.min(x0, d.x || 0); y0 = Math.min(y0, d.y || 0); x1 = Math.max(x1, (d.x || 0) + w); y1 = Math.max(y1, (d.y || 0) + h); any = true; } }
+      if (it) { const d = it.el.data, w = размерВиджета(it).w, h = размерВиджета(it).h; if (w || h) { x0 = Math.min(x0, d.x || 0); y0 = Math.min(y0, d.y || 0); x1 = Math.max(x1, (d.x || 0) + w); y1 = Math.max(y1, (d.y || 0) + h); any = true; } }
     });
     return any ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
   }
