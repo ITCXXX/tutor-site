@@ -12983,6 +12983,7 @@
   const oaSave = document.getElementById('oa-save');
   // Ссылки жили только в правом меню, а на планшете правой кнопки нет вовсе.
   // Кнопки зовут ТЕ ЖЕ функции, что и меню: править придётся одно место.
+  const oaCrop = document.getElementById('oa-crop');
   const oaKind = document.getElementById('oa-kind');
   const oaLink = document.getElementById('oa-link');
   const oaCopy = document.getElementById('oa-copy');
@@ -13117,6 +13118,12 @@
     // Дублировать умеет не всё: у таблицы, голосования и таймера живое
     // состояние, и копия сбивала бы с толку. Нечего дублировать — кнопки нет.
     if (oaDup) oaDup.hidden = !выделенныеЭлементы().some(canDuplicate);
+    // Обрезка — у одной выделенной картинки. Раньше она жила только в правом
+    // меню, а на планшете правой кнопки нет вовсе: обрезать было нечем.
+    if (oaCrop) {
+      const эл = ids.length === 1 ? elements.get(ids[0]) : null;
+      oaCrop.hidden = !(эл && эл.type === 'image' && !(эл.data && эл.data.locked));
+    }
     // Кнопка видов — когда видов больше одного или когда вид уже выбран
     // (иначе нечем вернуться к «Все»).
     if (oaKind) {
@@ -13179,6 +13186,11 @@
     e.stopPropagation();
     if (группаВыделенного()) ungroupSelected(); else groupSelected();
     syncObjActions();
+  });
+  if (oaCrop) oaCrop.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const id = Array.from(selected)[0];
+    if (id) startCropMode(id);
   });
   if (oaLink) oaLink.addEventListener('click', (e) => { e.stopPropagation(); askLinkFor(Array.from(selected)); });
   if (oaCopy) oaCopy.addEventListener('click', (e) => {
