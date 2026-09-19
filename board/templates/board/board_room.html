@@ -625,26 +625,84 @@
        накладываются друг на друга (отрицательные поля), поэтому линия везде
        одинаковой толщины, а не двойная на стыках. */
     .wgt-table-old { display: none; }
+    /* ── ТАБЛИЦА ВЫГЛЯДИТ НАРИСОВАННОЙ НА ДОСКЕ ──────────────────────────
+       Раньше она была окошком поверх доски: белая карточка со скруглением,
+       тенью и серой шапкой. Теперь у неё нет ни карточки, ни тени, ни фона —
+       только линии, как если бы их провели на доске. Всё, что помогает ей
+       управляться (ручки строк, плюсики), проступает при наведении и в
+       спокойном виде не мешает. */
+    /* Вес правила поднят адресом слоя: у общего вида окна (.wgt) тот же вес,
+       что у .wgt-table, и он объявлен ниже — без этого таблица оставалась бы
+       белой карточкой с тенью. */
+    #widget-layer .wgt-table {
+        background: transparent; border: none; box-shadow: none; border-radius: 0;
+        overflow: visible;
+    }
+    #widget-layer .wgt-table .wgt-bar { background: transparent; border-bottom: none; height: 14px; padding: 0; }
+    #widget-layer .wgt-table .wgt-title { display: none; }
+    #widget-layer .wgt-table .wgt-body { padding: 0; overflow: visible; }
     .tbl { position: relative; display: grid; }
     .tcell {
         position: relative; box-sizing: border-box;
-        border: 1px solid #d9d9e0; margin: 0 -1px -1px 0;
+        border: 1px solid #454b59; margin: 0 -1px -1px 0;
         overflow: hidden; padding: 4px 6px; cursor: cell;
+        background: rgba(255,255,255,.72);
     }
     .tcell.sel { border-color: #4d7cfe; box-shadow: inset 0 0 0 1px #4d7cfe; z-index: 1; }
     .tcell.editing { border-color: #4d7cfe; box-shadow: inset 0 0 0 2px rgba(77,124,254,.35); z-index: 2; cursor: text; }
     .tcell-in { min-height: 1em; outline: none; font-size: 14px; line-height: 1.25; word-break: break-word; }
     .tcell-in a { color: #1f6feb; text-decoration: underline; cursor: pointer; }
     /* Ручки на границах: узкие полоски поверх линий сетки. */
-    .tbl-vh { position: absolute; top: 0; bottom: 0; width: 7px; margin-left: -3.5px; cursor: col-resize; z-index: 3; }
-    .tbl-hh { position: absolute; left: 0; right: 0; height: 7px; margin-top: -3.5px; cursor: row-resize; z-index: 3; }
+    .tbl-vh { position: absolute; top: 0; bottom: 0; width: 9px; margin-left: -4.5px; cursor: col-resize; z-index: 3; }
+    .tbl-hh { position: absolute; left: 0; right: 0; height: 9px; margin-top: -4.5px; cursor: row-resize; z-index: 3; }
     .tbl-vh:hover, .tbl-hh:hover { background: rgba(77,124,254,.35); }
-    .tbl-tools { display: flex; gap: 4px; margin-top: 6px; }
-    .tbl-tools button {
-        border: 1px solid #e3e3e8; background: #f7f7fa; color: #6b6b76;
-        border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer;
+
+    /* Ручка строки (слева) и столбца (сверху): скруглённый прямоугольник с
+       тремя точками. Видна при наведении на таблицу — иначе она висела бы
+       вокруг каждой таблицы всё время. */
+    .tbl-h {
+        position: absolute; display: flex; align-items: center; justify-content: center;
+        background: #eceff3; border: 1px solid #d9d9e0; border-radius: 5px; color: #8a8f9c;
+        cursor: grab; opacity: 0; transition: opacity .12s; z-index: 4; box-sizing: border-box;
     }
-    .tbl-tools button:hover { background: #ececf0; color: #2b5bd7; }
+    .wgt-table:hover .tbl-h, .tbl-h.taken { opacity: 1; }
+    .tbl-h.taken { cursor: grabbing; background: #dfe6f7; border-color: #4d7cfe; color: #2b5bd7; }
+    .tbl-hcol { top: -15px; height: 12px; }
+    .tbl-hrow { left: -15px; width: 12px; }
+    .tbl-dots { font-size: 11px; line-height: 1; letter-spacing: .5px; pointer-events: none; }
+    .tbl-hrow .tbl-dots { writing-mode: vertical-rl; }
+    /* Маленькие плюсики на ручке — вставить строку или столбец ЗДЕСЬ. */
+    .tbl-ins {
+        position: absolute; width: 13px; height: 13px; border-radius: 50%; border: 1px solid #c9c9d2;
+        background: #fff; color: #4d7cfe; font-size: 11px; line-height: 1; padding: 0; cursor: pointer;
+        display: none; align-items: center; justify-content: center; z-index: 5;
+    }
+    .tbl-h:hover .tbl-ins { display: flex; }
+    .tbl-ins:hover { background: #4d7cfe; color: #fff; border-color: #4d7cfe; }
+    .tbl-ins-l { left: -7px; top: 0; }
+    .tbl-ins-r { right: -7px; top: 0; }
+    .tbl-ins-t { top: -7px; left: 0; }
+    .tbl-ins-b { bottom: -7px; left: 0; }
+    /* Куда встанет строка или столбец при перетаскивании. */
+    .tbl-drop { position: absolute; background: #4d7cfe; z-index: 6; pointer-events: none; }
+    .tbl-drop-col { top: -14px; bottom: 0; width: 2px; margin-left: -1px; }
+    .tbl-drop-row { left: -14px; right: 0; height: 2px; margin-top: -1px; }
+    /* Плюсики у края: снизу — строка, справа — столбец. */
+    .tbl-add {
+        position: absolute; width: 18px; height: 18px; border-radius: 50%;
+        border: 1px solid #d9d9e0; background: #fff; color: #4d7cfe; cursor: pointer;
+        font-size: 13px; line-height: 1; padding: 0; opacity: 0; transition: opacity .12s;
+        display: flex; align-items: center; justify-content: center; z-index: 4;
+    }
+    .wgt-table:hover .tbl-add { opacity: 1; }
+    .tbl-add:hover { background: #4d7cfe; color: #fff; border-color: #4d7cfe; }
+    .tbl-add-col { right: -24px; top: 50%; margin-top: -9px; }
+    .tbl-add-row { bottom: -24px; left: 50%; margin-left: -9px; }
+    #tbl-bar .tb-act {
+        border: 1px solid #d9d9e0; background: #f7f7fa; color: #2b2b33; border-radius: 6px;
+        padding: 3px 8px; font-size: 11px; cursor: pointer;
+    }
+    #tbl-bar .tb-act:hover { background: #ececf0; color: #2b5bd7; }
     /* Плашка заливки — появляется, когда выбраны клетки. */
     #tbl-bar {
         position: fixed; z-index: 62; display: flex; align-items: center; gap: 5px;
@@ -652,6 +710,17 @@
         padding: 6px 9px; box-shadow: 0 8px 24px rgba(0,0,0,.16);
     }
     #tbl-bar[hidden] { display: none; }
+    /* Сетка выбора размера таблицы: ведёшь по клеткам — видишь, сколько будет
+       строк и столбцов, щёлкнул — запомнилось до щелчка по доске. */
+    #tbl-pick {
+        position: fixed; z-index: 70; background: #fff; border: 1px solid #e3e3e8;
+        border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,.16); padding: 8px;
+    }
+    #tbl-pick[hidden] { display: none; }
+    #tbl-pick .tp-grid { display: grid; grid-template-columns: repeat(8, 16px); grid-auto-rows: 16px; gap: 2px; }
+    #tbl-pick .tp-grid i { border: 1px solid #d9d9e0; border-radius: 2px; display: block; cursor: pointer; }
+    #tbl-pick .tp-grid i.on { background: #dfe6f7; border-color: #4d7cfe; }
+    #tbl-pick .tp-cap { text-align: center; font-size: 11px; color: #6b6b76; margin-top: 6px; }
     #tbl-bar .tb-lbl { font-size: 11px; color: #8a8a94; margin-right: 2px; }
     #tbl-bar .tb-sw {
         width: 20px; height: 20px; border-radius: 5px; cursor: pointer;
@@ -1646,6 +1715,7 @@
 <div id="ggb-layer"></div>
 <div id="widget-layer"></div>
 <div id="tbl-bar" hidden></div>
+<div id="tbl-pick" hidden></div>
 <div id="venn-bar" hidden></div>
 <div id="anchor-layer"></div>
 <div id="cursor-layer"></div>

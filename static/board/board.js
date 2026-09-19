@@ -3859,11 +3859,62 @@
     send({ action: 'element_add', element: el }); histAdd(el);
     setTool('select');
   }
+  // ── Сетка выбора размера ───────────────────────────────────────────────
+  // Нажали на инструмент «Таблица» — показывается маленькая сетка: ведёшь по
+  // ней и видишь, сколько будет строк и столбцов. Выбрал — следующий щелчок по
+  // доске кладёт таблицу ровно такой. Если кнопку просто ПЕРЕТАЩИЛИ на доску,
+  // сетку показывать негде и некогда — тогда таблица три на три, как раньше.
+  const ТП_МАКС = 8;                 // сколько клеток в сетке выбора
+  let размерТаблицы = null;          // {rows, cols} — выбрано в сетке, ждёт щелчка
+  function закрытьСеткуТаблицы() {
+    const p = document.getElementById('tbl-pick');
+    if (p) p.hidden = true;
+  }
+  function показатьСеткуТаблицы(кнопка) {
+    const поп = document.getElementById('tbl-pick');
+    if (!поп || !кнопка) return;
+    if (!поп._собрана) {
+      поп._собрана = true;
+      let html = '<div class="tp-grid">';
+      for (let r = 1; r <= ТП_МАКС; r++) for (let c = 1; c <= ТП_МАКС; c++) {
+        html += '<i data-r="' + r + '" data-c="' + c + '"></i>';
+      }
+      html += '</div><div class="tp-cap">3 × 3</div>';
+      поп.innerHTML = html;
+      const подпись = поп.querySelector('.tp-cap');
+      const подсветить = (r, c) => {
+        поп.querySelectorAll('.tp-grid i').forEach((i) => {
+          i.classList.toggle('on', +i.dataset.r <= r && +i.dataset.c <= c);
+        });
+        подпись.textContent = c + ' × ' + r;      // столбцы на строки, как говорят
+      };
+      поп.addEventListener('pointerover', (e) => {
+        const i = e.target.closest('.tp-grid i'); if (!i) return;
+        подсветить(+i.dataset.r, +i.dataset.c);
+      });
+      поп.addEventListener('click', (e) => {
+        const i = e.target.closest('.tp-grid i'); if (!i) return;
+        размерТаблицы = { rows: +i.dataset.r, cols: +i.dataset.c };
+        закрытьСеткуТаблицы();
+        boardHint('Таблица ' + размерТаблицы.cols + ' × ' + размерТаблицы.rows + ': щёлкните по доске');
+      });
+      подсветить(3, 3);
+    }
+    const r = кнопка.getBoundingClientRect();
+    поп.hidden = false;
+    поп.style.left = Math.round(r.right + 10) + 'px';
+    поп.style.top = Math.max(70, Math.round(r.top - 10)) + 'px';
+  }
+
   function insertTable() {
+    const выбор = размерТаблицы || { rows: 3, cols: 3 };
+    размерТаблицы = null;
+    const rows = Math.max(1, Math.min(ТП_МАКС, выбор.rows));
+    const cols = Math.max(1, Math.min(ТП_МАКС, выбор.cols));
     insertWidget('table', {
-      rows: 3, cols: 3,
-      colW: [120, 120, 120], rowH: [36, 36, 36],
-      cells: [[{}, {}, {}], [{}, {}, {}], [{}, {}, {}]],
+      rows: rows, cols: cols,
+      colW: new Array(cols).fill(TBL_W), rowH: new Array(rows).fill(TBL_H),
+      cells: new Array(rows).fill(null).map(() => new Array(cols).fill(null).map(() => ({}))),
     });
   }
   function insertKanban() { insertWidget('kanban', { columns: [{ title: 'To do', cards: [] }, { title: 'В работе', cards: [] }, { title: 'Готово', cards: [] }] }); }
@@ -4522,19 +4573,45 @@
       for (let r = 0; r < d.rows; r++) {
         for (let c = 0; c < d.cols; c++) {
           const cell = tblCell(d, r, c);
+          if (cell.skip) continue;                        // клетка поглощена объединением
+          const rs = Math.max(1, cell.rs || 1), cs = Math.max(1, cell.cs || 1);
           const sel = it._sel.has(key(r, c)) ? ' sel' : '';
+          // Место клетки задаём явно: только так объединённая занимает
+          // несколько строк и столбцов, а поглощённые просто не рисуются.
           html += '<div class="tcell' + sel + '" data-r="' + r + '" data-c="' + c + '"'
-            + ' style="background:' + escapeAttr(cell.boxBg || '') + '">'
+            + ' style="grid-area:' + (r + 1) + '/' + (c + 1) + '/span ' + rs + '/span ' + cs + ';'
+            + 'background:' + escapeAttr(cell.boxBg || '') + '">'
             + '<div class="tcell-in">' + linkifyClickable(cell.html || '') + '</div></div>';
         }
       }
       html += '</div>';
-      html += '<div class="tbl-tools">'
-        + '<button data-act="addrow" title="Добавить строку">+ стр.</button>'
-        + '<button data-act="delrow" title="Убрать последнюю строку">− стр.</button>'
-        + '<button data-act="addcol" title="Добавить столбец">+ стлб.</button>'
-        + '<button data-act="delcol" title="Убрать последний столбец">− стлб.</button>'
-        + '</div>';
+      // Ручки строк и столбцов — «три точки» за краем таблицы. За них строку
+      // или столбец перетаскивают на другое место; при наведении на ручке
+      // проступают маленькие плюсики — вставить строку или столбец ЗДЕСЬ, а не
+      // только с краю.
+      let x = 0;
+      for (let c = 0; c < d.cols; c++) {
+        const w = tblColW(d, c);
+        html += '<div class="tbl-h tbl-hcol" data-c="' + c + '" style="left:' + x + 'px;width:' + w + 'px" title="Потяните — столбец переедет">'
+          + '<span class="tbl-dots">···</span>'
+          + '<button class="tbl-ins tbl-ins-l" data-ins="col" data-at="' + c + '" title="Вставить столбец слева">+</button>'
+          + '<button class="tbl-ins tbl-ins-r" data-ins="col" data-at="' + (c + 1) + '" title="Вставить столбец справа">+</button>'
+          + '</div>';
+        x += w;
+      }
+      let y = 0;
+      for (let r = 0; r < d.rows; r++) {
+        const hh = tblRowH(d, r);
+        html += '<div class="tbl-h tbl-hrow" data-r="' + r + '" style="top:' + y + 'px;height:' + hh + 'px" title="Потяните — строка переедет">'
+          + '<span class="tbl-dots">···</span>'
+          + '<button class="tbl-ins tbl-ins-t" data-ins="row" data-at="' + r + '" title="Вставить строку выше">+</button>'
+          + '<button class="tbl-ins tbl-ins-b" data-ins="row" data-at="' + (r + 1) + '" title="Вставить строку ниже">+</button>'
+          + '</div>';
+        y += hh;
+      }
+      // Плюсики у края: снизу — строка, справа — столбец.
+      html += '<button class="tbl-add tbl-add-col" data-act="addcol" title="Добавить столбец">+</button>'
+        + '<button class="tbl-add tbl-add-row" data-act="addrow" title="Добавить строку">+</button>';
       it.body.innerHTML = html;
 
       const grid = it.body.querySelector('.tbl');
@@ -4557,7 +4634,7 @@
         const h = document.createElement('div');
         h.className = 'tbl-vh'; h.style.left = x + 'px';
         h.title = 'Потяните — изменится ширина столбца';
-        h.addEventListener('mousedown', (e) => startLineDragT(e, 'col', c));
+        h.addEventListener('pointerdown', (e) => startLineDragT(e, 'col', c));
         grid.appendChild(h);
       }
       let y = 0;
@@ -4566,7 +4643,7 @@
         const h = document.createElement('div');
         h.className = 'tbl-hh'; h.style.top = y + 'px';
         h.title = 'Потяните — изменится высота строки';
-        h.addEventListener('mousedown', (e) => startLineDragT(e, 'row', r));
+        h.addEventListener('pointerdown', (e) => startLineDragT(e, 'row', r));
         grid.appendChild(h);
       }
     }
@@ -4583,10 +4660,10 @@
         render();
       };
       const up = () => {
-        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+        document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up);
         syncWidget(it); histUpd(before, it.el); syncConnectorsOf([it.el.id]);
       };
-      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
     }
 
     // ── Выбор клеток ─────────────────────────────────────────────────────
@@ -4599,7 +4676,7 @@
     function wireCells(grid, d) {
       grid.querySelectorAll('.tcell').forEach((td) => {
         const r = +td.dataset.r, c = +td.dataset.c;
-        td.addEventListener('mousedown', (e) => {
+        td.addEventListener('pointerdown', (e) => {
           if (it._editing) return;                       // идёт правка — не мешаем
           e.stopPropagation();                           // не тащить таблицу
           if (isAddKey(e)) { const k = key(r, c); if (it._sel.has(k)) it._sel.delete(k); else it._sel.add(k); render(); return; }
@@ -4613,8 +4690,8 @@
             selectRange(r, c, +cell.dataset.r, +cell.dataset.c, false);
             render();
           };
-          const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
-          document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+          const up = () => { document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); };
+          document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
         });
         td.addEventListener('dblclick', (e) => { e.stopPropagation(); startCellEdit(r, c); });
       });
@@ -4664,22 +4741,170 @@
     }
 
     // ── Строки и столбцы ─────────────────────────────────────────────────
+    // Пустая клетка — чтобы строки и столбцы были одинаковой длины и при
+    // перестановке ничего не терялось.
+    function пустаяСтрока(d) { return new Array(d.cols).fill(null).map(() => ({})); }
+
+    function вставитьСтроку(at) {
+      const d = it.el.data, before = clone(it.el);
+      at = Math.max(0, Math.min(d.rows, at));
+      d.cells.splice(at, 0, пустаяСтрока(d));
+      d.rowH.splice(at, 0, TBL_H);
+      d.rows++;
+      it._sel.clear(); syncWidget(it); histUpd(before, it.el); render();
+    }
+    function вставитьСтолбец(at) {
+      const d = it.el.data, before = clone(it.el);
+      at = Math.max(0, Math.min(d.cols, at));
+      d.cells.forEach((row) => row.splice(at, 0, {}));
+      d.colW.splice(at, 0, TBL_W);
+      d.cols++;
+      it._sel.clear(); syncWidget(it); histUpd(before, it.el); render();
+    }
+    // Перестановка. Объединённые клетки при этом снимаем: строка, уехавшая
+    // из-под объединения, оставила бы дыру, а молча портить таблицу нельзя.
+    function снятьОбъединения(d) {
+      for (let r = 0; r < d.rows; r++) for (let c = 0; c < d.cols; c++) {
+        const cell = tblCell(d, r, c);
+        if (cell.rs > 1 || cell.cs > 1 || cell.skip) tblSetCell(d, r, c, { rs: 1, cs: 1, skip: 0 });
+      }
+    }
+    function естьОбъединения(d) {
+      for (let r = 0; r < d.rows; r++) for (let c = 0; c < d.cols; c++) {
+        const cell = tblCell(d, r, c);
+        if ((cell.rs || 1) > 1 || (cell.cs || 1) > 1) return true;
+      }
+      return false;
+    }
+    function переставитьСтроку(из, куда) {
+      const d = it.el.data; if (из === куда) return;
+      const before = clone(it.el);
+      if (естьОбъединения(d)) снятьОбъединения(d);
+      const строка = d.cells.splice(из, 1)[0], высота = d.rowH.splice(из, 1)[0];
+      d.cells.splice(куда, 0, строка); d.rowH.splice(куда, 0, высота);
+      it._sel.clear(); syncWidget(it); histUpd(before, it.el); render();
+    }
+    function переставитьСтолбец(из, куда) {
+      const d = it.el.data; if (из === куда) return;
+      const before = clone(it.el);
+      if (естьОбъединения(d)) снятьОбъединения(d);
+      d.cells.forEach((row) => { const кл = row.splice(из, 1)[0]; row.splice(куда, 0, кл === undefined ? {} : кл); });
+      const ширина = d.colW.splice(из, 1)[0]; d.colW.splice(куда, 0, ширина);
+      it._sel.clear(); syncWidget(it); histUpd(before, it.el); render();
+    }
+
     function wireTools() {
-      const tools = it.body.querySelector('.tbl-tools');
-      tools.addEventListener('mousedown', (e) => e.stopPropagation());
-      tools.addEventListener('click', (e) => {
-        const b = e.target.closest('button'); if (!b) return;
-        const d = it.el.data, a = b.dataset.act;
-        const before = clone(it.el);
-        if (a === 'addrow') { d.rows++; d.rowH.push(TBL_H); d.cells.push(new Array(d.cols).fill(null).map(() => ({}))); }
-        else if (a === 'delrow' && d.rows > 1) { d.rows--; d.rowH.pop(); d.cells.pop(); }
-        else if (a === 'addcol') { d.cols++; d.colW.push(TBL_W); d.cells.forEach((row) => row.push({})); }
-        else if (a === 'delcol' && d.cols > 1) { d.cols--; d.colW.pop(); d.cells.forEach((row) => row.pop()); }
-        else return;
-        it._sel.clear();
-        syncWidget(it); histUpd(before, it.el); render();
+      const d0 = it.el.data;
+      // Плюсики у края: добавить столбец справа, строку снизу.
+      it.body.querySelectorAll('.tbl-add').forEach((b) => {
+        b.addEventListener('pointerdown', (e) => e.stopPropagation());
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (b.dataset.act === 'addrow') вставитьСтроку(it.el.data.rows);
+          else вставитьСтолбец(it.el.data.cols);
+        });
+      });
+      // Плюсики на ручках: вставить строку или столбец ровно здесь.
+      it.body.querySelectorAll('.tbl-ins').forEach((b) => {
+        b.addEventListener('pointerdown', (e) => e.stopPropagation());
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const at = parseInt(b.dataset.at, 10);
+          if (b.dataset.ins === 'row') вставитьСтроку(at); else вставитьСтолбец(at);
+        });
+      });
+      // Перетаскивание строки или столбца за «три точки».
+      it.body.querySelectorAll('.tbl-h').forEach((ручка) => {
+        ручка.addEventListener('pointerdown', (e) => {
+          if (e.target.closest('.tbl-ins')) return;       // нажали плюсик — не тащим
+          e.preventDefault(); e.stopPropagation();
+          const колонка = ручка.classList.contains('tbl-hcol');
+          const из = colонкаИли(ручка, колонка);
+          const d = it.el.data;
+          const grid = it.body.querySelector('.tbl');
+          const рамка = grid.getBoundingClientRect();
+          const s = stage.scaleX() * ((it.el.data.scale) || 1);
+          ручка.classList.add('taken');
+          let куда = из;
+          const метка = document.createElement('div');
+          метка.className = 'tbl-drop ' + (колонка ? 'tbl-drop-col' : 'tbl-drop-row');
+          grid.appendChild(метка);
+          const показать = () => {
+            let сдвиг = 0;
+            for (let i = 0; i < куда; i++) сдвиг += колонка ? tblColW(d, i) : tblRowH(d, i);
+            if (колонка) метка.style.left = сдвиг + 'px'; else метка.style.top = сдвиг + 'px';
+          };
+          показать();
+          const mv = (ev) => {
+            const отн = колонка ? (ev.clientX - рамка.left) / s : (ev.clientY - рамка.top) / s;
+            let сумма = 0, индекс = 0;
+            const сколько = колонка ? d.cols : d.rows;
+            for (let i = 0; i < сколько; i++) {
+              const размер = колонка ? tblColW(d, i) : tblRowH(d, i);
+              if (отн < сумма + размер / 2) break;
+              сумма += размер; индекс = i + 1;
+            }
+            куда = Math.max(0, Math.min(сколько, индекс));
+            показать();
+          };
+          const up = () => {
+            document.removeEventListener('pointermove', mv);
+            document.removeEventListener('pointerup', up);
+            ручка.classList.remove('taken');
+            метка.remove();
+            // Индекс вставки считается по местам МЕЖДУ элементами; если строка
+            // уезжает вправо, её собственное место уже не считается.
+            let цель = куда > из ? куда - 1 : куда;
+            if (колонка) переставитьСтолбец(из, цель); else переставитьСтроку(из, цель);
+          };
+          document.addEventListener('pointermove', mv);
+          document.addEventListener('pointerup', up);
+        });
       });
     }
+    function colонкаИли(ручка, колонка) { return parseInt(колонка ? ручка.dataset.c : ручка.dataset.r, 10); }
+
+    // ── Объединение клеток ───────────────────────────────────────────────
+    function объединить() {
+      const d = it.el.data;
+      if (it._sel.size < 2) { boardHint('Выберите хотя бы две клетки'); return; }
+      let r0 = 1e9, c0 = 1e9, r1 = -1, c1 = -1;
+      it._sel.forEach((k) => {
+        const p = k.split(','), r = +p[0], c = +p[1];
+        r0 = Math.min(r0, r); c0 = Math.min(c0, c); r1 = Math.max(r1, r); c1 = Math.max(c1, c);
+      });
+      const before = clone(it.el);
+      // Написанное в поглощаемых клетках не пропадает — дописываем к главной.
+      const куски = [];
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+        const cell = tblCell(d, r, c);
+        if (cell.html && String(cell.html).trim()) куски.push(cell.html);
+      }
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+        if (r === r0 && c === c0) continue;
+        tblSetCell(d, r, c, { skip: 1, html: '', rs: 1, cs: 1 });
+      }
+      tblSetCell(d, r0, c0, { skip: 0, rs: r1 - r0 + 1, cs: c1 - c0 + 1, html: куски.join(' ') });
+      it._sel.clear(); it._sel.add(key(r0, c0));
+      syncWidget(it); histUpd(before, it.el); render();
+    }
+    function разъединить() {
+      const d = it.el.data, before = clone(it.el);
+      let было = false;
+      it._sel.forEach((k) => {
+        const p = k.split(','), r = +p[0], c = +p[1];
+        const cell = tblCell(d, r, c);
+        const rs = cell.rs || 1, cs = cell.cs || 1;
+        if (rs === 1 && cs === 1) return;
+        было = true;
+        for (let rr = r; rr < r + rs; rr++) for (let cc = c; cc < c + cs; cc++) {
+          tblSetCell(d, rr, cc, { skip: 0, rs: 1, cs: 1 });
+        }
+      });
+      if (!было) return;
+      syncWidget(it); histUpd(before, it.el); render();
+    }
+    it._объединить = объединить; it._разъединить = разъединить;
 
     // ── Панель заливки выбранных клеток ──────────────────────────────────
     function updateTblBar() {
@@ -4690,9 +4915,17 @@
       bar.hidden = false;
       if (!bar._built) {
         bar._built = true;
-        bar.innerHTML = '<span class="tb-lbl">Заливка клеток</span>'
+        bar.innerHTML = '<button class="tb-act" data-act="merge" title="Объединить выбранные клетки">Объединить</button>'
+          + '<button class="tb-act" data-act="split" title="Разъединить объединённую клетку">Разъединить</button>'
+          + '<span class="tb-lbl">Заливка</span>'
           + TBL_FILLS.map((c) => '<button class="tb-sw' + (c ? '' : ' none') + '" data-c="' + c + '"'
               + ' style="background:' + (c || '#fff') + '" title="' + (c ? c : 'без заливки') + '"></button>').join('');
+        bar.addEventListener('click', (e) => {
+          const a = e.target.closest('.tb-act'); if (!a) return;
+          const own = bar._owner; if (!own) return;
+          if (a.dataset.act === 'merge' && own._объединить) own._объединить();
+          else if (a.dataset.act === 'split' && own._разъединить) own._разъединить();
+        });
         bar.addEventListener('mousedown', (e) => e.preventDefault());
         bar.addEventListener('click', (e) => {
           const b = e.target.closest('.tb-sw'); if (!b) return;
@@ -8783,6 +9016,15 @@
 
   // ── Панель инструментов ───────────────────────────────────────────────
   const toolButtons = document.querySelectorAll('#board-toolbar .tool[data-tool]');
+  // Сетку размера показываем от самой кнопки — по нажатию, а не из setTool:
+  // setTool зовут и из других мест (например, при выходе из перемещения), и
+  // сетка выскакивала бы неожиданно.
+  document.addEventListener('click', (e) => {
+    const кн = e.target.closest && e.target.closest('#board-toolbar .tool[data-tool="table"]');
+    if (кн) { показатьСеткуТаблицы(кн); return; }
+    const поп = document.getElementById('tbl-pick');
+    if (поп && !поп.hidden && !(e.target.closest && e.target.closest('#tbl-pick'))) закрытьСеткуТаблицы();
+  }, true);
   // Фокус после щелчка по инструменту остаётся на кнопке внутри тулбара, а он
   // прокручиваемый — и стрелки начинали листать его вместо панорамы доски.
   // Снимаем фокус ТОЛЬКО когда он внутри панели: в текстовом редакторе и полях
@@ -8856,6 +9098,10 @@
   }
 
   function setTool(name, как) {
+    // Выбрали «Таблицу» — предлагаем сетку размера. Любой другой инструмент
+    // сетку закрывает: она относится только к таблице.
+    if (name !== 'table') { закрытьСеткуТаблицы(); размерТаблицы = null; }
+
     // как.сохранитьНачатое — зовёт только выход из перемещения: вернуть вид и
     // поведение инструмента, НЕ сбрасывая начатое построение.
     const сохранитьНачатое = !!(как && как.сохранитьНачатое);
