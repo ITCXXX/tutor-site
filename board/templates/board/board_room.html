@@ -1223,6 +1223,25 @@
     #widget-layer { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 23; overflow: hidden; }
     /* На время протяжки рамки выделения DOM-объекты «прозрачны» для мыши. */
     #widget-layer.marquee-thru, #widget-layer.marquee-thru * { pointer-events: none !important; }
+    /* ОБЫЧНОЕ ВЫДЕЛЕНИЕ ТЕКСТА МЫШЬЮ НА ДОСКЕ ЗАПРЕЩЕНО. Доска — не документ:
+       здесь тянут объекты и рамку, а не «выделяют текст с начала абзаца».
+       Холсту это уже запрещено (#board-stage выше), а вот текст, формулы и
+       виджеты лежат DOM-слоем поверх него, и там браузеру до сих пор было
+       можно: протяжка через надпись начинала его собственное выделение. Дальше
+       браузер рисует поверх доски своё — подсветку букв, а Edge ещё и рамку
+       вокруг захваченного куска («умное копирование»). Владелец видел именно
+       это: линия появляется при протяжке и не появляется при простом
+       наведении.
+       Оставляем выделение ровно там, где текст правят: в полях ввода, в
+       редактируемых клетках таблиц, карточках и опросах — и в текстовом поле,
+       пока оно открыто на правку (класс editing). */
+    #widget-layer, #widget-layer * { -webkit-user-select: none; user-select: none; }
+    #widget-layer input, #widget-layer textarea,
+    #widget-layer .tbox.editing .tbox-edit, #widget-layer .tbox.editing .tbox-edit *,
+    #widget-layer [contenteditable="true"]:not(.tbox-edit),
+    #widget-layer [contenteditable="true"]:not(.tbox-edit) * {
+        -webkit-user-select: text; user-select: text;
+    }
     /* Выделено несколько объектов: у текста и виджетов свои ручки и крестики
        сидят ровно в углах и перехватывали бы угол ГРУППЫ — прячем их. */
     #widget-layer.sel-many .mtext-grip,
