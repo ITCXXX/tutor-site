@@ -3178,50 +3178,131 @@
     pmap[srcId] = el.id;
     return el.id;
   }
-  // Отсчёты исходной кривой в локальных координатах окна — по ним строится
-  // образ при инверсии. Возвращаем массив точек, идущих вдоль кривой.
-  const XC_STEPS = 1200;   // запасной путь: втрое чаще, чем было
-  function xcurveSamples(src) {
+  // ИСХОДНАЯ КРИВАЯ КАК ФУНКЦИЯ ОТ ПАРАМЕТРА, а не готовый список точек.
+  // Так образ можно уточнять ТАМ, ГДЕ НУЖНО: инверсия растягивает кривую
+  // страшно неравномерно, и ровная сетка отсчётов даёт длинные прямые хорды
+  // ровно в том месте, где образ загибается круче всего. С параметром мы
+  // всегда можем спросить «а что посередине между этими двумя точками».
+  //   at(u)   — точка кривой в локальных координатах окна (null — здесь её нет);
+  //   куски   — участки параметра, которые рисуются отдельными линиями;
+  //   разрыв  — правило «между этими двумя точками кривая прервалась»
+  //             (у графика — прыжок через асимптоту).
+  function xcurveParam(src) {
     if (!src) return null;
     if (src.type === 'circ') {
       const G = circleGeom(src); if (!G) return null;
       const a0 = G.semi ? G.a0 : 0, размах = G.semi ? Math.PI : Math.PI * 2;
-      const out = [];
-      for (let i = 0; i <= XC_STEPS; i++) {
-        const a = a0 + размах * i / XC_STEPS;
-        out.push({ x: G.cx + G.r * Math.cos(a), y: G.cy + G.r * Math.sin(a) });
-      }
-      return out;
+      return {
+        at: (u) => ({ x: G.cx + G.r * Math.cos(a0 + размах * u), y: G.cy + G.r * Math.sin(a0 + размах * u) }),
+        куски: [[0, 1]],
+      };
     }
     if (isConstruction(src.type)) {
       const G = lineGeom(src); if (!G) return null;
       const t0 = (G.tmin === -Infinity) ? -GEO_L : G.tmin;
       const t1 = (G.tmax === Infinity) ? GEO_L : G.tmax;
-      const out = [];
       // Сгущаем отсчёты к середине: ближняя к центру часть прямой уходит в
-      // дальнюю часть окружности-образа и требует частых точек, а хвосты
-      // сжимаются к центру, там хватает редких.
+      // дальнюю часть окружности-образа, а хвосты сжимаются к центру.
       const РАЗМАХ = 1.45, T = Math.tan(РАЗМАХ);
-      for (let i = 0; i <= XC_STEPS; i++) {
-        const u = i / XC_STEPS * 2 - 1;
-        const доля = (Math.tan(u * РАЗМАХ) / T + 1) / 2;
-        const t = t0 + (t1 - t0) * доля;
-        out.push({ x: G.base.x + G.u.x * t, y: G.base.y + G.u.y * t });
-      }
-      return out;
+      return {
+        at: (u) => {
+          const доля = (Math.tan((u * 2 - 1) * РАЗМАХ) / T + 1) / 2;
+          const t = t0 + (t1 - t0) * доля;
+          return { x: G.base.x + G.u.x * t, y: G.base.y + G.u.y * t };
+        },
+        куски: [[0, 1]],
+      };
     }
     if (isFilledPoly(src.type)) {
       const flat = shapeOutline(src); if (!flat || flat.length < 6) return null;
-      const out = [], n = flat.length / 2;
-      for (let i = 0; i < n; i++) {
-        const ax = flat[i * 2], ay = flat[i * 2 + 1];
-        const j = (i + 1) % n, bx = flat[j * 2], by = flat[j * 2 + 1];
-        for (let k = 0; k < 60; k++) out.push({ x: ax + (bx - ax) * k / 60, y: ay + (by - ay) * k / 60 });
-      }
-      out.push({ x: flat[0], y: flat[1] });
-      return out;
+      const n = flat.length / 2;
+      const куски = [];
+      for (let i = 0; i < n; i++) куски.push([i / n, (i + 1) / n]);
+      return {
+        at: (u) => {
+          const p = Math.min(n - 1e-9, Math.max(0, u) * n), i = Math.floor(p), д = p - i, j = (i + 1) % n;
+          return { x: flat[2 * i] + (flat[2 * j] - flat[2 * i]) * д, y: flat[2 * i + 1] + (flat[2 * j + 1] - flat[2 * i + 1]) * д };
+        },
+        куски: куски,
+      };
+    }
+    if (src.type === 'func') {
+      // ГРАФИК ФУНКЦИИ. Точной формулы для его образа не существует (инверсия
+      // переводит в окружности и прямые только окружности и прямые), поэтому
+      // считаем отсчётами — но с дроблением, см. путьОбраза.
+      const fr = elements.get(src.data.frame); if (!fr) return null;
+      const fn = funcFnOf(src.id); if (!fn) return null;
+      const d = fr.data, W = d.width, H = d.height, unit = d.unit;
+      const plotTop = FRAME_HEADER, plotH = H - plotTop;
+      if (!(W > 0) || !(plotH > 0) || !(unit > 0)) return null;
+      const cxpx = W / 2, cypx = plotTop + plotH / 2;
+      const env = frameParamEnv(fr);
+      return {
+        at: (u) => {
+          const px = W * u;
+          let my; try { my = fn(d.cx + (px - cxpx) / unit, env); } catch (e) { return null; }
+          const py = cypx - (my - d.cy) * unit;
+          // Далеко за краем окна график и сам не рисуется — не рисуем и образ.
+          if (!isFinite(py) || py < -plotH * 3 || py > H + plotH * 3) return null;
+          return { x: px, y: py };
+        },
+        куски: [[0, 1]],
+        // Прыжок через асимптоту: у тангенса соседние отсчёты лежат на разных
+        // ветвях, и соединять их линией нельзя — так же считает и сам график.
+        разрыв: (p0, p1) => Math.abs(p1.y - p0.y) > plotH * 2.5,
+      };
     }
     return null;
+  }
+  // ГЛАДКИЙ ОБРАЗ ПО ОТСЧЁТАМ. Идём по кривой редкой сеткой, а каждый шаг
+  // делим пополам до тех пор, пока середина образа не ляжет на прямую между
+  // соседями. Порог — доля пикселя ЭКРАНА, поэтому на увеличенной доске
+  // кривая уточняется сама, а на уменьшенной не считается зря.
+  function путьОбраза(ctx, пар, обр) {
+    const мас = Math.max(0.05, stage.scaleX());
+    const ПОРОГ = 0.5 / мас;          // допустимый прогиб хорды, лок. px
+    const ШАГ_МАКС = 30 / мас;        // и просто не растягиваем хорды
+    const ГЛУБИНА = 15;
+    let бюджет = 8000;                // предел дробления: прямая через центр
+    let ведём = false;                // инверсии иначе способна считаться вечно
+    const годен = (q) => !!q && isFinite(q.x) && isFinite(q.y) && Math.abs(q.x) < GEO_L && Math.abs(q.y) < GEO_L;
+    const тянуть = (q) => { if (!ведём) { ctx.moveTo(q.x, q.y); ведём = true; } else ctx.lineTo(q.x, q.y); };
+    const вТочке = (u) => { const p = пар.at(u); return p ? { p: p, q: обр(p) } : null; };
+    function делить(u0, т0, u1, т1, глубина) {
+      if (бюджет <= 0 || глубина >= ГЛУБИНА) { тянуть(т1.q); return; }
+      const um = (u0 + u1) / 2, тm = вТочке(um);
+      бюджет--;
+      if (!тm || !годен(тm.q)) { ведём = false; if (годен(т1.q)) тянуть(т1.q); return; }
+      if (пар.разрыв && (пар.разрыв(т0.p, тm.p) || пар.разрыв(тm.p, т1.p))) {
+        // Между соседями кривая прервалась — ведём куски порознь.
+        делить(u0, т0, um, тm, глубина + 1);
+        ведём = false;
+        делить(um, тm, u1, т1, глубина + 1);
+        return;
+      }
+      const дх = т1.q.x - т0.q.x, ду = т1.q.y - т0.q.y, длина = Math.hypot(дх, ду);
+      const откл = (длина < 1e-9)
+        ? Math.hypot(тm.q.x - т0.q.x, тm.q.y - т0.q.y)
+        : Math.abs((тm.q.x - т0.q.x) * ду - (тm.q.y - т0.q.y) * дх) / длина;
+      if (откл <= ПОРОГ && длина <= ШАГ_МАКС) { тянуть(т1.q); return; }
+      делить(u0, т0, um, тm, глубина + 1);
+      делить(um, тm, u1, т1, глубина + 1);
+    }
+    (пар.куски || [[0, 1]]).forEach((к) => {
+      const ЗАТРАВКА = 64;            // редкая сетка, чтобы не проскочить особенность
+      ведём = false;
+      let uп = к[0], тп = вТочке(uп);
+      if (тп && годен(тп.q)) тянуть(тп.q);
+      for (let i = 1; i <= ЗАТРАВКА; i++) {
+        const u = к[0] + (к[1] - к[0]) * i / ЗАТРАВКА;
+        const т = вТочке(u);
+        if (!т || !годен(т.q)) { ведём = false; uп = u; тп = т; continue; }
+        if (!тп || !годен(тп.q)) { тянуть(т.q); }
+        else if (пар.разрыв && пар.разрыв(тп.p, т.p)) { ведём = false; тянуть(т.q); }
+        else делить(uп, тп, u, т, 0);
+        uп = u; тп = т;
+      }
+    });
   }
   // ── ОБРАЗ ИНВЕРСИИ СЧИТАЕМ ТОЧНО ──────────────────────────────────────
   // Инверсия переводит окружности и прямые снова в окружности и прямые — это
@@ -3359,14 +3440,19 @@
     const d = el.data, fr = elements.get(d.frame), src = elements.get(d.src);
     if (!fr || !src) return;
     if (d.xf && d.xf.kind === 'inv' && invТочныйПуть(ctx, fr, d.xf, src)) { ctx.strokeShape(shape); return; }
-    const S = xcurveSamples(src); if (!S) return;
-    ctx.beginPath();
-    let ведём = false;
-    for (let i = 0; i < S.length; i++) {
-      const q = applyXform(fr, d.xf, S[i]);
-      if (!q || !isFinite(q.x) || !isFinite(q.y) || Math.abs(q.x) > GEO_L || Math.abs(q.y) > GEO_L) { ведём = false; continue; }
-      if (!ведём) { ctx.moveTo(q.x, q.y); ведём = true; } else ctx.lineTo(q.x, q.y);
+    const пар = xcurveParam(src); if (!пар) return;
+    // Преобразование считаем ОДИН раз на отрисовку, а не на каждый отсчёт:
+    // раньше на каждую точку дважды искали объект в общей карте, и таких
+    // точек было четыреста на каждую перерисовку слоя.
+    let обр;
+    if (d.xf && d.xf.kind === 'inv') {
+      const O = invКругИнверсии(fr, d.xf); if (!O) return;
+      обр = (p) => invОбразТочки(O, p);
+    } else {
+      обр = (p) => applyXform(fr, d.xf, p);
     }
+    ctx.beginPath();
+    путьОбраза(ctx, пар, обр);
     ctx.strokeShape(shape);
   }
   // Образ объекта src: та же фигура на образах опорных точек. objMap — против циклов/дублей.
@@ -3378,7 +3464,7 @@
     // окружность через центр — прямой. Поэтому образ нельзя построить «той же
     // фигурой на образах точек», и он рисуется отсчётами.
     if (xf.kind === 'inv') {
-      if (!xcurveSamples(src)) return null;
+      if (!xcurveParam(src)) return null;
       const el = { id: uuid(), type: 'xcurve', z: 0,
         data: { frame: src.data.frame, src: src.id, xf: clone(xf),
                 color: src.data.color || src.data.stroke || strokeColor,
@@ -3432,8 +3518,17 @@
     // Фаза выбора источника: Shift — добавить; первый обычный клик — задать источник.
     if (shift || !xformSources.length) {
       const obj = pickObjectAtWorld(w);
-      if (obj) { addXformSource(obj.id); boardHint('Shift — ещё объект; затем: ' + spec.hint); }
-      else boardHint('Кликните по объекту для преобразования');
+      if (obj) { addXformSource(obj.id); boardHint('Shift — ещё объект; затем: ' + spec.hint); return; }
+      // ГРАФИК ФУНКЦИИ берём отдельно: сама кривая нажатий не ловит (она
+      // рисуется на холсте окна и не участвует в выборе), поэтому ищем её
+      // так же, как это делает касательная. Пускаем только в инверсию:
+      // остальные преобразования образ графика строить не умеют, и человек
+      // получил бы «не удалось построить образ» уже после всех щелчков.
+      if (tool === 'inv') {
+        const g = pickFuncAt(w);
+        if (g) { addXformSource(g.func.id); boardHint('Теперь окружность инверсии'); return; }
+      }
+      boardHint(tool === 'inv' ? 'Кликните по фигуре или по графику' : 'Кликните по объекту для преобразования');
       return;
     }
     // Источники есть, клик без Shift — задаём ПАРАМЕТР преобразования.
@@ -10892,7 +10987,7 @@
     if (ключ !== составВыделения) { составВыделения = ключ; активныйВид = null; выделениеДоФильтра = null; }
     // Построения (линии ±∞) и окружности в трансформер не берём (рамка/ресайз не нужны).
     const sel = Array.from(selected).map((id) => nodes.get(id))
-      .filter((n) => { const e = n && elements.get(n.id()); return e && !(e.type === 'point' || e.type === 'angle' || CONSTRUCT_LINES.indexOf(e.type) >= 0 || e.type === 'circ' || isFilledPoly(e.type)); });
+      .filter((n) => { const e = n && elements.get(n.id()); return e && !(e.type === 'point' || e.type === 'angle' || CONSTRUCT_LINES.indexOf(e.type) >= 0 || e.type === 'circ' || e.type === 'func' || e.type === 'xcurve' || isFilledPoly(e.type)); });
     tr.nodes(sel);
     tr.moveToTop();
     // DOM-объекты (текст/виджеты) трансформер не оборачивает — показываем рамку через класс.
