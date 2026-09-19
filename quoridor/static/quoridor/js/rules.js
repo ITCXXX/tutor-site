@@ -187,7 +187,53 @@ export function pathTo(walls, from, goalRow) {
  * Можно ли поставить забор. Возвращает null если можно, иначе причину —
  * чтобы интерфейс мог объяснить игроку отказ, а не просто проигнорировать клик.
  */
-export function wallProblem(state, side, wr, wc, kind) {
+/**
+ * Сколько шагов от каждой клетки до целевого ряда. Один обход на всё поле.
+ *
+ * Зачем. Бот на КАЖДОМ узле перебора спрашивал длину пути отдельно для каждого
+ * хода фишки — до пяти обходов там, где хватает одного. Обход идёт от целевого
+ * ряда сразу от всех его клеток: заборы перекрывают проход в обе стороны,
+ * поэтому расстояние «оттуда сюда» равно расстоянию «отсюда туда».
+ *
+ * Возвращает Int16Array длиной N*N; -1 — клетка недостижима.
+ */
+export function distanceMap(walls, goalRow) {
+  const map = new Int16Array(N * N).fill(-1);
+  let frontier = [];
+  for (let c = 0; c < N; c += 1) {
+    map[goalRow * N + c] = 0;
+    frontier.push({ r: goalRow, c });
+  }
+  let dist = 0;
+  while (frontier.length) {
+    dist += 1;
+    const next = [];
+    for (const cell of frontier) {
+      for (const [dr, dc] of DIRS) {
+        const nr = cell.r + dr;
+        const nc = cell.c + dc;
+        if (!inBoard(nr, nc)) continue;
+        if (map[nr * N + nc] !== -1) continue;
+        if (blocked(walls, cell.r, cell.c, nr, nc)) continue;
+        map[nr * N + nc] = dist;
+        next.push({ r: nr, c: nc });
+      }
+    }
+    frontier = next;
+  }
+  return map;
+}
+
+/**
+ * Дешёвые проверки забора: очередь, запас, края, нахлёст. Без обходов поля.
+ *
+ * Вынесено из wallProblem ради бота: тот перебирает десятки заборов на каждом
+ * узле, и для каждого wallProblem делал два обхода, проверяя, что дорога не
+ * отрезана, — а следом бот делал ещё два, считая, насколько путь удлинился.
+ * Между тем второе отвечает и на первое: если путь после забора нашёлся,
+ * значит, он не отрезан.
+ */
+export function wallConflict(state, side, wr, wc, kind) {
   if (state.winner) return 'Игра окончена.';
   if (state.turn !== side) return 'Сейчас не ваш ход.';
   if (state.wallsLeft[side] <= 0) return 'Заборы закончились.';
@@ -203,6 +249,13 @@ export function wallProblem(state, side, wr, wc, kind) {
       return 'Заборы нельзя класть внахлёст.';
     }
   }
+  return null;
+}
+
+/** None — забор поставить можно; иначе причина отказа для игрока. */
+export function wallProblem(state, side, wr, wc, kind) {
+  const trouble = wallConflict(state, side, wr, wc, kind);
+  if (trouble) return trouble;
 
   // главное правило: забор не имеет права запереть кого-то насмерть
   const probe = { ...state.walls, [key(wr, wc)]: kind };

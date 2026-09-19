@@ -17,7 +17,8 @@
  * оставляет полтора десятка вариантов вместо ста двадцати восьми.
  */
 
-import { W, RED, BLUE, other, pawnMoves, shortestPath, pathTo, wallProblem,
+import { W, N, RED, BLUE, other, pawnMoves, shortestPath, pathTo,
+         distanceMap, wallConflict,
          applyMove, applyWall } from './rules.js';
 
 const key = (r, c) => `${r},${c}`;
@@ -132,7 +133,11 @@ function wallCandidates(state, side, limit) {
       const id = `${wr},${wc},${kind}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      if (wallProblem(state, side, wr, wc, kind)) continue;
+      // Дешёвые проверки; правило «забор не отрезает дорогу» проверять
+      // отдельным обходом не нужно: ниже всё равно считаются оба пути, и null
+      // означает ровно отрезанную дорогу. Было четыре обхода на забор вместо
+      // двух.
+      if (wallConflict(state, side, wr, wc, kind)) continue;
 
       const probe = { ...state.walls, [key(wr, wc)]: kind };
       const theirs = shortestPath(probe, state.pawns[foe], state.goalRow[foe]);
@@ -149,14 +154,19 @@ function wallCandidates(state, side, limit) {
   return out.slice(0, limit);
 }
 
+/**
+ * Шаги фишкой, отсортированные по близости к цели.
+ *
+ * Длины берутся из одной карты расстояний, а не из обхода поля на каждый ход:
+ * ответ тот же, а обходов на узел на четыре меньше. Сильный уровень упирается
+ * в срок, поэтому сэкономленное время — это прямо глубина перебора.
+ */
 function pawnCandidates(state, side) {
   const goal = state.goalRow[side];
+  const map = distanceMap(state.walls, goal);
   return pawnMoves(state, side)
-    .map((m) => ({
-      kind: 'move', r: m.r, c: m.c,
-      len: shortestPath(state.walls, m, goal),
-    }))
-    .filter((m) => m.len != null)
+    .map((m) => ({ kind: 'move', r: m.r, c: m.c, len: map[m.r * N + m.c] }))
+    .filter((m) => m.len >= 0)
     .sort((a, b) => a.len - b.len);
 }
 
