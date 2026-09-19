@@ -231,14 +231,55 @@ def path_to(walls, frm, goal_row, n=N):
     return None
 
 
+def distance_map(walls, goal_row, n=N):
+    """Сколько шагов от каждой клетки до целевого ряда. Один обход на всё поле.
+
+    Зачем. Бот на КАЖДОМ узле перебора спрашивал длину пути отдельно для
+    каждого хода фишки — до пяти обходов поля там, где хватает одного. Обход
+    идёт от целевого ряда сразу от всех его клеток: заборы перекрывают проход
+    в обе стороны, поэтому расстояние «оттуда сюда» равно расстоянию «отсюда
+    туда».
+
+    Фишка соперника, как и в shortest_path, не учитывается: прыжок — дело
+    правил хода, а не длины дороги.
+    """
+    карта = {}
+    волна = []
+    for c in range(n):
+        карта[(goal_row, c)] = 0
+        волна.append((goal_row, c))
+    шаг = 0
+    while волна:
+        шаг += 1
+        следующая = []
+        for (r, c) in волна:
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if not _in_board(nr, nc, n) or (nr, nc) in карта:
+                    continue
+                if blocked(walls, r, c, nr, nc):
+                    continue
+                карта[(nr, nc)] = шаг
+                следующая.append((nr, nc))
+        волна = следующая
+    return карта
+
+
 def has_path(walls, frm, goal_row, n=N):
     return shortest_path(walls, frm, goal_row, n) is not None
 
 
 # ───────────────────────── заборы ─────────────────────────
 
-def wall_problem(state, side, wr, wc, kind):
-    """None — забор поставить можно; иначе причина отказа для игрока."""
+def wall_conflict(state, side, wr, wc, kind):
+    """Дешёвые проверки забора: очередь, запас, края, нахлёст. Без обходов поля.
+
+    Вынесено из wall_problem ради бота: тот перебирает десятки заборов на
+    каждом узле, и для каждого wall_problem делал два обхода поля, проверяя,
+    что дорога не отрезана, — а следом бот делал ещё два, считая, насколько
+    забор удлинил путь. Между тем второе отвечает и на первое: если путь после
+    забора нашёлся, значит, он не отрезан.
+    """
     if state['winner']:
         return 'Игра окончена.'
     if state['turn'] != side:
@@ -260,8 +301,16 @@ def wall_problem(state, side, wr, wc, kind):
     else:
         if walls.get(_key(wr - 1, wc)) == 'v' or walls.get(_key(wr + 1, wc)) == 'v':
             return 'Заборы нельзя класть внахлёст.'
+    return None
 
-    probe = dict(walls)
+
+def wall_problem(state, side, wr, wc, kind):
+    """None — забор поставить можно; иначе причина отказа для игрока."""
+    беда = wall_conflict(state, side, wr, wc, kind)
+    if беда:
+        return беда
+
+    probe = dict(state['walls'])
     probe[_key(wr, wc)] = kind
     for p in (RED, BLUE):
         if not has_path(probe, state['pawns'][p], state['goalRow'][p],

@@ -40,9 +40,9 @@ quoridor/bot.py — соперник для «Заборов» на сторон
 import random
 import time
 
-from .engine import (BLUE, RED, apply_move, apply_wall, other, path_to,
-                     pawn_moves, размер, сетка_заборов, shortest_path,
-                     wall_problem)
+from .engine import (BLUE, RED, apply_move, apply_wall, distance_map, other,
+                     path_to, pawn_moves, размер, сетка_заборов, shortest_path,
+                     wall_conflict)
 
 WIN = 10000
 
@@ -210,7 +210,11 @@ def wall_candidates(state, side, limit):
             if метка in видели:
                 continue
             видели.add(метка)
-            if wall_problem(state, side, wr, wc, kind):
+            # Дешёвые проверки — очередь, запас, края, нахлёст. Правило
+            # «забор не отрезает дорогу» проверять отдельным обходом поля не
+            # нужно: ниже всё равно считаются оба пути, и None означает ровно
+            # отрезанную дорогу. Было четыре обхода на забор вместо двух.
+            if wall_conflict(state, side, wr, wc, kind):
                 continue
 
             проба = dict(state['walls'])
@@ -231,12 +235,19 @@ def wall_candidates(state, side, limit):
 
 
 def pawn_candidates(state, side):
-    """Шаги фишкой, отсортированные по близости к цели."""
+    """Шаги фишкой, отсортированные по близости к цели.
+
+    Длины берутся из одной карты расстояний, а не из обхода поля на каждый
+    ход. Это тот же ответ: расстояние от клетки до целевого ряда не зависит от
+    того, с какой стороны его считать. А обходов на узел становится на четыре
+    меньше — при сильном уровне, который упирается в срок, это прямая глубина.
+    """
     цель = state['goalRow'][side]
     n = размер(state)
+    карта = distance_map(state['walls'], цель, n)
     из = []
     for m in pawn_moves(state, side):
-        длина = shortest_path(state['walls'], m, цель, n)
+        длина = карта.get((m['r'], m['c']))
         if длина is None:
             continue
         из.append({'kind': 'move', 'r': m['r'], 'c': m['c'], 'len': длина})
