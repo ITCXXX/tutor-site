@@ -197,16 +197,6 @@
     .crd-flip { border: 0; background: transparent; cursor: pointer; color: #8a8a94; padding: 0 3px; line-height: 1; display: flex; align-items: center; }
     .crd-flip:hover { color: #2b2b33; }
     .wgt-card.crd-back .crd-flip { color: #4d7cfe; }
-    .stk-colors { display: flex; gap: 5px; margin-bottom: 5px; }
-    .stk-c { width: 14px; height: 14px; border-radius: 50%; cursor: pointer; border: 1px solid rgba(0,0,0,.15); }
-    .stk-c.on { outline: 2px solid #4d7cfe; outline-offset: 1px; }
-
-    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0 4px; }
-    .card-label { font-size: 11px; font-weight: 700; color: #5a5a63; text-transform: uppercase; letter-spacing: .03em; }
-    .card-flip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(0,0,0,.18); background: rgba(255,255,255,.65); border-radius: 6px; padding: 2px 7px; font-size: 11px; cursor: pointer; color: #2b2b33; }
-    .card-flip:hover { background: rgba(255,255,255,.95); }
-    .card-flip svg { display: block; }
-    .card-text { min-height: 76px; }
     .tool-flyout .tool { width: 40px; height: 40px; border: 1px solid transparent; border-radius: 8px; background: #f4f4f7; color: #3a3a42; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; }
     .tool-flyout .tool svg { width: 21px; height: 21px; display: block; }
     .tool-flyout .tool:hover { background: #ebebf0; }
@@ -568,7 +558,7 @@
     /* Голосование. Заливка варианта — это и есть столбик результата: отдельная
        диаграмма заняла бы вдвое больше места при той же информации. */
     .wgt-poll { min-width: 240px; }
-    .poll-q { font-weight: 600; font-size: 14px; color: #2b2b33; margin-bottom: 8px; outline: none; line-height: 1.3; }
+    .poll-q { font-weight: 600; font-size: 14px; color: #2b2b33; margin-bottom: 8px; outline: none; line-height: 1.3; overflow-wrap: anywhere; }
     .poll-q:empty:before { content: attr(data-ph); color: #b0b0ba; font-weight: 400; }
     .poll-opts { display: flex; flex-direction: column; gap: 5px; }
     .poll-opt {
@@ -1163,7 +1153,22 @@
 
 
     /* Комментарий: свёрнутая метка и раскрытая нить. */
-    .wgt-comment .wgt-bar { display: none; }
+    /* Шапка у развёрнутого комментария ВИДНА: за неё его возят по доске, в ней
+       же «решено», «свернуть» и удаление. Раньше она была спрятана — и
+       комментарий нельзя было сдвинуть с места вовсе. У свёрнутого кружка
+       шапки нет, его возят за сам кружок. */
+    .wgt-comment.cmt-collapsed .wgt-bar { display: none; }
+    .wgt-comment:not(.cmt-collapsed) .wgt-bar { height: 22px; }
+    .cmt-barbtn { border: none; background: none; color: #9a9aa4; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 3px; }
+    .cmt-barbtn:hover { color: #2b2b33; }
+    /* Строка ввода — как в переписке: без рамки, растёт под текст, стрелка
+       загорается, когда есть что отправить. */
+    .cmt-write { display: flex; align-items: flex-end; gap: 6px; border-top: 1px solid #eceff3; padding-top: 6px; }
+    .cmt-send {
+        border: none; background: none; color: #c2c2ce; cursor: pointer; font-size: 16px; line-height: 1;
+        padding: 0 2px; transition: color .12s;
+    }
+    .cmt-send.on { color: #3b62d8; }
     .wgt-comment.cmt-collapsed { width: auto; min-width: 0; background: transparent; border: none; box-shadow: none; }
     .cmt-dot {
         width: 30px; height: 30px; border-radius: 16px 16px 16px 4px;
@@ -1188,10 +1193,10 @@
     .cmt-at { font-size: 11px; color: #9a9aa4; margin-left: 6px; }
     .cmt-text { font-size: 13px; color: #2c2c34; white-space: pre-wrap; word-break: break-word; }
     .cmt-empty { font-size: 12px; color: #b0b0ba; padding: 4px 0; }
-    .cmt-input { width: 100%; box-sizing: border-box; border: 1px solid #d9d9e0; border-radius: 6px; padding: 5px 6px; font: inherit; font-size: 13px; resize: vertical; }
-    .cmt-actions { display: flex; gap: 6px; margin-top: 6px; }
-    .cmt-actions button { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer; }
-    .cmt-actions .cmt-send { background: #3b62d8; border-color: #3b62d8; color: #fff; }
+    .cmt-input {
+        flex: 1; min-width: 0; border: none; background: transparent; outline: none; resize: none;
+        padding: 2px 0; font: inherit; font-size: 13px; color: #2c2c34; max-height: 90px; overflow-y: auto;
+    }
     .wgt-comment.cmt-done:not(.cmt-collapsed) { opacity: .75; }
 
     /* Раскадровка окна — лента кадров под матокном. */
@@ -1440,8 +1445,18 @@
         transition: transform .07s ease-out;
     }
     .wh-result { text-align: center; font-weight: 600; min-height: 20px; margin-top: 6px; color: #6b6b76; font-size: 13px; transition: color .2s; }
+    /* Варианты — строчками, каждый со своим крестиком; новый добавляется
+       строкой ввода без рамки. Большого поля «по одному в строке» больше нет. */
+    .wh-items { max-height: 96px; overflow: auto; margin-top: 4px; }
+    .wh-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c2c34; padding: 1px 0; }
+    .wh-item span { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+    .wh-del { border: none; background: none; color: #c2c2ce; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+    .wh-del:hover { color: #e7505a; }
+    .wh-add {
+        width: 100%; box-sizing: border-box; border: none; border-top: 1px solid #eceff3; outline: none;
+        background: transparent; font: inherit; font-size: 12px; padding: 4px 0 2px; color: #2c2c34;
+    }
     .wh-result.on { color: #1f8f5b; font-size: 15px; }
-    .wh-opts { width: 100%; margin-top: 6px; border: 1px solid #d9d9e0; border-radius: 6px; padding: 4px 6px; font-size: 12px; resize: vertical; }
 
     /* Слой аплетов ГеоГебры (DOM поверх холста). */
     /* top: 0, а не 56. Пятьдесят шесть — высота ВЕРХНЕЙ ПЛАШКИ, которой больше
@@ -1953,9 +1968,6 @@
             </div>
             <div class="tool" data-tool="wheel" title="Колесо случайного выбора">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
-            </div>
-            <div class="tool" data-tool="slider" title="Ползунок-параметр (a, k, …): используйте его букву в формуле графика, двигайте — график перестраивается">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 12h18"/><circle cx="14.5" cy="12" r="3.2" fill="currentColor" fill-opacity=".18"/></svg>
             </div>
             <div class="tool" data-tool="sticky" title="Стикер — цветная заметка">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M5 4h14v10l-5 5H5z"/><path d="M19 14h-5v5"/></svg>

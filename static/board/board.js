@@ -3970,6 +3970,25 @@
   function commentInitial(name) { const t = (name || '?').trim(); return t ? t.charAt(0).toUpperCase() : '?'; }
   function buildComment(it) {
     if (it._open == null) it._open = !((it.el.data.thread || []).length);  // новый — сразу открыт
+    // Свернуть, когда ушли. Комментарий на доске — это пометка на полях, а не
+    // окно: пока в него пишут, он раскрыт, отвели мышь — снова кружок. Ждём
+    // полсекунды: иначе он схлопывался бы от случайного проскока курсора, а
+    // вернуться в него было бы нечем.
+    let таймерУхода = null;
+    const отменитьУход = () => { if (таймерУхода) { clearTimeout(таймерУхода); таймерУхода = null; } };
+    const свернутьПотом = () => {
+      отменитьУход();
+      таймерУхода = setTimeout(() => {
+        таймерУхода = null;
+        if (!it._open) return;
+        if (it.wrapper.contains(document.activeElement)) return;   // пишут — не мешаем
+        if (!((it.el.data.thread || []).length)) return;           // пустой новый — пусть висит открытым
+        it._open = false; render();
+      }, 500);
+    };
+    it.wrapper.addEventListener('pointerenter', отменитьУход);
+    it.wrapper.addEventListener('pointerleave', свернутьПотом);
+
     const render = () => {
       const d = it.el.data, нить = d.thread || [];
       it.wrapper.classList.toggle('cmt-collapsed', !it._open);
@@ -3979,19 +3998,26 @@
         it.body.innerHTML = '<button class="cmt-dot" title="Показать комментарий">'
           + escapeHtml(commentInitial(кто))
           + (нить.length > 1 ? '<span class="cmt-n">' + нить.length + '</span>' : '') + '</button>';
-        it.body.querySelector('.cmt-dot').addEventListener('click', () => { it._open = true; render(); });
+        const кружок = it.body.querySelector('.cmt-dot');
+        кружок.addEventListener('click', () => { it._open = true; render(); });
+        // Кружок тоже можно возить по доске: иначе свёрнутую пометку не
+        // подвинешь, а шапки у неё в этом виде нет.
+        if (!кружок.dataset.возим) { кружок.dataset.возим = '1'; enableWidgetDrag(it, кружок); }
         return;
       }
       const записи = нить.map((r) => '<div class="cmt-row"><span class="cmt-who">' + escapeHtml(r.name || '—')
         + '</span><span class="cmt-at">' + escapeHtml(histTime(r.at)) + '</span>'
         + '<div class="cmt-text">' + linkifyHtml(escapeHtml(r.text || '')) + '</div></div>').join('');
-      it.body.innerHTML = '<div class="cmt-head"><b>Комментарий</b>'
-        + '<button class="cmt-fold" title="Свернуть">–</button></div>'
-        + '<div class="cmt-list">' + (записи || '<div class="cmt-empty">Пока пусто</div>') + '</div>'
-        + '<textarea class="cmt-input" rows="2" maxlength="' + COMMENT_MAX + '" placeholder="Написать…"></textarea>'
-        + '<div class="cmt-actions"><button class="cmt-send">Отправить</button>'
-        + '<button class="cmt-res">' + (d.resolved ? 'Вернуть' : 'Решено') + '</button></div>';
+      // Своей шапки у комментария больше нет: заголовок, «свернуть», «решено» и
+      // удаление живут в общей шапке объекта — той самой, за которую объект
+      // возят по доске. Раньше эта шапка была спрятана, и комментарий не
+      // двигался вовсе.
+      it.body.innerHTML = '<div class="cmt-list">' + (записи || '<div class="cmt-empty">Пока пусто</div>') + '</div>'
+        + '<div class="cmt-write"><textarea class="cmt-input" rows="1" maxlength="' + COMMENT_MAX + '" placeholder="Написать…"></textarea>'
+        + '<button class="cmt-send" title="Отправить (Enter)">↑</button></div>';
       const поле = it.body.querySelector('.cmt-input');
+      const кнопкаОтпр = it.body.querySelector('.cmt-send');
+      const подогнать = () => { поле.style.height = 'auto'; поле.style.height = Math.min(90, поле.scrollHeight) + 'px'; };
       const отправить = () => {
         const t = (поле.value || '').trim(); if (!t) return;
         const н = it.el.data.thread || (it.el.data.thread = []);
@@ -3999,13 +4025,27 @@
         н.push({ text: t.slice(0, COMMENT_MAX), name: myLabel || 'Аноним', at: Date.now() });
         поле.value = ''; render(); syncWidget(it);
       };
-      it.body.querySelector('.cmt-send').addEventListener('click', отправить);
+      кнопкаОтпр.addEventListener('click', отправить);
       // Enter отправляет, Shift+Enter — перенос строки: так привычнее в переписке.
-      поле.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); отправить(); } });
-      it.body.querySelector('.cmt-fold').addEventListener('click', () => { it._open = false; render(); });
-      it.body.querySelector('.cmt-res').addEventListener('click', () => {
+      поле.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); отправить(); }
+      });
+      поле.addEventListener('input', () => { подогнать(); кнопкаОтпр.classList.toggle('on', !!поле.value.trim()); });
+      поле.addEventListener('blur', свернутьПотом);
+      подогнать();
+      // Кнопки в общей шапке: свернуть и «решено».
+      it.bar.querySelectorAll('.cmt-barbtn').forEach((b) => b.remove());
+      const вШапку = (класс, подпись, title, дело) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'cmt-barbtn ' + класс; b.textContent = подпись; b.title = title;
+        b.addEventListener('click', (e) => { e.stopPropagation(); дело(); });
+        it.bar.insertBefore(b, it.bar.querySelector('.wgt-del'));
+      };
+      вШапку('cmt-res', d.resolved ? '↩' : '✓', d.resolved ? 'Вернуть в работу' : 'Пометить решённым', () => {
         it.el.data.resolved = it.el.data.resolved ? undefined : true; render(); syncWidget(it);
       });
+      вШапку('cmt-fold', '–', 'Свернуть', () => { it._open = false; render(); });
     };
     it.update = render; render();
   }
@@ -4408,6 +4448,13 @@
     it.update = render; render();
   }
   function nextParamName() { const used = new Set(); elements.forEach((e) => { if (e.type === 'slider' && e.data.name) used.add(e.data.name); }); for (const L of ['k', 'a', 'b', 'c', 'm', 'n', 'p', 'q', 't']) if (!used.has(L)) return L; return 'k'; }
+  // Отдельной кнопки «ползунок» в панели больше нет, и это нарочно: буква в
+  // формуле матокна заводит свой ползунок сама (см. ensureFrameParams и
+  // algParamRows — строки параметров рисуются прямо в окне). Две дороги к
+  // одному и тому же путали: ползунок с доски и параметр окна выглядели
+  // одинаково, а связывались с формулой по-разному.
+  // Сама функция остаётся: на старых досках ползунки уже стоят, и они должны
+  // работать и открываться как раньше.
   function insertSlider() { insertWidget('slider', { name: nextParamName(), min: -5, max: 5, value: 1, step: 0.1 }); }
 
   // — Таблица —
@@ -4943,12 +4990,17 @@
   function buildWheel(it) {
     const render = () => {
       const opts = it.el.data.options || [];
+      // Варианты — строчками с крестиком, а не одним полем в три ряда: так
+      // видно, что именно на колесе, и убрать лишнее можно по одному.
+      const строки = opts.map((o, i) => '<div class="wh-item"><span>' + escapeHtml(o) + '</span>'
+        + '<button class="wh-del" data-i="' + i + '" title="Убрать">×</button></div>').join('');
       it.body.innerHTML = '<div class="wh-stage">'
         + '<canvas class="wh-canvas"></canvas>'
         + '<div class="wh-pointer"></div>'
         + '</div>'
         + '<div class="wh-result"></div>'
-        + '<textarea class="wh-opts" rows="3" placeholder="по одному варианту в строке">' + escapeAttr(opts.join('\n')) + '</textarea>'
+        + '<div class="wh-items">' + строки + '</div>'
+        + '<input class="wh-add" placeholder="добавить вариант" spellcheck="false">'
         + '<div class="wgt-actions"><button data-act="spin">Крутить</button></div>';
       const cv = it.body.querySelector('.wh-canvas');
       const ptr = it.body.querySelector('.wh-pointer');
@@ -4969,28 +5021,45 @@
         res.classList.add('on');
       }
 
-      it.body.querySelector('.wh-opts').addEventListener('blur', (e) => {
-        it.el.data.options = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean);
+      const добавить = it.body.querySelector('.wh-add');
+      добавить.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key !== 'Enter') return;
+        const t = (добавить.value || '').trim(); if (!t) return;
+        it.el.data.options = (it.el.data.options || []).concat([t]);
         it._winner = null; syncWidget(it); render();
+        const поле = it.body.querySelector('.wh-add'); if (поле) поле.focus();
       });
+      it.body.querySelectorAll('.wh-del').forEach((b) => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const i = parseInt(b.dataset.i, 10);
+        const о = (it.el.data.options || []).slice();
+        о.splice(i, 1);
+        it.el.data.options = о; it._winner = null; syncWidget(it); render();
+      }));
 
-      btn.addEventListener('click', () => {
+      // ЖРЕБИЙ ВИДЯТ ВСЕ. Раньше вращение и результат жили только у того, кто
+      // нажал: у ученика колесо стояло неподвижно, и жребий превращался в
+      // «учитель сказал, кому выпало». Теперь бросок кладётся в сам объект
+      // (кому выпало и как крутить) и расходится по доске; каждый прокручивает
+      // его у себя от своего мига. Разница в доли секунды никому не важна,
+      // а выпадает у всех одно и то же.
+      const крутить = (бросок) => {
         const o = it.el.data.options || [];
         if (!o.length || it._spinning) return;
+        const pick = Math.min(o.length - 1, Math.max(0, бросок.pick | 0));
         it._spinning = true; it._winner = null;
         btn.disabled = true; res.textContent = ''; res.classList.remove('on');
-
-        const pick = Math.floor(Math.random() * o.length);
         const seg = 2 * Math.PI / o.length;
         // Останавливаемся так, чтобы середина выпавшего сектора смотрела вправо,
         // где стоит отбойник. Небольшой сдвиг внутри сектора — чтобы колесо не
         // замирало каждый раз в одной и той же позе.
-        const jitter = (Math.random() - 0.5) * seg * 0.5;
-        const turns = 6 + Math.floor(Math.random() * 3);          // 6–8 оборотов
+        const jitter = бросок.jitter || 0;
+        const turns = бросок.turns || 7;
         const start = it._rot || 0;
         const base = 2 * Math.PI * turns;
         const target = start + base + ((2 * Math.PI - ((pick + 0.5) * seg + jitter)) - (start % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-        const dur = 4200 + Math.random() * 900;
+        const dur = бросок.dur || 4600;
         const t0 = (window.performance && performance.now) ? performance.now() : Date.now();
         let lastSeg = -1;
 
@@ -5017,7 +5086,33 @@
           }
         };
         requestAnimationFrame(anim);
+      };
+      // Нажали «Крутить» — придумали бросок, положили в объект и разослали.
+      // Себе крутим сразу, не дожидаясь ответа сервера.
+      btn.addEventListener('click', () => {
+        const o = it.el.data.options || [];
+        if (!o.length || it._spinning) return;
+        const seg = 2 * Math.PI / o.length;
+        const бросок = {
+          pick: Math.floor(Math.random() * o.length),
+          jitter: (Math.random() - 0.5) * seg * 0.5,
+          turns: 6 + Math.floor(Math.random() * 3),           // 6–8 оборотов
+          dur: 4200 + Math.random() * 900,
+          at: Date.now(),
+        };
+        it.el.data.spin = бросок;
+        it._виденБросок = бросок.at;
+        syncWidget(it);
+        крутить(бросок);
       });
+      // Пришёл чужой бросок — крутим его у себя. Отличаем новый от уже
+      // показанного по отметке времени, иначе колесо крутилось бы на каждую
+      // правку объекта.
+      const бросок = it.el.data.spin;
+      if (бросок && бросок.at && бросок.at !== it._виденБросок) {
+        it._виденБросок = бросок.at;
+        крутить(бросок);
+      }
     };
     it.update = render; render();
   }
@@ -8295,7 +8390,6 @@
     if (tool === 'timer') { if (e.evt) e.evt.preventDefault(); insertTimer(); return; }
     if (tool === 'wheel') { if (e.evt) e.evt.preventDefault(); insertWheel(); return; }
     if (tool === 'python') { if (e.evt) e.evt.preventDefault(); insertPython(); return; }
-    if (tool === 'slider') { if (e.evt) e.evt.preventDefault(); insertSlider(); return; }
     if (tool === 'sticky') { if (e.evt) e.evt.preventDefault(); insertSticky(); return; }
     if (tool === 'comment') { if (e.evt) e.evt.preventDefault(); insertComment(); return; }
     if (tool === 'card') { if (e.evt) e.evt.preventDefault(); insertCard(); return; }
@@ -12761,7 +12855,7 @@
   // Инструменты, создающие объект «в точке». Ключ — имя инструмента.
   const DROP_MAKE = {
     sticky: insertSticky, comment: insertComment, card: insertCard, table: insertTable, kanban: insertKanban,
-    timer: insertTimer, wheel: insertWheel, slider: insertSlider, python: insertPython,
+    timer: insertTimer, wheel: insertWheel, python: insertPython,
     text_plain: insertTextbox, geogebra: insertGeoGebra, point: placePoint, embed: insertEmbed, poll: insertPoll, venn: insertVenn,
     screen: function () { setTool('select'); startScreenShare(); },
     text: function () { openTextEditor(false); },
