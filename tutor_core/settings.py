@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import mimetypes
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -280,6 +281,11 @@ USE_I18N = True
 USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
+
+# Питон для браузера — файл WebAssembly. Питон в системе про такой вид файла
+# может не знать, и тогда браузер получает его «неизвестным» и отказывается
+# запускать быстрым путём. Объявляем вид сами, до раздачи статики.
+mimetypes.add_type("application/wasm", ".wasm", True)
 
 STATIC_URL = "/static/"
 

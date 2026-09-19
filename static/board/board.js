@@ -3703,7 +3703,7 @@
   // ── Виджеты (таблица, канбан, таймер, колесо) — DOM-оверлей ─────────────
   const widgetLayerEl = document.getElementById('widget-layer');
   const widgetItems = new Map();
-  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card', 'embed', 'poll', 'screen', 'comment'];
+  const WIDGET_TYPES = ['table', 'kanban', 'timer', 'wheel', 'slider', 'sticky', 'card', 'embed', 'poll', 'screen', 'comment', 'python'];
 
   // Только переложить DOM-объекты по текущему виду доски — и ничего больше.
   // Вынесено отдельно, потому что зовётся на КАЖДОМ кадре панорамы и зума
@@ -3739,7 +3739,7 @@
     // positionHandles их якоря не обновятся — двигаем здесь.
     if (typeof renderAnchors === 'function') renderAnchors();
   }
-  function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '', embed: 'Страница', poll: 'Голосование', screen: 'Экран' }[el.type] || ''; }
+  function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '', embed: 'Страница', poll: 'Голосование', screen: 'Экран', python: 'Питон' }[el.type] || ''; }
   function syncWidget(it) { send({ action: 'element_update', element: it.el }); }
 
   function upsertWidget(el) {
@@ -3819,11 +3819,13 @@
   function insertKanban() { insertWidget('kanban', { columns: [{ title: 'To do', cards: [] }, { title: 'В работе', cards: [] }, { title: 'Готово', cards: [] }] }); }
   function insertTimer() { insertWidget('timer', { duration: 300, remaining: 300, running: false, startedAt: 0 }); }
   function insertWheel() { insertWidget('wheel', { options: ['Аня', 'Боря', 'Вера', 'Гена'] }); }
+  function insertPython() { insertWidget('python', { width: 460, height: 280, code: '', out: '' }); }
 
   function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
   function buildWidgetContent(it) {
-    if (it.el.type === 'embed') buildEmbed(it);
+    if (it.el.type === 'python') buildPython(it);
+    else if (it.el.type === 'embed') buildEmbed(it);
     else if (it.el.type === 'screen') buildScreen(it);
     else if (it.el.type === 'poll') buildPoll(it);
     else if (it.el.type === 'table') buildTable(it);
@@ -5183,6 +5185,206 @@
   function setEmbedLive(it, on) {
     it._live = !!on;
     it.wrapper.classList.toggle('live', it._live);
+  }
+
+  // ── Окно питона ────────────────────────────────────────────────────────
+  // Считает настоящий питон, работающий в браузере того, кто нажал «Выполнить»
+  // (static/board/python_run.js — там же объяснено, почему он заперт в клетке).
+  //
+  // КТО ЧТО МОЖЕТ. Код — часть объекта доски, значит правит его редактор.
+  // А ЗАПУСКАТЬ может любой, включая наблюдателя: счёт идёт у него в браузере и
+  // доски не касается. Поэтому кнопка «Выполнить» жива и в режиме просмотра —
+  // иначе ученик-наблюдатель (а у нас это обычное дело) смотрел бы на мёртвую
+  // кнопку. Вывод сохраняется в объект и показывается всем только когда
+  // запускает редактор: наблюдателю сервер правку не позволит, и обещать ему
+  // «сохранилось» было бы обманом.
+  const ПИТОН_СТРОК_ХРАНИМ = 200;     // столько строк вывода кладём в объект
+  const ПИТОН_ПРИМЕР = 'for n in range(100, 1000):\n    if n % 7 == 0 and "3" in str(n):\n        print(n)';
+
+  function питонОбрезать(текст) {
+    const строки = String(текст || '').split('\n');
+    if (строки.length <= ПИТОН_СТРОК_ХРАНИМ) return текст;
+    return строки.slice(0, ПИТОН_СТРОК_ХРАНИМ).join('\n')
+      + '\n… показаны первые ' + ПИТОН_СТРОК_ХРАНИМ + ' строк из ' + строки.length;
+  }
+
+  function buildPython(it) {
+    it.wrapper.classList.add('wgt-python');
+
+    const tools = document.createElement('span');
+    tools.className = 'py-tools';
+    tools.innerHTML = '<span class="py-state"></span>'
+      + '<button class="py-run" title="Выполнить (Ctrl+Enter)">▶</button>'
+      + '<button class="py-stop" title="Остановить и выбросить питон" hidden>■</button>';
+    it.bar.insertBefore(tools, it.bar.querySelector('.wgt-del'));
+
+    const wrap = document.createElement('div'); wrap.className = 'py-wrap';
+    const поле = document.createElement('textarea');
+    поле.className = 'py-code'; поле.spellcheck = false;
+    поле.setAttribute('autocapitalize', 'off'); поле.setAttribute('autocorrect', 'off');
+    поле.placeholder = 'Пишите код и нажмите ▶\n\n' + ПИТОН_ПРИМЕР;
+    const вывод = document.createElement('div'); вывод.className = 'py-out';
+    const ручка = document.createElement('div'); ручка.className = 'py-grip'; ручка.title = 'Потянуть — изменить размер окна';
+    wrap.appendChild(поле); wrap.appendChild(вывод); wrap.appendChild(ручка);
+    it.body.appendChild(wrap);
+    it.поле = поле; it.выводЭл = вывод;
+
+    const состояниеЭл = tools.querySelector('.py-state');
+    const кнПуск = tools.querySelector('.py-run');
+    const кнСтоп = tools.querySelector('.py-stop');
+
+    function applySize() {
+      const d = it.el.data;
+      const w = Math.max(240, d.width || 460), h = Math.max(160, d.height || 280);
+      wrap.style.width = w + 'px'; wrap.style.height = h + 'px';
+      it.wrapper.style.width = w + 'px';
+    }
+    // Показать вывод: текст, ошибка и картинки из matplotlib.
+    function показать(текст, ошибка, картинки) {
+      вывод.textContent = '';
+      if (текст) { const p = document.createElement('div'); p.textContent = текст; вывод.appendChild(p); }
+      (картинки || []).forEach((б) => {
+        const img = document.createElement('img');
+        img.src = 'data:image/png;base64,' + б;
+        вывод.appendChild(img);
+      });
+      if (ошибка) { const e = document.createElement('div'); e.className = 'py-err'; e.textContent = ошибка; вывод.appendChild(e); }
+      вывод.scrollTop = вывод.scrollHeight;
+    }
+    function render() {
+      const d = it.el.data;
+      // Пока человек печатает, чужую правку в поле не вписываем: курсор
+      // прыгнул бы в начало посреди слова. Свежий текст он увидит, как только
+      // уйдёт из поля.
+      if (document.activeElement !== поле && поле.value !== (d.code || '')) поле.value = d.code || '';
+      показать(d.out || '', d.err || '', d.imgs || []);
+      applySize();
+      поле.readOnly = !!viewOnly;
+    }
+    it.update = render;
+
+    // Правка кода. Отправляем НЕ на каждую клавишу, а с задержкой: иначе
+    // каждая буква ушла бы соседям отдельным сообщением и отдельным шагом
+    // отмены. Таймер гасится при удалении объекта (removeWidget) — иначе
+    // сработавший позже таймер воскресил бы удалённое окно.
+    let былоДоПравки = null;
+    поле.addEventListener('focus', () => { былоДоПравки = clone(it.el); });
+    поле.addEventListener('input', () => {
+      if (viewOnly) return;
+      it.el.data.code = поле.value;
+      if (it.saveTimer) clearTimeout(it.saveTimer);
+      it.saveTimer = setTimeout(() => { it.saveTimer = null; syncWidget(it); }, 400);
+    });
+    поле.addEventListener('blur', () => {
+      if (viewOnly || !былоДоПравки) return;
+      if (it.saveTimer) { clearTimeout(it.saveTimer); it.saveTimer = null; syncWidget(it); }
+      if ((былоДоПравки.data.code || '') !== (it.el.data.code || '')) histUpd(былоДоПравки, it.el);
+      былоДоПравки = null;
+    });
+    // Отступы в питоне — часть языка, поэтому Tab внутри поля ставит четыре
+    // пробела, а не уводит фокус на следующую кнопку.
+    поле.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const н = поле.selectionStart, к = поле.selectionEnd;
+        поле.value = поле.value.slice(0, н) + '    ' + поле.value.slice(к);
+        поле.selectionStart = поле.selectionEnd = н + 4;
+        поле.dispatchEvent(new Event('input'));
+        return;
+      }
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); пуск(); }
+      e.stopPropagation();   // горячие клавиши доски не должны ловить набор кода
+    });
+
+    function состояние(текст) { состояниеЭл.textContent = текст || ''; }
+
+    function пуск() {
+      const код = поле.value;
+      if (!код.trim()) { boardHint('Окно питона пустое — напишите код'); return; }
+      if (!window.ПитонВБраузере) { показать('', 'Питон не подключён к странице', []); return; }
+      if (window.ПитонВБраузере.занят()) { boardHint('Питон сейчас считает другое окно — дождитесь или нажмите ■'); return; }
+      let собрано = '';
+      показать('', '', []);
+      состояние('готовлю…');
+      кнСтоп.hidden = false;
+      const пошло = window.ПитонВБраузере.запустить(код, {
+        приЭтапе: (т) => состояние(т + '…'),
+        приВыводе: (т) => { собрано += т; показать(собрано, '', []); },
+        приКонце: (итог) => {
+          кнСтоп.hidden = true;
+          состояние('');
+          if (итог && итог.остановлен) { показать(собрано, 'Остановлено', []); return; }
+          const ошибка = итог && итог.ошибка ? питонОшибкаПоРусски(итог.ошибка) : '';
+          const картинки = (итог && итог.картинки) || [];
+          показать(собрано, ошибка, картинки);
+          // Сохраняем результат в объект — чтобы его видели все и он пережил
+          // перезагрузку. Наблюдателю сервер правку не позволит, поэтому у
+          // него результат остаётся только на экране.
+          if (!viewOnly) {
+            it.el.data.out = питонОбрезать(собрано);
+            it.el.data.err = ошибка || '';
+            // Картинки в объект НЕ кладём: одна картинка графика — это сотни
+            // килобайт, а на объект отведено 256 КБ, и правка молча пропала бы.
+            it.el.data.imgs = [];
+            syncWidget(it);
+          }
+        },
+      });
+      if (!пошло) { кнСтоп.hidden = true; состояние(''); }
+    }
+
+    кнПуск.addEventListener('click', (e) => { e.stopPropagation(); пуск(); });
+    кнСтоп.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.ПитонВБраузере) window.ПитонВБраузере.остановить();
+      кнСтоп.hidden = true; состояние('');
+    });
+
+    // Своя ручка размера — как у встроенной страницы. Общий коэффициент
+    // растягивания тут не годится: он увеличил бы вместе с окном и шрифт кода,
+    // а нужно ровно обратное — больше места, тот же кегль.
+    ручка.addEventListener('mousedown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const s = stage.scaleX();
+      const sx = e.clientX, sy = e.clientY;
+      const w0 = it.el.data.width || 460, h0 = it.el.data.height || 280;
+      const было = clone(it.el);
+      const mv = (ev) => {
+        it.el.data.width = Math.max(240, w0 + (ev.clientX - sx) / s);
+        it.el.data.height = Math.max(160, h0 + (ev.clientY - sy) / s);
+        applySize(); repositionWidgets();
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+        syncWidget(it); histUpd(было, it.el);
+      };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+
+    render();
+  }
+
+  // Ошибку питона показываем как есть (в ней номер строки и суть), но самые
+  // частые беды новичка подписываем по-русски: английское «IndentationError»
+  // семикласснику не говорит ничего.
+  function питонОшибкаПоРусски(текст) {
+    const т = String(текст || '');
+    const подсказки = [
+      ['IndentationError', 'не сошлись отступы: в питоне сдвиг вправо — часть языка'],
+      ['SyntaxError', 'опечатка в записи: проверьте двоеточие, скобки и кавычки'],
+      ['NameError', 'имя не известно: опечатка или переменной ещё нет'],
+      ['ZeroDivisionError', 'деление на ноль'],
+      ['TypeError', 'действие не подходит этим данным (например, число и строка)'],
+      ['ValueError', 'значение не подходит по смыслу'],
+      ['IndexError', 'нет такого номера в списке'],
+      ['KeyError', 'нет такого ключа в словаре'],
+      ['ModuleNotFoundError', 'такой библиотеки в браузерном питоне нет'],
+      ['RecursionError', 'слишком глубокая рекурсия'],
+    ];
+    for (let i = 0; i < подсказки.length; i++) {
+      if (т.indexOf(подсказки[i][0]) >= 0) return т + '\n\n↑ ' + подсказки[i][1];
+    }
+    return т;
   }
 
   function buildEmbed(it) {
@@ -7911,6 +8113,7 @@
     if (tool === 'kanban') { if (e.evt) e.evt.preventDefault(); insertKanban(); return; }
     if (tool === 'timer') { if (e.evt) e.evt.preventDefault(); insertTimer(); return; }
     if (tool === 'wheel') { if (e.evt) e.evt.preventDefault(); insertWheel(); return; }
+    if (tool === 'python') { if (e.evt) e.evt.preventDefault(); insertPython(); return; }
     if (tool === 'slider') { if (e.evt) e.evt.preventDefault(); insertSlider(); return; }
     if (tool === 'sticky') { if (e.evt) e.evt.preventDefault(); insertSticky(); return; }
     if (tool === 'comment') { if (e.evt) e.evt.preventDefault(); insertComment(); return; }
@@ -12369,7 +12572,7 @@
   // Инструменты, создающие объект «в точке». Ключ — имя инструмента.
   const DROP_MAKE = {
     sticky: insertSticky, comment: insertComment, card: insertCard, table: insertTable, kanban: insertKanban,
-    timer: insertTimer, wheel: insertWheel, slider: insertSlider,
+    timer: insertTimer, wheel: insertWheel, slider: insertSlider, python: insertPython,
     text_plain: insertTextbox, geogebra: insertGeoGebra, point: placePoint, embed: insertEmbed, poll: insertPoll, venn: insertVenn,
     screen: function () { setTool('select'); startScreenShare(); },
     text: function () { openTextEditor(false); },

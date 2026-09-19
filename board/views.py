@@ -22,7 +22,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Q
-from django.http import Http404, JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.templatetags.static import static
 from django.views.decorators.http import require_POST
@@ -65,8 +65,47 @@ _BOARD_BYTES_MAX = 150 * 1024 * 1024
 # время правки по всему списку.
 _BOARD_FILES = [
     os.path.join(settings.BASE_DIR, 'static', 'board', name)
-    for name in ('board.js', 'smartdraw.js')
+    for name in ('board.js', 'smartdraw.js', 'python_run.js')
 ]
+
+
+# ── Файлы питона для браузера ───────────────────────────────────────────────
+# Питон в окне доски работает в клетке — вложенной рамке с запретами, у которой
+# НЕТ нашего адреса (см. static/board/python_run.js). Для неё наши файлы —
+# чужие, и браузер отдаёт их только с разрешающим заголовком.
+#
+# Почему не просто /static/. Разрешение нужно и дома, и на сервере. На сервере
+# статику раздаёт WhiteNoise, и он такой заголовок ставит сам; а на моей машине
+# статику раздаёт сам Django встроенным обработчиком, мимо всех настроек, и
+# заголовка там нет — то есть дома клетка не работала бы, и проверить правку
+# было бы негде. Своя отдача снимает эту разницу: ведёт себя одинаково везде.
+# Заодно файлы не попадают под служебного работника (он ловит только /static/),
+# а он для этой рамки всё равно вреден: отдаёт ей ответы, которых ей брать
+# нельзя, и запрос падает.
+_PYODIDE_DIR = os.path.join(settings.BASE_DIR, 'static', 'vendor', 'pyodide')
+_PYODIDE_TYPES = {
+    '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json',
+    '.wasm': 'application/wasm', '.zip': 'application/zip', '.whl': 'application/zip',
+    '.data': 'application/octet-stream', '.ts': 'text/plain',
+}
+
+
+def pyodide_file(request, name):
+    """Отдать один файл питона. Имя — только имя файла, без путей."""
+    # Ни косых, ни точек-переходов: иначе по этому адресу можно было бы
+    # выпросить любой файл сервера.
+    if not re.fullmatch(r'[A-Za-z0-9._+-]{1,120}', name or '') or name.startswith('.'):
+        raise Http404
+    путь = os.path.join(_PYODIDE_DIR, name)
+    if not os.path.isfile(путь):
+        raise Http404
+    расш = os.path.splitext(name)[1].lower()
+    ответ = FileResponse(open(путь, 'rb'), content_type=_PYODIDE_TYPES.get(расш, 'application/octet-stream'))
+    ответ['Access-Control-Allow-Origin'] = '*'
+    # Имена файлов содержат версию питона и не меняются; год хранения в браузере
+    # означает, что ученик качает эти мегабайты один раз, а не каждый урок.
+    ответ['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return ответ
 
 
 # ── Сжатие картинок при загрузке ────────────────────────────────────────────
