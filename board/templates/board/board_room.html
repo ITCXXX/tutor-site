@@ -180,6 +180,11 @@
        любой объект доски, и вместе с рамкой растут буквы. */
     .wgt-sticky, .wgt-card { width: 180px; box-shadow: 0 5px 16px rgba(0,0,0,.18); border: none; }
     .wgt-sticky .wgt-bar, .wgt-card .wgt-bar { background: transparent; border-bottom: none; height: 18px; padding: 0 4px; }
+    /* Листок берут за любое место, а не за узкую полоску сверху: это бумажка,
+       а не окно с заголовком. Текст внутри при этом остаётся правимым —
+       перенос начинается, только если повели, а не просто нажали. */
+    .wgt-sticky, .wgt-card { cursor: grab; }
+    .wgt-sticky:active, .wgt-card:active { cursor: grabbing; }
     .wgt-sticky .wgt-body, .wgt-card .wgt-body { padding: 0 10px 10px; display: flex; }
     /* Листок: текст стоит по центру и по середине, а размер ему подбирает
        подогнатьКегльЛистка — поэтому коробка фиксированная, а буквы гибкие. */
@@ -979,6 +984,33 @@
     .dp-preset .dp-line { display: block; width: 22px; border-radius: 2px; }
     .dp-preset .dp-sq { display: block; width: 18px; height: 18px; border-style: solid; border-radius: 3px; }
     .dp-preset .dp-ring { border-radius: 50%; border: 2px dashed #ff5a5a; box-sizing: border-box; display: block; }
+    /* Что стирает ластик — мелкие переключатели в его настройках. */
+    .dp-kinds { display: flex; flex-wrap: wrap; gap: 4px; max-width: 190px; }
+    .dp-kind {
+        border: 1px solid #e3e3e8; background: #fff; color: #6b6b76; border-radius: 999px;
+        padding: 2px 8px; font-size: 11px; cursor: pointer; line-height: 1.4;
+    }
+    .dp-kind:hover { border-color: #c9c9d2; }
+    .dp-kind.on { background: #eef3ff; border-color: #4d7cfe; color: #2b5bd7; }
+    /* Призрак переноса: под рукой виден сам объект, а не подпись. */
+    .tool-ghost.tg-real { background: transparent; border: none; box-shadow: none; padding: 0; }
+    .tg-note { width: 74px; height: 62px; background: #fff7ae; border-radius: 3px; box-shadow: 0 5px 16px rgba(0,0,0,.22); }
+    .tg-card { background: #ffd18c; }
+    .tg-dot { width: 26px; height: 26px; border-radius: 50%; background: #3b62d8; color: #fff; font-size: 13px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,.25); }
+    .tg-table { display: grid; grid-template-columns: repeat(3, 26px); grid-template-rows: repeat(3, 18px); background: #fff; border: 1px solid #c9c9d2; box-shadow: 0 5px 16px rgba(0,0,0,.18); }
+    .tg-table i { border-right: 1px solid #e3e3e8; border-bottom: 1px solid #e3e3e8; }
+    .tg-kanban { display: flex; gap: 4px; background: #fff; padding: 4px; border: 1px solid #e3e3e8; border-radius: 6px; box-shadow: 0 5px 16px rgba(0,0,0,.18); }
+    .tg-kanban i { width: 22px; height: 40px; background: #f6f6f9; border-radius: 4px; display: block; }
+    .tg-box { background: #fff; border: 1px solid #e3e3e8; border-radius: 8px; box-shadow: 0 5px 16px rgba(0,0,0,.18); font-size: 12px; color: #2b2b33; display: flex; align-items: center; justify-content: center; }
+    .tg-timer { width: 82px; height: 40px; font-size: 17px; font-variant-numeric: tabular-nums; }
+    .tg-poll { width: 70px; height: 44px; gap: 3px; align-items: flex-end; padding: 6px; }
+    .tg-poll i { width: 12px; background: #4d7cfe; border-radius: 2px 2px 0 0; display: block; }
+    .tg-poll i:nth-child(1) { height: 60%; } .tg-poll i:nth-child(2) { height: 100%; } .tg-poll i:nth-child(3) { height: 40%; }
+    .tg-py { width: 96px; height: 44px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #1f8f5b; }
+    .tg-embed { width: 92px; height: 56px; }
+    .tg-wheel { width: 54px; height: 54px; border-radius: 50%; box-shadow: 0 5px 16px rgba(0,0,0,.22);
+        background: conic-gradient(#ff8a5b 0 25%, #4d7cfe 0 50%, #2fbf71 0 75%, #f2c14e 0); }
+    .tg-text { background: #fff; color: #2b2b33; font-size: 15px; padding: 2px 6px; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.16); }
     #dp-pop {
         position: fixed; z-index: 46; display: flex; flex-direction: column; gap: 10px; width: 200px;
         background: #fff; border: 1px solid #e3e3e8; border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 28px rgba(0,0,0,.16);
@@ -2258,6 +2290,10 @@
         <span class="dp-lbl">Прозрачность</span>
         <input type="range" id="dp-opacity" min="10" max="100" value="40">
         <span class="dp-val" id="dp-opacity-val">40%</span>
+    </div>
+    <div class="dp-row" id="dp-erase-row" style="display:none">
+        <span class="dp-lbl">Стирать</span>
+        <div class="dp-kinds" id="dp-kinds"></div>
     </div>
     <div class="dp-colors" id="dp-colors"></div>
     <input type="color" id="dp-native" value="#3b82f6">

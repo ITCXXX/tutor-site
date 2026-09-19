@@ -3771,7 +3771,11 @@
     widgetLayerEl.appendChild(wrapper);
     it = { el, wrapper, bar, body, update: null, timer: null };
     widgetItems.set(el.id, it);
-    enableWidgetDrag(it, bar);
+    // Листок (стикер, карточка) берут за ЛЮБОЕ место: это бумажка, а не окно с
+    // заголовком, и узкая полоска сверху для пальца слишком тонкая. У
+    // остальных объектов ручка прежняя — шапка: там внутри поля и кнопки, и
+    // хватать их за середину было бы неудобно.
+    enableWidgetDrag(it, (el.type === 'sticky' || el.type === 'card') ? wrapper : bar);
     bar.querySelector('.wgt-del').addEventListener('click', () => { histDel(it.el); send({ action: 'element_delete', id: el.id }); removeWidget(el.id); });
     buildWidgetContent(it);
     repositionWidgets();
@@ -3797,7 +3801,11 @@
     handle.addEventListener('pointerdown', (e) => {
       if (e.button != null && e.button > 0) return;          // правая кнопка — не перенос
       if (e.target.closest('.wgt-del')) return;
-      e.preventDefault();
+      // Нажали по тому, что правят (текст листка, поле ввода, кнопка) — не
+      // мешаем: перенос начнётся, только если ПОВЕДУТ. Иначе по стикеру нельзя
+      // было бы ни щёлкнуть, ни поставить курсор в слово.
+      const поЖивому = !!(e.target.closest && e.target.closest('[contenteditable], input, textarea, button, select'));
+      if (!поЖивому) e.preventDefault();
       if (isAddKey(e)) { toggleSelect(it.el.id); return; }   // добавить к выделению, не тащить
       if (selected.has(it.el.id) && selected.size > 1) { domSelectionDrag(e); return; } // тащим всё выделение
       const s = stage.scaleX();
@@ -3810,6 +3818,12 @@
       const mv = (ev) => {
         if (ev.pointerId !== e.pointerId) return;
         if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return;
+        if (!moved && поЖивому) {
+          // Повели от текста — значит двигают листок, а не пишут. Убираем
+          // курсор из поля, иначе браузер начнёт выделять буквы.
+          try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (err) { /* не страшно */ }
+          try { if (window.getSelection) window.getSelection().removeAllRanges(); } catch (err) { /* не страшно */ }
+        }
         moved = true;
         it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s;
         repositionWidgets();
@@ -3820,7 +3834,9 @@
         handle.removeEventListener('pointermove', mv);
         handle.removeEventListener('pointerup', up);
         handle.removeEventListener('pointercancel', up);
-        if (!moved) { selectOnly(it.el.id); return; }
+        // Нажали и отпустили, не ведя: по пустому месту листка — выделяем, а по
+        // тексту — оставляем как есть, там сейчас ставят курсор.
+        if (!moved) { if (!поЖивому) selectOnly(it.el.id); return; }
         syncWidget(it); syncConnectorsOf([it.el.id]); histUpd(before, it.el); positionHandles();
       };
       // Захват указателя: палец, ушедший за край объекта (а он уходит всегда),
@@ -11287,10 +11303,70 @@
     }
     return out;
   }
+  // ЧТО ИМЕННО СТИРАЕТ ЛАСТИК. Раньше — только рисунок от руки, и это часто не
+  // то, что нужно: на разборе задачи стирают и лишнюю линию, и подпись, и
+  // старый стикер. Набор видов человек выбирает сам в настройках ластика; он
+  // помнится между уроками. Рисунок ластик РЕЖЕТ (точный) или удаляет целиком
+  // (обычный), а всё остальное удаляет целиком в обоих видах: разрезать
+  // картинку или таблицу нельзя, это не мазок.
+  const ЛАСТИК_КЛЮЧ = 'доска.ластик.виды';
+  const ЛАСТИК_ЧТО = [
+    { id: 'stroke', имя: 'рисунок' },
+    { id: 'line', имя: 'линии' },
+    { id: 'shape', имя: 'фигуры' },
+    { id: 'text', имя: 'текст' },
+    { id: 'note', имя: 'стикеры' },
+    { id: 'image', имя: 'картинки' },
+    { id: 'geo', имя: 'геометрия' },
+    { id: 'frame', имя: 'окна' },
+    { id: 'widget', имя: 'виджеты' },
+  ];
+  let ластикВиды = (() => {
+    try {
+      const с = JSON.parse(localStorage.getItem(ЛАСТИК_КЛЮЧ) || 'null');
+      if (Array.isArray(с) && с.length) return new Set(с);
+    } catch (e) { /* испорченная запись — берём умолчание */ }
+    return new Set(['stroke']);     // как было до этой правки
+  })();
+  function сохранитьЛастикВиды() {
+    try { localStorage.setItem(ЛАСТИК_КЛЮЧ, JSON.stringify(Array.from(ластикВиды))); } catch (e) { /* без памяти — ладно */ }
+  }
+  // Круг ластика задел прямоугольник объекта?
+  function ластикЗадел(box, w, r) {
+    if (!box) return false;
+    const бx = Math.max(box.x, Math.min(w.x, box.x + box.width));
+    const бy = Math.max(box.y, Math.min(w.y, box.y + box.height));
+    return Math.hypot(w.x - бx, w.y - бy) <= r;
+  }
+
   function eraserAt(w) {
     const r = eraserRadius / stage.scaleX(), full = (tool === 'eraser_full');
     const list = []; elements.forEach((el) => { if (el.type === 'freehand') list.push(el); });
     let changed = false;
+    // Всё, кроме рисунка от руки: удаляем целиком, если этот вид разрешён.
+    if (ластикВиды.size > 1 || !ластикВиды.has('stroke')) {
+      const прочие = [];
+      elements.forEach((el) => {
+        if (el.type === 'freehand') return;
+        if (el.data && el.data.locked) return;             // закреплённое замком не трогаем
+        if (!ластикВиды.has(видОбъекта(el))) return;
+        прочие.push(el);
+      });
+      прочие.forEach((el) => {
+        if (!elements.has(el.id)) return;                   // уже стёрли как зависимый
+        if (!ластикЗадел(objBox(el.id), w, r)) return;
+        changed = true;
+        // Вместе с объектом уходит то, что без него не живёт: геометрия внутри
+        // окна, подписи на нём. Тот же список, что и при обычном удалении.
+        const зависимые = (typeof withDependents === 'function') ? withDependents([el.id]) : [el.id];
+        зависимые.forEach((zid) => {
+          const ze = elements.get(zid); if (!ze) return;
+          eraserOps.push({ kind: 'del', el: clone(ze) });
+          removeNode(zid); send({ action: 'element_delete', id: zid });
+        });
+      });
+    }
+    if (!ластикВиды.has('stroke')) { if (changed) layer.batchDraw(); return; }
     list.forEach((el) => {
       const d = el.data, ox = d.x || 0, oy = d.y || 0, pts = d.points || [];
       if (full) {
@@ -11466,6 +11542,32 @@
     // Прозрачность есть только у маркера; у остальных строку прячем ниже.
     const orow = document.getElementById('dp-opacity-row'); orow.style.display = key === 'marker' ? 'flex' : 'none';
     if (key === 'marker') { const o = document.getElementById('dp-opacity'), ov = document.getElementById('dp-opacity-val'); o.value = Math.round(p.o * 100); ov.textContent = Math.round(p.o * 100) + '%'; }
+    // Что стирать — только у ластика.
+    const строкаЧто = document.getElementById('dp-erase-row');
+    if (строкаЧто) {
+      строкаЧто.style.display = key === 'eraser' ? 'flex' : 'none';
+      if (key === 'eraser') {
+        const место = document.getElementById('dp-kinds');
+        место.innerHTML = '';
+        ЛАСТИК_ЧТО.forEach((в) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'dp-kind' + (ластикВиды.has(в.id) ? ' on' : '');
+          b.textContent = в.имя;
+          b.title = 'Стирать ' + в.имя;
+          b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (ластикВиды.has(в.id)) ластикВиды.delete(в.id); else ластикВиды.add(в.id);
+            // Совсем пустой набор означал бы ластик, который ничего не стирает,
+            // — это выглядело бы поломкой. Оставляем хотя бы рисунок.
+            if (!ластикВиды.size) ластикВиды.add('stroke');
+            сохранитьЛастикВиды();
+            renderDpPop('eraser');
+          });
+          место.appendChild(b);
+        });
+      }
+    }
     const colorsEl = document.getElementById('dp-colors'); colorsEl.style.display = key === 'eraser' ? 'none' : 'flex';
     if (key !== 'eraser') {
       colorsEl.innerHTML = '';
@@ -12948,12 +13050,35 @@
       if (isDropTool(b.dataset.tool)) b.classList.add('tool-draggable');
     });
 
+    // Под рукой при переносе — САМ ОБЪЕКТ, а не значок с подписью. Человек
+    // должен видеть, что именно он кладёт на доску и какого размера: подпись
+    // «Стикер» этого не показывает. Рисуем упрощённый, но узнаваемый вид —
+    // настоящий объект строить нельзя, он ещё не создан и у него нет данных.
+    const ПРИЗРАКИ = {
+      sticky: '<div class="tg-note"></div>',
+      card: '<div class="tg-note tg-card"></div>',
+      comment: '<div class="tg-dot">?</div>',
+      table: '<div class="tg-table"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>',
+      kanban: '<div class="tg-kanban"><i></i><i></i><i></i></div>',
+      timer: '<div class="tg-box tg-timer">05:00</div>',
+      wheel: '<div class="tg-wheel"></div>',
+      poll: '<div class="tg-box tg-poll"><i></i><i></i><i></i></div>',
+      python: '<div class="tg-box tg-py">▶ python</div>',
+      embed: '<div class="tg-box tg-embed"></div>',
+      text_plain: '<div class="tg-text">Текст</div>',
+      latex: '<div class="tg-text">формула</div>',
+      geogebra: '<div class="tg-box tg-embed"></div>',
+    };
     function makeGhost(btn) {
       const g = document.createElement('div');
       g.className = 'tool-ghost';
-      g.innerHTML = btn.innerHTML;
-      const cap = toolShortTitle(btn);
-      if (cap) { const s2 = document.createElement('span'); s2.className = 'tg-cap'; s2.textContent = cap; g.appendChild(s2); }
+      const вид = ПРИЗРАКИ[btn.dataset.tool];
+      if (вид) { g.classList.add('tg-real'); g.innerHTML = вид; }
+      else {
+        // Для того, что рисуют протяжкой (фигуры, точка), своего вида нет —
+        // показываем значок инструмента, но уже без подписи.
+        g.innerHTML = btn.innerHTML;
+      }
       document.body.appendChild(g);
       return g;
     }
