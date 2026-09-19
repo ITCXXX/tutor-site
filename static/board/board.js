@@ -3986,21 +3986,21 @@
     it.body.innerHTML = '<div class="stk-wrap"><div class="stk-text" spellcheck="false"></div></div>';
     const коробка = it.body.querySelector('.stk-wrap');
     const поле = it.body.querySelector('.stk-text');
-    поле.textContent = доступ.читать();
-    if (!viewOnly) {
-      // plaintext-only — чтобы вставка из буфера не притащила чужую вёрстку.
-      // Где такого значения нет (старый Firefox), браузер оставит обычную
-      // правку, а разметку мы снимаем сами при вставке — ниже.
-      поле.setAttribute('contenteditable', 'plaintext-only');
-      if (!поле.isContentEditable) поле.setAttribute('contenteditable', 'true');
-    }
+    // Текст листка — размеченный: жирный, курсив, цвет, выравнивание. Старые
+    // листки хранили простую строку; читаем и такие, превращая её в разметку
+    // при первом же показе, чтобы дальше всё шло одним путём.
+    поле.innerHTML = sanitizeHtml(доступ.читать());
+    if (!viewOnly) поле.setAttribute('contenteditable', 'true');
+    применитьСтильЛистка(поле, d);
     подогнатьКегльЛистка(поле, коробка);
     поле.addEventListener('input', () => {
-      доступ.писать(поле.textContent || '');
+      доступ.писать(поле.innerHTML || '');
       подогнатьКегльЛистка(поле, коробка);
       листокСинхронПозже(it);
     });
     поле.addEventListener('paste', (e) => {
+      // Вставляем только текст: чужие шрифты и кегли с веб-страницы сломали бы
+      // подбор размера, который держит написанное внутри бумажки.
       const буфер = e.clipboardData || window.clipboardData;
       if (!буфер) return;
       e.preventDefault();
@@ -4009,8 +4009,50 @@
     // Набор текста не должен доходить до горячих клавиш доски: иначе буква «l»
     // посреди слова переключала бы инструмент на линию.
     поле.addEventListener('keydown', (e) => { e.stopPropagation(); });
+    // Панель текста — та же, что у надписей на доске и у клеток таблицы.
+    // Размер шрифта в ней для листка спрятан: кегль подбирается сам, и ручная
+    // настройка спорила бы с подбором.
+    поле.addEventListener('focus', () => {
+      if (viewOnly) return;
+      activeTbox = { ed: поле, el: { id: it.el.id, data: it.el.data }, _realEl: it.el, wrapper: it.wrapper, isShapeText: true, editing: true, листок: true };
+      showTboxBar(activeTbox);
+      if (tboxBar) tboxBar.classList.add('tb-nosize');
+    });
+    поле.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (document.activeElement === поле) return;
+        if (tboxBar && tboxBar.contains(document.activeElement)) return;
+        if (activeTbox && activeTbox._realEl === it.el) {
+          activeTbox = null; hideTboxBar();
+          if (tboxBar) tboxBar.classList.remove('tb-nosize');
+        }
+        // Разметку на выходе чистим: панель текста могла оставить кегль или
+        // чужой шрифт, а они ломают подбор размера.
+        доступ.писать(sanitizeHtml(поле.innerHTML || ''));
+        подогнатьКегльЛистка(поле, коробка);
+        листокСинхронПозже(it);
+      }, 0);
+    });
     it._поле = поле; it._коробка = коробка;
     return поле;
+  }
+
+  // Оформление всего листка (выравнивание, цвет, начертание) — то же, что у
+  // обычного текста доски, но БЕЗ размера: его подбирает подогнатьКегльЛистка.
+  // ВАЖНО: d.color у листка — это цвет БУМАЖКИ (так было с самого начала и так
+  // работает панель цвета). Цвет букв панель текста кладёт в тот же ключ, и
+  // они бы подрались: выбрал синие буквы — пожелтела вся бумажка. Поэтому для
+  // букв у листка свой ключ.
+  function применитьСтильЛистка(поле, d) {
+    поле.style.fontFamily = d.font || '';
+    поле.style.color = d.textColor || '#2b2b33';
+    поле.style.textAlign = d.align || 'center';
+    поле.style.fontWeight = d.bold ? '700' : '';
+    поле.style.fontStyle = d.italic ? 'italic' : '';
+    const deco = [];
+    if (d.underline) deco.push('underline');
+    if (d.strike) deco.push('line-through');
+    поле.style.textDecoration = deco.length ? deco.join(' ') : '';
   }
 
   function buildSticky(it) {
@@ -4023,8 +4065,10 @@
         return;
       }
       собратьЛисток(it, {
-        читать: () => it.el.data.text || '',
-        писать: (t) => { it.el.data.text = t; },
+        // Старые стикеры хранили простую строку в text; новые — разметку в
+        // html. Читаем оба, пишем всегда в html.
+        читать: () => it.el.data.html || escapeHtml(it.el.data.text || ''),
+        писать: (t) => { it.el.data.html = t; it.el.data.text = ''; },
       });
     };
     it.update = render; render();
@@ -4144,8 +4188,16 @@
         return;
       }
       собратьЛисток(it, {
-        читать: () => (it._side ? it.el.data.back : it.el.data.front) || '',
-        писать: (t) => { if (it._side) it.el.data.back = t; else it.el.data.front = t; },
+        читать: () => {
+          const d = it.el.data;
+          const разметка = it._side ? d.backHtml : d.frontHtml;
+          if (разметка) return разметка;
+          return escapeHtml((it._side ? d.back : d.front) || '');
+        },
+        писать: (t) => {
+          const d = it.el.data;
+          if (it._side) { d.backHtml = t; d.back = ''; } else { d.frontHtml = t; d.front = ''; }
+        },
       });
     };
     кнопка.addEventListener('click', (e) => { e.stopPropagation(); it._side = it._side ? 0 : 1; render(); });
