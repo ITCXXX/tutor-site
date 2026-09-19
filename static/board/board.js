@@ -635,6 +635,10 @@
       // живёт в группе окна.
       const sf = el.type === 'ftangent' ? drawTangent : (el.type === 'farea' ? drawArea : (el.type === 'fintersect' ? drawFIntersect : (el.type === 'region' ? drawRegion : (el.type === 'xcurve' ? drawXformCurve : drawImplicit))));
       node = new Konva.Shape({ id: el.id, x: 0, y: 0, listening: false, sceneFunc: sf,
+        // Скругляем стыки: там, где путь всё же строится отсчётами (образ
+        // фигуры, проходящей через центр инверсии), на изломах иначе торчат
+        // острые «усы» — их даёт соединение по умолчанию.
+        lineJoin: 'round', lineCap: 'round',
         stroke: el.data.color || '#1f2937', strokeWidth: el.data.strokeWidth || 2 });
     } else if (isFilledPoly(el.type)) {
       // Многоугольник (обычный по вершинам / правильный n-угольник): замкнутая
@@ -1107,7 +1111,7 @@
     const res = [];
     elements.forEach((el) => {
       const d = el.data; if (!d || el.id === id) return;
-      let refs = (d.a === id || d.b === id || d.c === id || d.center === id || d.through === id || d.line === id || d.frame === id || d.vertex === id || d.func === id || d.f === id || d.g === id);
+      let refs = (d.a === id || d.b === id || d.c === id || d.center === id || d.through === id || d.line === id || d.frame === id || d.vertex === id || d.func === id || d.f === id || d.g === id || d.circ === id || d.pt === id);
       if (!refs && d.parts && d.parts.some((p) => p.func === id)) refs = true; // условие области ссылается на график
       if (!refs && d.pts && d.pts.indexOf(id) >= 0) refs = true; // вершина многоугольника
       if (!refs && ((d.from && d.from.id === id) || (d.to && d.to.id === id))) refs = true; // стрелка, привязанная к объекту
@@ -1118,8 +1122,13 @@
         else if (o.isect && (o.isect[0] === id || o.isect[1] === id)) refs = true;
         else if (o.centroid && o.centroid.indexOf(id) >= 0) refs = true;
         else if (o.ratio && (o.ratio.a === id || o.ratio.b === id)) refs = true;
-        else if (o.xform && (o.src === id || o.xform.c === id || o.xform.a === id || o.xform.b === id || o.xform.line === id || o.xform.through === id)) refs = true;
+        else if (o.xform && (o.src === id || o.xform.c === id || o.xform.a === id || o.xform.b === id || o.xform.line === id || o.xform.through === id || o.xform.circle === id)) refs = true;
       }
+      // Образ при инверсии (xcurve) держится на исходной фигуре и на самой
+      // окружности инверсии. Без этой строки удаление окружности оставляло на
+      // доске образ-сироту: он переставал рисоваться, но продолжал висеть.
+      if (!refs && el.type === 'xcurve' && d.xf
+          && (d.src === id || d.xf.circle === id || d.xf.c === id || d.xf.through === id || d.xf.line === id)) refs = true;
       if (refs) res.push(el.id);
     });
     return res;
@@ -1705,8 +1714,11 @@
     if (!d.fill) return null;
     return hexToRgba(d.fill, d.fillOpacity == null ? 0.2 : d.fillOpacity);
   }
+  // shape._el — элемент, которого ЕЩЁ НЕТ на доске: так рисуется призрак,
+  // который тащат из панели инструментов. Класть заготовку в общую карту
+  // elements нельзя: её тут же увидели бы все участники урока.
   function drawBasicShape(ctx, shape) {
-    const el = elements.get(shape.id()); if (!el) return;
+    const el = shape._el || elements.get(shape.id()); if (!el) return;
     const d = el.data, W = d.width || 0, H = d.height || 0; if (W <= 0 || H <= 0) return;
     const col = d.stroke || d.color || '#1f2937';
     ctx.beginPath(); shapePath(ctx, d.kind, W, H);
@@ -1714,7 +1726,7 @@
     if (fillStyle) { ctx.fillStyle = fillStyle; ctx.fill(); }
     if ((d.strokeWidth == null ? 2 : d.strokeWidth) > 0) { ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = d.strokeWidth || 2; ctx.strokeStyle = col; ctx.stroke(); }
   }
-  function hitBasicShape(ctx, shape) { const el = elements.get(shape.id()); if (!el) return; const d = el.data; ctx.beginPath(); shapePath(ctx, d.kind, d.width || 0, d.height || 0); ctx.closePath(); ctx.fillStrokeShape(shape); }
+  function hitBasicShape(ctx, shape) { const el = shape._el || elements.get(shape.id()); if (!el) return; const d = el.data; ctx.beginPath(); shapePath(ctx, d.kind, d.width || 0, d.height || 0); ctx.closePath(); ctx.fillStrokeShape(shape); }
   // Вершины правильного n-угольника (center: центр+вершина; edge: два соседних
   // против часовой). Возвращает массив {x,y} в тех же коорд, что и опорные точки.
   function regPolyVertices(el) {
@@ -1771,8 +1783,15 @@
   const VENN_KEYS2 = ['A', 'B', 'AB'];
   const VENN_KEYS3 = ['A', 'B', 'C', 'AB', 'AC', 'BC', 'ABC'];
   const VENN_FILLS = ['', '#ffd8a8', '#b2f2bb', '#a5d8ff', '#eebefa', '#ffc9c9', '#ffec99', '#c3fae8'];
-  const VENN_PAD = 16;        // отступ от рамки-универсума
-  const VENN_LABEL = 32;      // полоса снаружи кругов под буквы A, B, C
+  // ПОЧЕМУ ДОЛЯ, А НЕ ОТСТУП В ПИКСЕЛЯХ.
+  // Раньше от рамки отнимались постоянные поля (16 + 32 с каждой стороны), и
+  // радиус считался из остатка: R = (ширина - 96) / 3. Рамка росла линейно, а
+  // круги — нет. Растянули диаграмму вдвое — круги выросли в 2,4 раза и почти
+  // упёрлись в рамку; сжали вдвое — круги упали в 3,5 раза и потерялись в
+  // пустой рамке. Теперь рисунок занимает ПОСТОЯННУЮ ДОЛЮ рамки, поэтому при
+  // любом размере поля вокруг кругов одинаковые, а картинка — одна и та же,
+  // только крупнее или мельче.
+  const VENN_ЗАПОЛНЕНИЕ = 0.76;   // какую долю рамки занимает рисунок из кругов
   const VENN_OVERLAP = 0.5;   // классическое пересечение; круги статичны
 
   function vennKeys(d) { return (d.sets === 2) ? VENN_KEYS2 : VENN_KEYS3; }
@@ -1780,21 +1799,22 @@
   // Геометрия: радиус и центры кругов внутри рамки.
   function vennGeom(d) {
     const W = Math.max(40, d.width || 0), H = Math.max(40, d.height || 0);
-    // Из доступной площади вычитаем полосу под буквы — иначе они налезают
-    // на круги, как только диаграмму уменьшат.
-    const aw = W - 2 * VENN_PAD - 2 * VENN_LABEL, ah = H - 2 * VENN_PAD - 2 * VENN_LABEL;
+    // Рисунок занимает долю рамки — и по ширине, и по высоте; берём меньшее,
+    // чтобы он поместился целиком. Поля под буквы A, B, C получаются из той же
+    // доли и потому растут вместе с кругами.
+    const aw = W * VENN_ЗАПОЛНЕНИЕ, ah = H * VENN_ЗАПОЛНЕНИЕ;
     const s = VENN_OVERLAP;   // круги статичны: расположение классическое
     const cx = W / 2, cy = H / 2;
     if (d.sets === 2) {
       // Ширина рисунка = расстояние между центрами + два радиуса = 2R(2−s).
-      const R = Math.max(12, Math.min(aw / (2 * (2 - s)), ah / 2));
+      const R = Math.max(4, Math.min(aw / (2 * (2 - s)), ah / 2));
       const dd = 2 * R * (1 - s);
       return { W: W, H: H, R: R, cs: [{ x: cx - dd / 2, y: cy }, { x: cx + dd / 2, y: cy }] };
     }
     // Три круга — вершины равностороннего треугольника со стороной dd.
     const Rw = aw / (2 * (2 - s));
     const Rh = ah / (2 + Math.sqrt(3) * (1 - s));
-    const R = Math.max(12, Math.min(Rw, Rh));
+    const R = Math.max(4, Math.min(Rw, Rh));
     const dd = 2 * R * (1 - s);
     const m = dd / Math.sqrt(3);              // расстояние от центра до вершины
     return {
@@ -1831,10 +1851,11 @@
     const STEP = 46;
     for (let ix = 0; ix <= STEP; ix++) {
       for (let iy = 0; iy <= STEP; iy++) {
-        const p = { x: VENN_PAD + (g.W - 2 * VENN_PAD) * ix / STEP, y: VENN_PAD + (g.H - 2 * VENN_PAD) * iy / STEP };
+        const поле = g.R * 0.12;   // как и всё остальное, считается от радиуса
+        const p = { x: поле + (g.W - 2 * поле) * ix / STEP, y: поле + (g.H - 2 * поле) * iy / STEP };
         const key = vennKeyAt(d, g, p);
         // Насколько точка «глубоко внутри»: минимум расстояний до всех границ.
-        let room = Math.min(p.x - VENN_PAD, g.W - VENN_PAD - p.x, p.y - VENN_PAD, g.H - VENN_PAD - p.y);
+        let room = Math.min(p.x - поле, g.W - поле - p.x, p.y - поле, g.H - поле - p.y);
         for (let i = 0; i < n; i++) {
           const c = g.cs[i];
           room = Math.min(room, Math.abs(Math.hypot(p.x - c.x, p.y - c.y) - g.R));
@@ -1847,7 +1868,7 @@
   }
 
   function drawVenn(ctx, shape) {
-    const el = elements.get(shape.id()); if (!el) return;
+    const el = shape._el || elements.get(shape.id()); if (!el) return;
     const d = el.data, g = vennGeom(d);
     const n = (d.sets === 2) ? 2 : 3;
     const col = d.stroke || '#1f2937';
@@ -1898,11 +1919,13 @@
     ctx.fillStyle = d.textColor || '#2b2b33';
     // Кегль привязан к радиусу, а не задан числом: иначе при уменьшении
     // диаграммы цифры остаются прежними и вылезают за края зон.
-    const fs = Math.max(9, Math.min(30, Math.round(g.R * 0.17)));
+    // Верхнего предела у кегля больше нет: он держал цифры на 30 пикселях,
+    // и на крупной диаграмме подписи выглядели мелкими букашками.
+    const fs = Math.max(4, g.R * 0.17);
     ctx.font = '600 ' + fs + 'px system-ui, sans-serif';
     vennKeys(d).concat(d.universe === false ? [] : ['U']).forEach((k) => {
       const t = labels[k]; if (!t) return;
-      const p = pts[k]; if (!p || p.room < 6) return;
+      const p = pts[k]; if (!p || p.room < g.R * 0.07) return;
       ctx.fillText(String(t), p.x, p.y);
     });
 
@@ -1915,7 +1938,7 @@
       // Отводим подпись от центра диаграммы наружу.
       const vx = c.x - g.W / 2, vy = c.y - g.H / 2;
       const len = Math.hypot(vx, vy) || 1;
-      const off = g.R + VENN_LABEL * 0.45;
+      const off = g.R * 1.18;   // вынос имени наружу — доля радиуса
       const ox = c.x + (vx / len) * off, oy = c.y + (vy / len) * off;
       ctx.fillText(names[i] || 'ABC'[i], ox, oy);
     }
@@ -1923,7 +1946,7 @@
     // «куда попадёт число» иначе не видно.
     if (vennSel.id === el.id && vennSel.key) {
       const mp = pts[vennSel.key];
-      if (mp && mp.room > 5) {
+      if (mp && mp.room > g.R * 0.06) {
         ctx.beginPath();
         ctx.arc(mp.x, mp.y, Math.min(mp.room - 1, fs * 1.1), 0, 2 * Math.PI);
         ctx.setLineDash([4, 3]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#4d7cfe';
@@ -1934,7 +1957,7 @@
     // Подпись универсума в углу.
     if (d.universe !== false) {
       ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText(d.universeName || 'U', 6, 5);
+      ctx.fillText(d.universeName || 'U', fs * 0.45, fs * 0.35);
     }
   }
 
@@ -2072,7 +2095,14 @@
       const b = e.target.closest('button'); if (!b) return;
       const el = vennElAt(vennSel.id); if (!el) return;
       const before = clone(el);
+      // Трём кругам нужно больше высоты, чем двум (они стоят треугольником).
+      // Если оставить рамку прежней, круги при переключении скачком мельчают.
+      // Поэтому меняем ВЫСОТУ РАМКИ так, чтобы радиус остался прежним: круги
+      // те же, просто им дали место.
+      const былоН = (el.data.sets === 2) ? 2 : (2 + Math.sqrt(3) * (1 - VENN_OVERLAP));
       el.data.sets = +b.dataset.n;
+      const сталоН = (el.data.sets === 2) ? 2 : (2 + Math.sqrt(3) * (1 - VENN_OVERLAP));
+      if (былоН !== сталоН) el.data.height = Math.max(90, (el.data.height || 320) * сталоН / былоН);
       el.data._labSig = null;
       vennSel.key = null;
       vennCommit(el, before);
@@ -2137,10 +2167,12 @@
     bar.style.top = Math.max(64, top - bar.offsetHeight - 10) + 'px';
   }
 
-  function insertVenn() {
-    const p = worldPoint() || viewportCenterWorld();
-    const W = 420, H = 320;
-    const el = {
+  // Заготовка диаграммы — одна на создание и на призрак переноса, чтобы под
+  // рукой ехала ровно та диаграмма, которая ляжет на доску.
+  const VENN_РАЗМЕР = [420, 320];
+  function заготовкаВенна(p) {
+    const W = VENN_РАЗМЕР[0], H = VENN_РАЗМЕР[1];
+    return {
       id: uuid(), type: 'venn', z: 0,
       data: {
         x: p.x - W / 2, y: p.y - H / 2, width: W, height: H,
@@ -2149,6 +2181,10 @@
         names: ['A', 'B', 'C'], labels: {}, fills: {},
       },
     };
+  }
+  function insertVenn() {
+    const p = worldPoint() || viewportCenterWorld();
+    const el = заготовкаВенна(p);
     upsertNode(el); send({ action: 'element_add', element: stripPrivate(el) }); histAdd(stripPrivate(el));
     setTool('select');
     selectOnly(el.id);
@@ -2294,6 +2330,22 @@
   // xf: {kind, ...}. csym: центр c; asym: прямая line; rot: центр c, угол°;
   // trans: вектор a→b; homo: центр c, коэф k; spiral: центр c, угол°, k.
   function xfPtLocal(fr, id) { const e = elements.get(id); if (!(e && e.type === 'point')) return null; return frameMathToLocal(fr, e.data.mx || 0, e.data.my || 0); }
+  // Окружность инверсии в ЛОКАЛЬНЫХ координатах окна: центр и КВАДРАТ радиуса.
+  // Инверсию задаёт сама окружность — отмечать отдельно её центр не нужно, он
+  // у окружности и так есть. Старый вид записи (центр c + точка through на
+  // окружности) читаем по-прежнему: на уже сделанных досках он сохранён, и
+  // ломать их нельзя.
+  function invКругИнверсии(fr, xf) {
+    if (xf.circle) {
+      const el = elements.get(xf.circle);
+      if (!el || el.type !== 'circ' || el.data.frame !== fr.id) return null;
+      const G = circleGeom(el); if (!G) return null;
+      return { cx: G.cx, cy: G.cy, r2: G.r * G.r };
+    }
+    const C = xfPtLocal(fr, xf.c), T = xfPtLocal(fr, xf.through);
+    if (!C || !T) return null;
+    return { cx: C.x, cy: C.y, r2: (T.x - C.x) * (T.x - C.x) + (T.y - C.y) * (T.y - C.y) };
+  }
   function applyXform(fr, xf, p) {
     if (!xf) return null;
     if (xf.kind === 'csym') { const C = xfPtLocal(fr, xf.c); if (!C) return null; return { x: 2 * C.x - p.x, y: 2 * C.y - p.y }; }
@@ -2314,16 +2366,11 @@
       return { x: 2 * fx - p.x, y: 2 * fy - p.y };
     }
     if (xf.kind === 'inv') {
-      // Инверсия: центр c, радиус = расстояние от c до точки through.
-      // Считаем прямо в локальных пикселях окна — по x и y там один и тот же
-      // масштаб (frameMathToLocal), поэтому R²/|OP| согласовано.
-      const C = xfPtLocal(fr, xf.c), T = xfPtLocal(fr, xf.through);
-      if (!C || !T) return null;
-      const R2 = (T.x - C.x) * (T.x - C.x) + (T.y - C.y) * (T.y - C.y);
-      const dx = p.x - C.x, dy = p.y - C.y, d2 = dx * dx + dy * dy;
-      if (d2 < 1e-9 || R2 < 1e-9) return null;   // сам центр образа не имеет
-      const k = R2 / d2;
-      return { x: C.x + k * dx, y: C.y + k * dy };
+      const O = invКругИнверсии(fr, xf); if (!O) return null;
+      const dx = p.x - O.cx, dy = p.y - O.cy, d2 = dx * dx + dy * dy;
+      if (d2 < 1e-9 || O.r2 < 1e-9) return null;   // сам центр образа не имеет
+      const k = O.r2 / d2;
+      return { x: O.cx + k * dx, y: O.cy + k * dy };
     }
     return null;
   }
@@ -2332,30 +2379,32 @@
     const pos = ptPosFor(el), d = el.data, col = d.color || '#1f2937';
     const A = pos(d.a), V = pos(d.b), C = pos(d.c); if (!A || !V || !C) return;
     const a1 = Math.atan2(A.y - V.y, A.x - V.x), a2 = Math.atan2(C.y - V.y, C.x - V.x);
-    let diff = a2 - a1; while (diff <= -Math.PI) diff += 2 * Math.PI; while (diff > Math.PI) diff -= 2 * Math.PI;
-    const deg = Math.abs(diff) * 180 / Math.PI, R = 34, hl = selected.has(el.id);
+    // УГОЛ СЧИТАЕМ ВСЕГДА В ОДНУ СТОРОНУ — по часовой стрелке от первого луча
+    // ко второму, от 0° до 360°. Раньше брался меньший из двух углов (по модулю
+    // не больше 180°), и это скакало: разводишь лучи дальше 180° — мера вдруг
+    // начинала уменьшаться, а дуга перепрыгивала на другую сторону. На экране
+    // ось Y смотрит вниз, поэтому РОСТ угла в atan2 — это и есть движение по
+    // часовой стрелке, как человек его и видит.
+    let diff = a2 - a1; while (diff < 0) diff += 2 * Math.PI; while (diff >= 2 * Math.PI) diff -= 2 * Math.PI;
+    const deg = diff * 180 / Math.PI, R = 34, hl = selected.has(el.id);
     ctx.save();
     if (hl) { ctx.beginPath(); ctx.strokeStyle = '#4d7cfe'; ctx.lineWidth = (d.strokeWidth || 1.6) + 3; ctx.globalAlpha = 0.4; ctx.arc(V.x, V.y, R, a1, a1 + diff, diff < 0); ctx.stroke(); ctx.globalAlpha = 1; }
     // Заливка сектора с прозрачностью.
     const fo = Math.max(0, Math.min(1, d.fillOpacity || 0));
     if (fo > 0) { ctx.beginPath(); ctx.moveTo(V.x, V.y); ctx.arc(V.x, V.y, R, a1, a1 + diff, diff < 0); ctx.closePath(); ctx.fillStyle = hexToRgba(col, fo); ctx.fill(); }
-    // Прямой угол (ровно 90°) обозначаем квадратиком вместо дуги и без числа —
-    // это делает «обычный» инструмент, автоматически. (Ручной знак для любого угла —
-    // отдельный инструмент mark_right, для стереометрии.)
-    const isRight = Math.abs(deg - 90) < 0.5;
+    // Прямой угол больше НЕ подменяется квадратиком. Раньше, как только мера
+    // подходила к 90°, дуга с числом мгновенно превращалась в уголок, а при
+    // малейшем сдвиге — обратно; на глаз это дёрганье. Ручной знак прямого
+    // угла никуда не делся — это отдельный инструмент mark_right.
     ctx.strokeStyle = col; ctx.lineWidth = d.strokeWidth || 1.6; ctx.setLineDash(figureDash(d.style, d.strokeWidth || 2) || []);
-    if (isRight) {
-      ctx.beginPath(); pathRightAngle(ctx, A, V, C); ctx.stroke(); ctx.setLineDash([]);
-    } else {
-      // Дуги (1..3 — обозначают равные углы), стиль штриха из настроек.
-      const n = Math.max(1, Math.min(3, d.arcCount || 1));
-      ctx.beginPath(); pathEqArcs(ctx, V, a1, diff, n, R - (n - 1) * 4.5); ctx.stroke(); ctx.setLineDash([]);
-      // Градусная мера (можно отключить).
-      if (d.showDegree !== false) {
-        const mid = a1 + diff / 2;
-        ctx.fillStyle = col; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(deg.toFixed(0) + '°', V.x + Math.cos(mid) * (R + 16), V.y + Math.sin(mid) * (R + 16));
-      }
+    // Дуги (1..3 — обозначают равные углы), стиль штриха из настроек.
+    const n = Math.max(1, Math.min(3, d.arcCount || 1));
+    ctx.beginPath(); pathEqArcs(ctx, V, a1, diff, n, R - (n - 1) * 4.5); ctx.stroke(); ctx.setLineDash([]);
+    // Градусная мера (можно отключить).
+    if (d.showDegree !== false) {
+      const mid = a1 + diff / 2;
+      ctx.fillStyle = col; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(deg.toFixed(0) + '°', V.x + Math.cos(mid) * (R + 16), V.y + Math.sin(mid) * (R + 16));
     }
     ctx.restore();
   }
@@ -2379,7 +2428,8 @@
   function pointRadiusOf(d) { return Math.max(1, 1 + numSize(d.size) * 0.09); }      // 50→5.5px, 100→10px
   function labelFontOf(d) { return Math.max(6, 6 + numSize(d.labelSize) * 0.2); }    // 50→16px, 100→26px
   function drawPointGlyph(ctx, shape) {
-    const parent = shape.getParent(); const el = parent && elements.get(parent.id()); if (!el) return;
+    const parent = shape.getParent();
+    const el = parent && (parent._el || elements.get(parent.id())); if (!el) return;
     const d = el.data, r = pointRadiusOf(d), color = d.color || '#1f2937', sh = d.shape || 'dot';
     if (selected.has(el.id)) { ctx.beginPath(); ctx.arc(0, 0, r + 4, 0, 2 * Math.PI); ctx.strokeStyle = '#4d7cfe'; ctx.lineWidth = 2; ctx.stroke(); } // подсветка выделения
     ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -2759,10 +2809,12 @@
     if (!A || !V || !C) return Infinity;
     const R = 34, dr = Math.abs(Math.hypot(lp.x - V.x, lp.y - V.y) - R);
     const a1 = Math.atan2(A.y - V.y, A.x - V.x), a2 = Math.atan2(C.y - V.y, C.x - V.x);
-    let diff = a2 - a1; while (diff <= -Math.PI) diff += 2 * Math.PI; while (diff > Math.PI) diff -= 2 * Math.PI;
+    // Считаем так же, как рисуем (см. drawAngleShape): по часовой, 0..360.
+    // Иначе мышь ловила бы дугу не там, где она нарисована.
+    let diff = a2 - a1; while (diff < 0) diff += 2 * Math.PI; while (diff >= 2 * Math.PI) diff -= 2 * Math.PI;
     const aw = Math.atan2(lp.y - V.y, lp.x - V.x);
-    let da = aw - a1; while (da <= -Math.PI) da += 2 * Math.PI; while (da > Math.PI) da -= 2 * Math.PI;
-    const within = diff >= 0 ? (da >= -0.2 && da <= diff + 0.2) : (da <= 0.2 && da >= diff - 0.2);
+    let da = aw - a1; while (da < 0) da += 2 * Math.PI; while (da >= 2 * Math.PI) da -= 2 * Math.PI;
+    const within = da <= diff + 0.2 || da >= 2 * Math.PI - 0.2;
     return within ? dr : Infinity;
   }
   function pickObjectAtWorld(w) {
@@ -2852,6 +2904,22 @@
     if (vectorPicks.length >= 2) { const ids = vectorPicks.slice(); vectorPicks = []; createVector(ids); }
     else boardHint('Теперь конец вектора');
   }
+  // Вектор, УЖЕ НАРИСОВАННЫЙ на доске, под курсором. Нужен параллельному
+  // переносу: стрелка и есть перенос, и задавать её заново двумя щелчками
+  // незачем. Считаем по концам-точкам в мировых координатах — вектор может
+  // жить внутри матокна, и тогда его концы хранятся в координатах окна.
+  function pickVectorAt(w) {
+    const TH = 12 / stage.scaleX();
+    let best = null, bd = TH;
+    elements.forEach((el) => {
+      if (el.type !== 'vector' || (el.data.hidden && !revealHidden)) return;
+      const A = pointWorld(elements.get(el.data.a)), B = pointWorld(elements.get(el.data.b));
+      if (!A || !B) return;
+      const d = distPointToSeg(w, A, B);
+      if (d < bd) { bd = d; best = el; }
+    });
+    return best;
+  }
   // ── Анализ функций: выбор графика под курсором и создание элементов ────
   function pickFuncAt(w) {
     const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
@@ -2862,7 +2930,58 @@
   }
   function createAnalysis(type, data) { const el = { id: uuid(), type: type, z: 0, data: data }; upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); layer.batchDraw(); if (typeof syncAlgebra === 'function') syncAlgebra(); }
   let areaPicks = [], fintPicks = [];
-  function handleTangentPick(w) { const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; } createAnalysis('ftangent', { frame: p.fr.id, func: p.func.id, x0: p.x0 }); boardHint('Касательная построена'); }
+  let касатИзТочки = null;   // выбрана внешняя точка, ждём окружность
+  // Окружность матокна под курсором — вместе с окном и её геометрией.
+  function pickCircAt(w) {
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const TH = 12 / stage.scaleX(), lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
+    let best = null, bd = TH;
+    elements.forEach((el) => {
+      if (el.type !== 'circ' || el.data.frame !== fr.id || (el.data.hidden && !revealHidden)) return;
+      const C = circleGeom(el); if (!C) return;
+      if (C.semi && !pointOnArc(C, lw)) return;
+      const d = Math.abs(Math.hypot(lw.x - C.cx, lw.y - C.cy) - C.r);
+      if (d < bd) { bd = d; best = { el: el, fr: fr, C: C, lw: lw }; }
+    });
+    return best;
+  }
+  // КАСАТЕЛЬНАЯ строится теперь не только к графику функции, но и к
+  // окружности, нарисованной в матокне: щелчок по самой окружности даёт
+  // касательную в этом её месте, а щелчок сперва по точке вне окружности и
+  // затем по окружности — обе касательные из этой точки.
+  function handleTangentPick(w) {
+    // Ждём окружность к уже выбранной внешней точке.
+    if (касатИзТочки) {
+      const c = pickCircAt(w);
+      if (!c) { boardHint('Кликните по окружности'); return; }
+      const pe = elements.get(касатИзТочки);
+      if (!pe || pe.data.frame !== c.fr.id) { касатИзТочки = null; boardHint('Точка и окружность — в одном окне'); return; }
+      const P = frameMathToLocal(c.fr, pe.data.mx || 0, pe.data.my || 0);
+      const dd = Math.hypot(P.x - c.C.cx, P.y - c.C.cy);
+      if (dd < c.C.r - 0.5) { касатИзТочки = null; boardHint('Точка внутри окружности — касательных нет'); return; }
+      const из = касатИзТочки; касатИзТочки = null;
+      if (Math.abs(dd - c.C.r) <= 0.5) {
+        // Точка оказалась НА окружности — касательная всего одна.
+        createAnalysis('ftangent', { frame: c.fr.id, circ: c.el.id, a: Math.atan2(P.y - c.C.cy, P.x - c.C.cx), color: strokeColor });
+        boardHint('Касательная построена');
+        return;
+      }
+      createAnalysis('ftangent', { frame: c.fr.id, circ: c.el.id, pt: из, color: strokeColor });
+      boardHint('Две касательные построены');
+      return;
+    }
+    const p = pickFuncAt(w);
+    if (p) { createAnalysis('ftangent', { frame: p.fr.id, func: p.func.id, x0: p.x0 }); boardHint('Касательная построена'); return; }
+    const c = pickCircAt(w);
+    if (c) {
+      createAnalysis('ftangent', { frame: c.fr.id, circ: c.el.id, a: Math.atan2(c.lw.y - c.C.cy, c.lw.x - c.C.cx), color: strokeColor });
+      boardHint('Касательная построена');
+      return;
+    }
+    const pp = pickSelectablePointNear(w);
+    if (pp && pp.data && pp.data.frame) { касатИзТочки = pp.id; boardHint('Теперь окружность — построю две касательные из этой точки'); return; }
+    boardHint('Кликните по графику, по окружности или по точке вне окружности');
+  }
   function handleAreaPick(w) {
     const p = pickFuncAt(w); if (!p) { boardHint('Кликните по графику функции'); return; }
     if (!areaPicks.length) { areaPicks = [{ func: p.func.id, frame: p.fr.id, x: p.x0 }]; boardHint('Теперь вторая граница (по этому же графику)'); return; }
@@ -3061,7 +3180,7 @@
   }
   // Отсчёты исходной кривой в локальных координатах окна — по ним строится
   // образ при инверсии. Возвращаем массив точек, идущих вдоль кривой.
-  const XC_STEPS = 400;
+  const XC_STEPS = 1200;   // запасной путь: втрое чаще, чем было
   function xcurveSamples(src) {
     if (!src) return null;
     if (src.type === 'circ') {
@@ -3104,13 +3223,142 @@
     }
     return null;
   }
-  // Рисование образа кривой: каждый отсчёт через applyXform. Путь рвём там,
-  // где образа нет (сам центр инверсии) или где он улетел за пределы окна —
-  // соединять такие куски одной линией нельзя.
+  // ── ОБРАЗ ИНВЕРСИИ СЧИТАЕМ ТОЧНО ──────────────────────────────────────
+  // Инверсия переводит окружности и прямые снова в окружности и прямые — это
+  // школьный факт, и он даёт ИДЕАЛЬНУЮ гладкость: образ рисуется одной дугой,
+  // а не четырьмя сотнями отрезков. Ломаная (она осталась ниже запасным
+  // путём) была видна углами именно там, где образ круче всего загибается:
+  // равномерные отсчёты исходной фигуры ложатся на образ крайне неравномерно.
+  function invОбразТочки(O, p) {
+    const dx = p.x - O.cx, dy = p.y - O.cy, d2 = dx * dx + dy * dy;
+    if (d2 < 1e-9 || O.r2 < 1e-9) return null;      // сам центр образа не имеет
+    const k = O.r2 / d2;
+    return { x: O.cx + k * dx, y: O.cy + k * dy };
+  }
+  // Дуга по трём точкам на одной окружности: от q0 к q1 той стороной, где
+  // лежит qm. Без этого дуга через раз рисуется «наизнанку».
+  function invДугаЧерез(ctx, M, R, q0, qm, q1) {
+    const уг = (q) => Math.atan2(q.y - M.y, q.x - M.x);
+    const норм = (x) => { let a = x; while (a < 0) a += 2 * Math.PI; while (a >= 2 * Math.PI) a -= 2 * Math.PI; return a; };
+    const a0 = уг(q0), a1 = уг(q1), am = уг(qm);
+    const против = !(норм(am - a0) <= норм(a1 - a0));
+    ctx.arc(M.x, M.y, R, a0, a1, против);
+  }
+  // Образ ОТРЕЗКА AB — дуга окружности, проходящей через центр инверсии.
+  // false — формулой не взять (отрезок идёт прямо через центр): там образ
+  // уходит в бесконечность двумя кусками, и это дело запасного пути.
+  function invДугаОтрезка(ctx, O, A, B, продолжаем) {
+    const a = invОбразТочки(O, A), b = invОбразТочки(O, B);
+    if (!a || !b) return false;
+    const ux = B.x - A.x, uy = B.y - A.y, len = Math.hypot(ux, uy);
+    if (len < 1e-9) return false;
+    const u = { x: ux / len, y: uy / len };
+    const пр = (O.cx - A.x) * u.x + (O.cy - A.y) * u.y;          // где основание перпендикуляра
+    const F = { x: A.x + пр * u.x, y: A.y + пр * u.y };
+    const h = Math.hypot(F.x - O.cx, F.y - O.cy);                 // расстояние от центра до прямой
+    if (h < 1e-6) {
+      // Отрезок лежит на прямой через центр: образ — тоже прямая. Но если сам
+      // центр попал ВНУТРЬ отрезка, образ разрывается — отдаём запасному пути.
+      if (пр > 1e-6 && пр < len - 1e-6) return false;
+      if (!продолжаем) ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      return true;
+    }
+    const Fs = invОбразТочки(O, F); if (!Fs) return false;
+    // Образ прямой — окружность с диаметром «центр инверсии — образ основания».
+    const M = { x: (O.cx + Fs.x) / 2, y: (O.cy + Fs.y) / 2 };
+    const R = Math.hypot(Fs.x - O.cx, Fs.y - O.cy) / 2;
+    if (!isFinite(R) || R > GEO_L) return false;
+    const mid = invОбразТочки(O, { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 });
+    if (!mid) return false;
+    if (!продолжаем) ctx.moveTo(a.x, a.y);
+    invДугаЧерез(ctx, M, R, a, mid, b);
+    return true;
+  }
+  // Точный образ всей фигуры. true — путь построен, рисуем его.
+  function invТочныйПуть(ctx, fr, xf, src) {
+    const O = invКругИнверсии(fr, xf); if (!O) return false;
+    if (src.type === 'circ') {
+      const G = circleGeom(src); if (!G) return false;
+      // Степень центра инверсии относительно окружности: если она нулевая,
+      // окружность проходит через центр и образ — ПРЯМАЯ (запасной путь).
+      const st = (G.cx - O.cx) * (G.cx - O.cx) + (G.cy - O.cy) * (G.cy - O.cy) - G.r * G.r;
+      if (!isFinite(st) || Math.abs(st) < 1e-6) return false;
+      const k = O.r2 / st;
+      const M = { x: O.cx + k * (G.cx - O.cx), y: O.cy + k * (G.cy - O.cy) };
+      const R = Math.abs(O.r2 * G.r / st);
+      if (!isFinite(R) || R > GEO_L || R < 1e-6) return false;
+      ctx.beginPath();
+      if (!G.semi) { ctx.arc(M.x, M.y, R, 0, 2 * Math.PI); return true; }
+      // Полуокружность — дуга образа между образами её концов.
+      const нa = (a) => ({ x: G.cx + G.r * Math.cos(a), y: G.cy + G.r * Math.sin(a) });
+      const q0 = invОбразТочки(O, нa(G.a0));
+      const qm = invОбразТочки(O, нa(G.a0 + Math.PI / 2));
+      const q1 = invОбразТочки(O, нa(G.a0 + Math.PI));
+      if (!q0 || !qm || !q1) return false;
+      ctx.moveTo(q0.x, q0.y);
+      invДугаЧерез(ctx, M, R, q0, qm, q1);
+      return true;
+    }
+    if (isConstruction(src.type)) {
+      const G = lineGeom(src); if (!G) return false;
+      const пр = (O.cx - G.base.x) * G.u.x + (O.cy - G.base.y) * G.u.y;
+      const F = { x: G.base.x + пр * G.u.x, y: G.base.y + пр * G.u.y };
+      const h = Math.hypot(F.x - O.cx, F.y - O.cy);
+      if (h < 1e-6) return false;                  // прямая через центр — запасной путь
+      const Fs = invОбразТочки(O, F); if (!Fs) return false;
+      const M = { x: (O.cx + Fs.x) / 2, y: (O.cy + Fs.y) / 2 };
+      const R = Math.hypot(Fs.x - O.cx, Fs.y - O.cy) / 2;
+      if (!isFinite(R) || R > GEO_L || R < 1e-6) return false;
+      const конечен0 = isFinite(G.tmin), конечен1 = isFinite(G.tmax);
+      ctx.beginPath();
+      // Бесконечная в обе стороны прямая → образ ВСЯ окружность.
+      if (!конечен0 && !конечен1) { ctx.arc(M.x, M.y, R, 0, 2 * Math.PI); return true; }
+      // Отрезок — дуга между образами концов; луч — между образом начала и
+      // самим центром инверсии: бесконечно далёкая точка переходит в него.
+      const вТочке = (t) => invОбразТочки(O, { x: G.base.x + G.u.x * t, y: G.base.y + G.u.y * t });
+      const t0 = конечен0 ? G.tmin : null, t1 = конечен1 ? G.tmax : null;
+      const центр = { x: O.cx, y: O.cy };
+      const q0 = (t0 === null) ? центр : вТочке(t0);
+      const q1 = (t1 === null) ? центр : вТочке(t1);
+      // Середина нужна только чтобы выбрать сторону обхода. У луча берём
+      // точку подальше от начала — лишь бы она лежала внутри куска.
+      let tm;
+      if (t0 !== null && t1 !== null) tm = (t0 + t1) / 2;
+      else if (t0 !== null) tm = t0 + Math.abs(пр - t0) + h + 1;
+      else tm = t1 - (Math.abs(пр - t1) + h + 1);
+      const qm = вТочке(tm);
+      if (!q0 || !q1 || !qm) return false;
+      // Отрезок, проходящий ровно через центр инверсии, рвётся — запасной путь.
+      if (t0 !== null && t1 !== null && пр > t0 + 1e-6 && пр < t1 - 1e-6 && h < 1e-6) return false;
+      ctx.moveTo(q0.x, q0.y);
+      invДугаЧерез(ctx, M, R, q0, qm, q1);
+      return true;
+    }
+    if (isFilledPoly(src.type)) {
+      // Многоугольник — цепочка дуг: каждое ребро само по себе отрезок.
+      const flat = shapeOutline(src); if (!flat || flat.length < 6) return false;
+      const n = flat.length / 2;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const A = { x: flat[i * 2], y: flat[i * 2 + 1] }, B = { x: flat[j * 2], y: flat[j * 2 + 1] };
+        if (!invДугаОтрезка(ctx, O, A, B, i > 0)) return false;   // хоть одно ребро не взяли — всё ломаной
+      }
+      ctx.closePath();
+      return true;
+    }
+    return false;
+  }
+  // Рисование образа кривой: сначала пробуем точную формулу, и только если
+  // она не берёт (фигура проходит через центр инверсии — образ убегает в
+  // бесконечность) — отсчётами. Путь рвём там, где образа нет или где он
+  // улетел за пределы окна: соединять такие куски одной линией нельзя.
   function drawXformCurve(ctx, shape) {
     const el = elements.get(shape.id()); if (!el) return;
     const d = el.data, fr = elements.get(d.frame), src = elements.get(d.src);
     if (!fr || !src) return;
+    if (d.xf && d.xf.kind === 'inv' && invТочныйПуть(ctx, fr, d.xf, src)) { ctx.strokeShape(shape); return; }
     const S = xcurveSamples(src); if (!S) return;
     ctx.beginPath();
     let ведём = false;
@@ -3169,10 +3417,10 @@
     csym:   { picks: ['point'], nums: [], hint: 'Кликните центр симметрии' },
     asym:   { picks: ['line'],  nums: [], hint: 'Кликните ось (прямую)' },
     rot:    { picks: ['point'], nums: [['angle', 'Угол поворота (°, + против часовой):', '90']], hint: 'Кликните центр поворота' },
-    trans:  { picks: ['point', 'point'], nums: [], hint: 'Кликните начало вектора, затем конец' },
+    trans:  { picks: ['point', 'point'], nums: [], hint: 'Кликните вектор на доске — или начало вектора, затем конец' },
     homo:   { picks: ['point'], nums: [['k', 'Коэффициент гомотетии k:', '2']], hint: 'Кликните центр гомотетии' },
     spiral: { picks: ['point'], nums: [['angle', 'Угол (°):', '90'], ['k', 'Коэффициент k:', '2']], hint: 'Кликните центр' },
-    inv:    { picks: ['point', 'point'], nums: [], hint: 'Кликните центр инверсии, затем точку на её окружности' },
+    inv:    { picks: ['circle'], nums: [], hint: 'Кликните окружность инверсии' },
   };
   let xformSources = [], xformPicks = [];
   // Активация инструмента: источники = текущее выделение (если было). Дальше можно
@@ -3189,15 +3437,24 @@
       return;
     }
     // Источники есть, клик без Shift — задаём ПАРАМЕТР преобразования.
+    // ПЕРЕНОС НА ОТМЕЧЕННЫЙ ВЕКТОР. Если на доске уже нарисована стрелка, по
+    // ней достаточно щёлкнуть: её начало и конец и есть перенос. Проверяем
+    // это ДО обычного выбора точки — иначе следующая строка поставила бы на
+    // стрелке новую точку и перенос пришлось бы задавать вторым щелчком.
+    if (tool === 'trans' && !xformPicks.length) {
+      const вектор = pickVectorAt(w);
+      if (вектор && вектор.data.a && вектор.data.b) xformPicks = [вектор.data.a, вектор.data.b];
+    }
     const want = spec.picks[xformPicks.length];
     if (want === 'point') xformPicks.push(pickPointId(w));
     else if (want === 'line') { const ln = pickLineAt(w); if (!ln) { boardHint('Кликните по прямой (ось)'); return; } xformPicks.push(ln.id); }
+    else if (want === 'circle') { const cc = pickCircleAt(w); if (!cc) { boardHint('Кликните по окружности инверсии'); return; } xformPicks.push(cc.id); }
     if (xformPicks.length < spec.picks.length) { boardHint(spec.hint + ' — ещё'); return; }
     const xf = { kind: tool };
     if (tool === 'csym' || tool === 'rot' || tool === 'homo' || tool === 'spiral') xf.c = xformPicks[0];
     else if (tool === 'asym') xf.line = xformPicks[0];
     else if (tool === 'trans') { xf.a = xformPicks[0]; xf.b = xformPicks[1]; }
-    else if (tool === 'inv') { xf.c = xformPicks[0]; xf.through = xformPicks[1]; }
+    else if (tool === 'inv') xf.circle = xformPicks[0];
     (async () => {
       let ok = true;
       for (const nm of spec.nums) {
@@ -3269,6 +3526,22 @@
       const P = constructionParams(el); if (!P) return;
       const dist = P.seg ? distPointToSeg(lw, { x: P.seg[0], y: P.seg[1] }, { x: P.seg[2], y: P.seg[3] })
                          : distPointToLine(lw, P.base, P.u);
+      if (dist < bd) { bd = dist; best = el; }
+    });
+    return best;
+  }
+  // Окружность под курсором — для инверсии. Полуокружность не берём: у неё
+  // нет цельного «круга инверсии», и радиус был бы неопределённым.
+  function pickCircleAt(w) {
+    const fr = frameAtWorld(w.x, w.y, true); if (!fr) return null;
+    const THRESH = 12 / stage.scaleX();
+    const lw = { x: w.x - fr.data.x, y: w.y - fr.data.y };
+    let best = null, bd = THRESH;
+    elements.forEach((el) => {
+      if (el.data.frame !== fr.id || el.type !== 'circ') return;
+      if (el.data.hidden && !revealHidden) return;
+      const C = circleGeom(el); if (!C || C.semi) return;
+      const dist = Math.abs(Math.hypot(lw.x - C.cx, lw.y - C.cy) - C.r);
       if (dist < bd) { bd = dist; best = el; }
     });
     return best;
@@ -3515,8 +3788,11 @@
       const el = { id: uuid(), type: 'point', z: 0, data: { frame: A.data.frame, on: { xform: { kind: 'rot', c: vId, angle: deg }, src: aId }, label: nextPointLabel(), color: strokeColor } };
       applyTypeDefaults(el.data, 'point');
       upsertNode(el); send({ action: 'element_add', element: el }); histAdd(el); recomputeGeometry();
-      createConstruction('ray', [vId, el.id]); // вторая сторона угла
-      boardHint('Угол ' + deg + '° построен');
+      // Луч вдоль второй стороны больше не строим: инструмент откладывает угол,
+      // а не рисует его сторону. Нужна сторона — проводят её сами по двум
+      // точкам (вершина и эта новая), и тогда она будет ровно такой, какой
+      // нужна: лучом, отрезком или прямой.
+      boardHint('Угол ' + deg + '° отложен: поставлена точка');
     });
   }
   // Перпендикуляр/параллель: первый клик по существующей линии → режим «линия + точка»;
@@ -3759,17 +4035,25 @@
   function widgetTitle(el) { return { table: 'Таблица', kanban: 'Канбан', timer: 'Таймер', wheel: 'Колесо', slider: 'Параметр', sticky: '', card: '', embed: 'Страница', poll: 'Голосование', screen: 'Экран', python: 'Питон' }[el.type] || ''; }
   function syncWidget(it) { send({ action: 'element_update', element: it.el }); }
 
-  function upsertWidget(el) {
-    let it = widgetItems.get(el.id);
-    if (it) { it.el = el; if (it.update) it.update(el); repositionWidgets(); return; }
+  // Собрать РАЗМЕТКУ объекта: шапка, тело и всё содержимое. Отдельно от
+  // upsertWidget — потому что ровно эта сборка нужна ещё и призраку, который
+  // тащат из панели инструментов: он обязан быть тем же самым объектом, а не
+  // похожей картинкой.
+  function собратьОболочкуВиджета(el, хозяин) {
     const wrapper = document.createElement('div');
     wrapper.className = 'wgt wgt-' + el.type;
     const bar = document.createElement('div'); bar.className = 'wgt-bar';
     bar.innerHTML = '<span class="wgt-title">' + widgetTitle(el) + '</span><button class="wgt-del" title="Удалить">×</button>';
     const body = document.createElement('div'); body.className = 'wgt-body';
     wrapper.appendChild(bar); wrapper.appendChild(body);
-    widgetLayerEl.appendChild(wrapper);
-    it = { el, wrapper, bar, body, update: null, timer: null };
+    хозяин.appendChild(wrapper);
+    return { el, wrapper, bar, body, update: null, timer: null };
+  }
+  function upsertWidget(el) {
+    let it = widgetItems.get(el.id);
+    if (it) { it.el = el; if (it.update) it.update(el); repositionWidgets(); return; }
+    it = собратьОболочкуВиджета(el, widgetLayerEl);
+    const wrapper = it.wrapper, bar = it.bar;
     widgetItems.set(el.id, it);
     // Листок (стикер, карточка) берут за ЛЮБОЕ место: это бумажка, а не окно с
     // заголовком, и узкая полоска сверху для пальца слишком тонкая. У
@@ -3800,7 +4084,13 @@
     // мышь, перо и палец приходят сюда одинаково.
     handle.addEventListener('pointerdown', (e) => {
       if (e.button != null && e.button > 0) return;          // правая кнопка — не перенос
-      if (e.target.closest('.wgt-del')) return;
+      // НАЖАЛИ ПО КНОПКЕ В ШАПКЕ — это нажатие кнопки, а не перенос.
+      // Выйти нужно ДО захвата указателя (ниже): пока указатель захвачен
+      // шапкой, браузер отдаёт щелчок ЕЙ, а не кнопке, и кнопка выглядит
+      // мёртвой — ровно это и случилось с зелёным ▶ у питона. Крестик
+      // удаления работал лишь потому, что для него тут стоял свой выход;
+      // теперь выход общий для всех кнопок шапки.
+      if (e.target.closest('button, select, a')) return;
       // Нажали по тому, что правят (текст листка, поле ввода, кнопка) — не
       // мешаем: перенос начнётся, только если ПОВЕДУТ. Иначе по стикеру нельзя
       // было бы ни щёлкнуть, ни поставить курсор в слово.
@@ -3906,21 +4196,38 @@
     поп.style.top = Math.max(70, Math.round(r.top - 10)) + 'px';
   }
 
-  function insertTable() {
-    const выбор = размерТаблицы || { rows: 3, cols: 3 };
-    размерТаблицы = null;
-    const rows = Math.max(1, Math.min(ТП_МАКС, выбор.rows));
-    const cols = Math.max(1, Math.min(ТП_МАКС, выбор.cols));
-    insertWidget('table', {
-      rows: rows, cols: cols,
-      colW: new Array(cols).fill(TBL_W), rowH: new Array(rows).fill(TBL_H),
-      cells: new Array(rows).fill(null).map(() => new Array(cols).fill(null).map(() => ({}))),
-    });
-  }
-  function insertKanban() { insertWidget('kanban', { columns: [{ title: 'To do', cards: [] }, { title: 'В работе', cards: [] }, { title: 'Готово', cards: [] }] }); }
-  function insertTimer() { insertWidget('timer', { duration: 300, remaining: 300, running: false, startedAt: 0 }); }
-  function insertWheel() { insertWidget('wheel', { options: ['Аня', 'Боря', 'Вера', 'Гена'] }); }
-  function insertPython() { insertWidget('python', { width: 460, height: 280, code: '', out: '' }); }
+  // ЗАГОТОВКА ОБЪЕКТА — ОДНА НА ВСЕХ.
+  // Отсюда берут данные и создание объекта на доске, и призрак, который тащат
+  // из панели инструментов. Это и есть главное условие того, чтобы «что тащу,
+  // то и получу»: другого описания «каким объект рождается» в коде больше нет.
+  const ЗАГОТОВКА_ВИДЖЕТА = {
+    sticky: () => ({ text: '', color: STICKY_COLORS[0] }),
+    card: () => ({ front: '', back: '', color: CARD_COLORS[0] }),
+    comment: () => ({ thread: [] }),
+    kanban: () => ({ columns: [{ title: 'To do', cards: [] }, { title: 'В работе', cards: [] }, { title: 'Готово', cards: [] }] }),
+    timer: () => ({ duration: 300, remaining: 300, running: false, startedAt: 0 }),
+    wheel: () => ({ options: ['Аня', 'Боря', 'Вера', 'Гена'] }),
+    python: () => ({ width: 460, height: 280, code: '', out: '' }),
+    poll: () => ({ title: 'Вопрос', options: ['Вариант 1', 'Вариант 2', 'Вариант 3'], votes: {}, showResults: true }),
+    table: () => {
+      // Размер берётся из сетки выбора, если его там задали. Сетку НЕ гасим:
+      // её гасит insertTable, когда таблица уже создана, — иначе призрак,
+      // который строится раньше, стирал бы выбор человека.
+      const выбор = размерТаблицы || { rows: 3, cols: 3 };
+      const rows = Math.max(1, Math.min(ТП_МАКС, выбор.rows));
+      const cols = Math.max(1, Math.min(ТП_МАКС, выбор.cols));
+      return {
+        rows: rows, cols: cols,
+        colW: new Array(cols).fill(TBL_W), rowH: new Array(rows).fill(TBL_H),
+        cells: new Array(rows).fill(null).map(() => new Array(cols).fill(null).map(() => ({}))),
+      };
+    },
+  };
+  function insertTable() { const d = ЗАГОТОВКА_ВИДЖЕТА.table(); размерТаблицы = null; insertWidget('table', d); }
+  function insertKanban() { insertWidget('kanban', ЗАГОТОВКА_ВИДЖЕТА.kanban()); }
+  function insertTimer() { insertWidget('timer', ЗАГОТОВКА_ВИДЖЕТА.timer()); }
+  function insertWheel() { insertWidget('wheel', ЗАГОТОВКА_ВИДЖЕТА.wheel()); }
+  function insertPython() { insertWidget('python', ЗАГОТОВКА_ВИДЖЕТА.python()); }
 
   function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
@@ -4009,25 +4316,21 @@
     // Набор текста не должен доходить до горячих клавиш доски: иначе буква «l»
     // посреди слова переключала бы инструмент на линию.
     поле.addEventListener('keydown', (e) => { e.stopPropagation(); });
-    // Панель текста — та же, что у надписей на доске и у клеток таблицы.
-    // Размер шрифта в ней для листка спрятан: кегль подбирается сам, и ручная
-    // настройка спорила бы с подбором.
+    // У ЛИСТКА СВОЯ ЕДИНАЯ ПАНЕЛЬ (#sticky-panel): и цвет бумажки, и цвет
+    // букв, и шрифт с начертанием — в одном окне. Общую панель текста доски
+    // листок больше не зовёт: она появлялась вторым окном поверх первого, а
+    // её цвет красил бумажку вместо букв. Чтобы панель появилась при наборе,
+    // достаточно выделить сам листок — дальше её показывает общий порядок
+    // (positionHandlesCore → showStickyPanel).
     поле.addEventListener('focus', () => {
       if (viewOnly) return;
-      activeTbox = { ed: поле, el: { id: it.el.id, data: it.el.data }, _realEl: it.el, wrapper: it.wrapper, isShapeText: true, editing: true, листок: true };
-      showTboxBar(activeTbox);
-      if (tboxBar) tboxBar.classList.add('tb-nosize');
+      if (!selected.has(it.el.id)) selectOnly(it.el.id);
     });
     поле.addEventListener('blur', () => {
       setTimeout(() => {
         if (document.activeElement === поле) return;
-        if (tboxBar && tboxBar.contains(document.activeElement)) return;
-        if (activeTbox && activeTbox._realEl === it.el) {
-          activeTbox = null; hideTboxBar();
-          if (tboxBar) tboxBar.classList.remove('tb-nosize');
-        }
-        // Разметку на выходе чистим: панель текста могла оставить кегль или
-        // чужой шрифт, а они ломают подбор размера.
+        // Разметку на выходе чистим: из буфера мог приехать чужой кегль или
+        // шрифт, а они ломают подбор размера.
         доступ.писать(sanitizeHtml(поле.innerHTML || ''));
         подогнатьКегльЛистка(поле, коробка);
         листокСинхронПозже(it);
@@ -4061,6 +4364,11 @@
       // начало. Цвет при этом обновляем — он приходит из панели и мешать не может.
       if (it._поле && document.activeElement === it._поле) {
         it.wrapper.style.background = it.el.data.color || STICKY_COLORS[0];
+        // Оформление (шрифт, начертание, цвет букв, выравнивание) применяем
+        // и во время набора: иначе нажатие Ж в панели было бы не видно, пока
+        // не уйдёшь из поля. Сам текст при этом не пересобираем — курсор бы
+        // прыгнул в начало.
+        применитьСтильЛистка(it._поле, it.el.data);
         подогнатьКегльЛистка(it._поле, it._коробка);
         return;
       }
@@ -4073,7 +4381,7 @@
     };
     it.update = render; render();
   }
-  function insertSticky() { insertWidget('sticky', { text: '', color: STICKY_COLORS[0] }); }
+  function insertSticky() { insertWidget('sticky', ЗАГОТОВКА_ВИДЖЕТА.sticky()); }
 
   // — Комментарий: свёрнутая метка, разворачивается в нить —
   const COMMENT_MAX = 2000;   // символов в одной записи
@@ -4160,7 +4468,7 @@
     };
     it.update = render; render();
   }
-  function insertComment(at) { insertWidget('comment', { thread: [] }, at); }
+  function insertComment(at) { insertWidget('comment', ЗАГОТОВКА_ВИДЖЕТА.comment(), at); }
 
   // — Карточка (двусторонняя): вопрос ↔ ответ, переворот по кнопке (как в Quizlet) —
   // Содержимое (front/back/цвет) синхронизируется; ТЕКУЩАЯ сторона — локальная у
@@ -4184,6 +4492,7 @@
       it.wrapper.classList.toggle('crd-back', !!it._side);
       if (it._поле && document.activeElement === it._поле) {
         it.wrapper.style.background = it.el.data.color || CARD_COLORS[0];
+        применитьСтильЛистка(it._поле, it.el.data);   // как и у стикера: видно сразу
         подогнатьКегльЛистка(it._поле, it._коробка);
         return;
       }
@@ -4203,7 +4512,7 @@
     кнопка.addEventListener('click', (e) => { e.stopPropagation(); it._side = it._side ? 0 : 1; render(); });
     it.update = render; render();
   }
-  function insertCard() { insertWidget('card', { front: '', back: '', color: CARD_COLORS[0] }); }
+  function insertCard() { insertWidget('card', ЗАГОТОВКА_ВИДЖЕТА.card()); }
 
   // ── ОБЫЧНЫЙ ТЕКСТ (textbox) — живой HTML на доске, правится на месте ───────
   // Не картинка и не Konva-узел: DOM-элемент на #widget-layer (как виджеты).
@@ -5206,12 +5515,7 @@
     it.update = render; render();
   }
 
-  function insertPoll() {
-    insertWidget('poll', {
-      title: 'Вопрос', options: ['Вариант 1', 'Вариант 2', 'Вариант 3'],
-      votes: {}, showResults: true,
-    });
-  }
+  function insertPoll() { insertWidget('poll', ЗАГОТОВКА_ВИДЖЕТА.poll()); }
 
   // — Колесо случайного выбора —
   // Рисуем под плотность экрана (иначе на ретине края секторов мылят), крутим
@@ -6639,8 +6943,56 @@
     if (!funcFnCache[funcId] || funcFnCache[funcId].expr !== f.data.expr) funcFnCache[funcId] = { expr: f.data.expr, fn: compileFunc(f.data.expr) };
     return funcFnCache[funcId].fn;
   }
+  // Касательные к окружности: в отмеченном месте — одна, из внешней точки —
+  // две. Всё считается в локальных пикселях окна, в той же системе, что даёт
+  // circleGeom, поэтому касание получается точным на любом зуме.
+  function drawCircTangent(ctx, el, fr) {
+    const ce = elements.get(el.data.circ); if (!ce || ce.type !== 'circ') return;
+    const C = circleGeom(ce); if (!C || !(C.r > 0)) return;
+    const col = el.data.color || '#e67e22';
+    ctx.save();
+    ctx.lineWidth = el.data.strokeWidth || 1.8; ctx.strokeStyle = col;
+    const прямая = (T, ux, uy) => {
+      ctx.beginPath();
+      ctx.moveTo(T.x - ux * GEO_L, T.y - uy * GEO_L);
+      ctx.lineTo(T.x + ux * GEO_L, T.y + uy * GEO_L);
+      ctx.stroke();
+    };
+    const точка = (T) => { ctx.beginPath(); ctx.fillStyle = col; ctx.arc(T.x, T.y, 3.5, 0, 2 * Math.PI); ctx.fill(); };
+    const наОкружности = (a) => ({ x: C.cx + C.r * Math.cos(a), y: C.cy + C.r * Math.sin(a) });
+    if (el.data.pt) {
+      const pe = elements.get(el.data.pt);
+      if (!pe || pe.data.frame !== el.data.frame) { ctx.restore(); return; }
+      const P = frameMathToLocal(fr, pe.data.mx || 0, pe.data.my || 0);
+      const dd = Math.hypot(P.x - C.cx, P.y - C.cy);
+      if (!(dd > C.r + 1e-6)) { ctx.restore(); return; }   // точка внутри — касательных нет
+      const th = Math.atan2(P.y - C.cy, P.x - C.cx), al = Math.acos(Math.max(-1, Math.min(1, C.r / dd)));
+      [1, -1].forEach((зн) => {
+        const T = наОкружности(th + зн * al);
+        if (C.semi && !pointOnArc(C, T)) return;
+        const L = Math.hypot(T.x - P.x, T.y - P.y) || 1;
+        прямая(T, (T.x - P.x) / L, (T.y - P.y) / L);
+        точка(T);
+      });
+      // Длина касательной — в единицах окна, как принято у остальных измерений.
+      const ед = fr.data.unit || 40;
+      const дл = Math.round(Math.sqrt(Math.max(0, dd * dd - C.r * C.r)) / ед * 100) / 100;
+      ctx.fillStyle = col; ctx.font = '12px sans-serif';
+      ctx.fillText(String(дл), P.x + 8, P.y - 8);
+      ctx.restore();
+      return;
+    }
+    const a = el.data.a || 0, T = наОкружности(a);
+    if (C.semi && !pointOnArc(C, T)) { ctx.restore(); return; }
+    прямая(T, -Math.sin(a), Math.cos(a));   // касательная перпендикулярна радиусу
+    точка(T);
+    ctx.restore();
+  }
   function drawTangent(ctx, shape) {
-    const el = elements.get(shape.id()); if (!el) return; const fr = elements.get(el.data.frame), fn = funcFnOf(el.data.func); if (!fr || !fn) return;
+    const el = elements.get(shape.id()); if (!el) return;
+    const fr0 = elements.get(el.data.frame); if (!fr0) return;
+    if (el.data.circ) { drawCircTangent(ctx, el, fr0); return; }
+    const fr = fr0, fn = funcFnOf(el.data.func); if (!fn) return;
     const m = planeMap(fr), env = frameParamEnv(fr), x0 = el.data.x0; let y0, slope;
     try { y0 = fn(x0, env); const h = 1e-4; slope = (fn(x0 + h, env) - fn(x0 - h, env)) / (2 * h); } catch (e) { return; }
     if (!isFinite(y0) || !isFinite(slope)) return;
@@ -6839,7 +7191,7 @@
       if (el.type === 'func') {
         const node = nodes.get(el.id), frameNode = nodes.get(el.data.frame);
         if (node && frameNode && node.getParent() !== frameNode) attachFuncNode(el, node);
-      } else if (el.data && el.data.frame && (el.type === 'point' || el.type === 'circle' || isPointBoundLine(el) || el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit')) {
+      } else if (el.data && el.data.frame && (el.type === 'point' || el.type === 'circle' || isPointBoundLine(el) || el.type === 'ftangent' || el.type === 'farea' || el.type === 'fintersect' || el.type === 'region' || el.type === 'implicit' || el.type === 'xcurve')) {
         // привязанная геометрия — в группу окна (если окно загрузилось позже)
         const node = nodes.get(el.id), frameNode = nodes.get(el.data.frame);
         if (node && frameNode && node.getParent() !== frameNode) attachToFrame(el, node);
@@ -8702,7 +9054,6 @@
     if (rmbPan) return;                       // правой уже тянут — не мешаем
     if (panMode || touchBlocked(e)) return;   // идёт перемещение доски / щипок — не рисуем
     if (tool === 'select') return; // в режиме выделения сцена сама панорамит
-    if (tool === 'latex') { openLatexEditor(); return; }
     if (tool === 'graph') { if (e.evt) e.evt.preventDefault(); handleGraphPick(worldPoint()); return; }
     if (tool === 'text') { openTextEditor(false); return; }
     if (tool === 'text_plain') { if (e.evt) e.evt.preventDefault(); insertTextbox(); return; }
@@ -9145,7 +9496,7 @@
   // сквозь текст и виджеты. Инструменты установки текста сюда НЕ входят:
   // щелчок по существующему блоку должен попадать в него.
   function рисующий(имя) {
-    return !!имя && имя !== 'select' && имя !== 'text' && имя !== 'text_plain' && имя !== 'latex';
+    return !!имя && имя !== 'select' && имя !== 'text' && имя !== 'text_plain';
   }
 
   // КУРСОР СЦЕНЫ — ОДИН НА ВСЕХ. Раньше его писали шесть мест, каждое
@@ -9160,7 +9511,7 @@
     // оставалась раскрытой.
     return panMode ? ''
       : (в === 'select') ? 'default'
-      : (в === 'latex' || в === 'text' || в === 'text_plain') ? 'text' : 'crosshair';
+      : (в === 'text' || в === 'text_plain') ? 'text' : 'crosshair';
   }
 
   // ВСЁ, ЧТО ПОКАЗЫВАЕТ ИНСТРУМЕНТ, — ЗДЕСЬ, И ТОЛЬКО ЗДЕСЬ.
@@ -9224,6 +9575,7 @@
       if (name !== 'vector') vectorPicks = [];
       if (name !== 'farea') areaPicks = [];
       if (name !== 'fintersect') fintPicks = [];
+      if (name !== 'ftangent') касатИзТочки = null;   // недовыбранная точка не должна ждать вечно
       if (name !== 'regionsys') { regionParts = []; regionFrame = null; }
       if (name !== 'macro') macroPickPts = [];
       if (name !== 'macro_record') macroMode = null;
@@ -9586,7 +9938,7 @@
   // Панели поверх доски: нажатие на них — не перемещение.
   const PAN_SKIP = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
     + ' #people-panel, #voice-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control,'
-    + ' #settings-btn, #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor,'
+    + ' #settings-btn, #settings-menu, #color-palette, #text-editor, #func-editor,'
     + ' #tbox-bar, #tbl-bar, #venn-bar, #dp-pop, #eraser-panel, #storyboard, #pdf-controls,'
     + ' #frame-exit-btn, #mobile-sheet, #mobile-fab, #mobile-bar, #mobile-backdrop, #embed-dialog,'
     + ' #board-pw-dialog, #pdf-export-dialog';
@@ -10663,6 +11015,11 @@
   function algDescAngle(e) { return '∠' + algPName(e.data.a) + algPName(e.data.b) + algPName(e.data.c); }
   function algDescAnalysis(e) {
     const ex = (id) => { const f = elements.get(id); return f ? f.data.expr : '?'; };
+    if (e.type === 'ftangent' && e.data.circ) {
+      const ce = elements.get(e.data.circ);
+      const имя = (ce && ce.data && ce.data.name) ? ce.data.name : 'окружности';
+      return e.data.pt ? ('касательные к ' + имя + ' из точки ' + algPName(e.data.pt)) : ('касательная к ' + имя);
+    }
     if (e.type === 'ftangent') return 'касательная к y=' + ex(e.data.func) + ' при x=' + (Math.round(e.data.x0 * 100) / 100);
     if (e.type === 'farea') return 'площадь под y=' + ex(e.data.func) + ' на [' + (Math.round(Math.min(e.data.a, e.data.b) * 100) / 100) + '; ' + (Math.round(Math.max(e.data.a, e.data.b) * 100) / 100) + ']';
     return 'пересечение y=' + ex(e.data.f) + ' и y=' + ex(e.data.g);
@@ -12929,56 +13286,11 @@
   }
 
 
-  // ── Редактор формул LaTeX ──────────────────────────────────────────────
-  const latexEditor = document.getElementById('latex-editor');
-  const leInput = document.getElementById('le-input');
-  const lePreview = document.getElementById('le-preview');
-  let latexInsertPos = null;
-
-  function openLatexEditor() {
-    latexInsertPos = worldPoint();
-    const p = stage.getPointerPosition();
-    // Координаты экрана: контейнер сцены начинается на 56px ниже навбара.
-    let left = p.x + 14, top = p.y + STAGE_TOP + 14;
-    left = Math.min(left, window.innerWidth - 340);
-    latexEditor.style.left = left + 'px';
-    latexEditor.style.top = top + 'px';
-    latexEditor.hidden = false;
-    leInput.value = '';
-    lePreview.innerHTML = '<span style="color:#9a9aa4">превью формулы</span>';
-    leInput.focus();
-  }
-  function closeLatexEditor() { latexEditor.hidden = true; }
-
-  function updateLatexPreview() {
-    const tex = leInput.value;
-    if (!tex.trim()) { lePreview.innerHTML = '<span style="color:#9a9aa4">превью формулы</span>'; return; }
-    lePreview.textContent = '\\[' + tex + '\\]';
-    if (window.MathJax && MathJax.typesetPromise) {
-      MathJax.typesetPromise([lePreview]).catch(() => {});
-    }
-  }
-  function insertLatex() {
-    const tex = leInput.value.trim();
-    if (!tex) { closeLatexEditor(); return; }
-    const el = { id: uuid(), type: 'latex', z: 0,
-      data: { x: latexInsertPos.x, y: latexInsertPos.y, latex: tex, color: strokeColor } };
-    upsertNode(el);
-    send({ action: 'element_add', element: el });
-    histAdd(el);
-    closeLatexEditor();
-    setTool('select'); // сразу можно двигать вставленную формулу
-  }
-
-  if (leInput) {
-    leInput.addEventListener('input', updateLatexPreview);
-    leInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); insertLatex(); }
-      if (e.key === 'Escape') { e.preventDefault(); closeLatexEditor(); }
-    });
-    document.getElementById('le-insert').addEventListener('click', insertLatex);
-    document.getElementById('le-cancel').addEventListener('click', closeLatexEditor);
-  }
+  // Отдельного редактора формул LaTeX здесь больше НЕТ. Он полностью
+  // повторял редактор текста ниже: тот умеет формулы внутри $…$, и ещё
+  // обычные слова вокруг них. Два входа в одно и то же только путали.
+  // ВАЖНО: показ уже сохранённых формул (тип 'latex') остался целиком —
+  // старые доски рисуются как рисовались, см. latexToImage/renderLatexInto.
   // ── Редактор текста (с инлайн-формулами $...$) ─────────────────────────
   // ── Rich-text редактор: тулбар (шрифт/кегль/Ж-К-Ч-З/цвет/фон/выравнивание/
   //    списки/фон окна) + contenteditable. Формулы — внутри $…$, ссылки — авто. ──
@@ -13304,7 +13616,6 @@
     text_plain: insertTextbox, geogebra: insertGeoGebra, point: placePoint, embed: insertEmbed, poll: insertPoll, venn: insertVenn,
     screen: function () { setTool('select'); startScreenShare(); },
     text: function () { openTextEditor(false); },
-    latex: function () { openLatexEditor(); },
   };
   function isDropTool(name) {
     return !!(DROP_MAKE[name] || SHAPE_TOOLS[name]
@@ -13312,22 +13623,31 @@
   }
 
   // Фигуры и матокно при броске ставим готового размера, центром в точку броска.
-  function dropCreateShape(name, w) {
+  // ЗАГОТОВКА ФИГУРЫ — та же и при броске, и для призрака (см. makeGhost).
+  // w — точка, в которую кладём; фигура садится в неё ЦЕНТРОМ.
+  function заготовкаФигуры(name, w) {
     const base = { stroke: strokeColor, strokeWidth: strokeWidth };
-    let el = null, W, H;
+    let W, H;
     if (name === 'rect') {
       W = DROP_SIZE.rect[0]; H = DROP_SIZE.rect[1];
-      el = { id: uuid(), type: 'rect', z: 0, data: Object.assign({}, base, { x: w.x - W / 2, y: w.y - H / 2, width: W, height: H }) };
-    } else if (name === 'ellipse') {
-      W = DROP_SIZE.ellipse[0]; H = DROP_SIZE.ellipse[1];
-      el = { id: uuid(), type: 'ellipse', z: 0, data: Object.assign({}, base, { x: w.x, y: w.y, radiusX: W / 2, radiusY: H / 2 }) };
-    } else if (name === 'frame') {
-      W = DROP_SIZE.frame[0]; H = DROP_SIZE.frame[1];
-      el = { id: uuid(), type: 'frame', z: 0, data: { x: w.x - W / 2, y: w.y - H / 2, width: W, height: H, cx: 0, cy: 0, unit: 40 } };
-    } else if (SHAPE_TOOLS[name]) {
-      W = DROP_SIZE.shape[0]; H = DROP_SIZE.shape[1];
-      el = { id: uuid(), type: 'shape', z: 0, data: Object.assign({}, base, { color: strokeColor, x: w.x - W / 2, y: w.y - H / 2, width: W, height: H, kind: SHAPE_TOOLS[name] }) };
+      return { id: uuid(), type: 'rect', z: 0, data: Object.assign({}, base, { x: w.x - W / 2, y: w.y - H / 2, width: W, height: H }) };
     }
+    if (name === 'ellipse') {
+      W = DROP_SIZE.ellipse[0]; H = DROP_SIZE.ellipse[1];
+      return { id: uuid(), type: 'ellipse', z: 0, data: Object.assign({}, base, { x: w.x, y: w.y, radiusX: W / 2, radiusY: H / 2 }) };
+    }
+    if (name === 'frame') {
+      W = DROP_SIZE.frame[0]; H = DROP_SIZE.frame[1];
+      return { id: uuid(), type: 'frame', z: 0, data: { x: w.x - W / 2, y: w.y - H / 2, width: W, height: H, cx: 0, cy: 0, unit: 40 } };
+    }
+    if (SHAPE_TOOLS[name]) {
+      W = DROP_SIZE.shape[0]; H = DROP_SIZE.shape[1];
+      return { id: uuid(), type: 'shape', z: 0, data: Object.assign({}, base, { color: strokeColor, x: w.x - W / 2, y: w.y - H / 2, width: W, height: H, kind: SHAPE_TOOLS[name] }) };
+    }
+    return null;
+  }
+  function dropCreateShape(name, w) {
+    const el = заготовкаФигуры(name, w);
     if (!el) return false;
     upsertNode(el);
     send({ action: 'element_add', element: stripPrivate(el) });
@@ -13355,7 +13675,7 @@
     // Панели поверх холста — бросать в них нельзя.
     const PANELS = '#board-toolbar, #board-topbar, #board-head, #board-menu, #history-panel,'
       + ' #people-panel, .tool-flyout, .settings-panel, .conn-panel, #zoom-control, #settings-btn,'
-      + ' #settings-menu, #color-palette, #latex-editor, #text-editor, #func-editor, #tbox-bar,'
+      + ' #settings-menu, #color-palette, #text-editor, #func-editor, #tbox-bar,'
       + ' #dp-pop, #eraser-panel, #storyboard, #pdf-controls, #frame-exit-btn,'
       + ' #mobile-sheet, #mobile-fab, #mobile-bar, #mobile-backdrop';
     const THRESHOLD = 8; // сдвиг меньше этого — обычный клик, а не перетаскивание
@@ -13397,33 +13717,86 @@
     // должен видеть, что именно он кладёт на доску и какого размера: подпись
     // «Стикер» этого не показывает. Рисуем упрощённый, но узнаваемый вид —
     // настоящий объект строить нельзя, он ещё не создан и у него нет данных.
-    const ПРИЗРАКИ = {
-      sticky: '<div class="tg-note"></div>',
-      card: '<div class="tg-note tg-card"></div>',
-      comment: '<div class="tg-dot">?</div>',
-      table: '<div class="tg-table"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>',
-      kanban: '<div class="tg-kanban"><i></i><i></i><i></i></div>',
-      timer: '<div class="tg-box tg-timer">05:00</div>',
-      wheel: '<div class="tg-wheel"></div>',
-      poll: '<div class="tg-box tg-poll"><i></i><i></i><i></i></div>',
-      python: '<div class="tg-box tg-py">▶ python</div>',
-      embed: '<div class="tg-box tg-embed"></div>',
-      text_plain: '<div class="tg-text">Текст</div>',
-      latex: '<div class="tg-text">формула</div>',
-      geogebra: '<div class="tg-box tg-embed"></div>',
-    };
+    // ЧТО ТАЩУ — ТО И ПОЛУЧУ.
+    // Раньше под рукой ехал нарисованный отдельно макет: жёлтый прямоугольник
+    // вместо стикера, сетка три на три вместо таблицы какого выбрали размера,
+    // коробочка с надписью «python» вместо окна с кодом. Размер, цвет и
+    // содержимое не совпадали с тем, что появлялось при отпускании.
+    // Теперь призрак — ТОТ ЖЕ САМЫЙ объект, собранный теми же функциями и из
+    // той же заготовки (ЗАГОТОВКА_ВИДЖЕТА), что и настоящий, и в том же
+    // масштабе, в каком он ляжет на доску. Расхождению взяться неоткуда:
+    // второго описания внешнего вида в коде больше нет.
+    const ПРИЗРАК_ТИП = { sticky: 'sticky', card: 'card', comment: 'comment', table: 'table',
+      kanban: 'kanban', timer: 'timer', wheel: 'wheel', poll: 'poll', python: 'python' };
     function makeGhost(btn) {
       const g = document.createElement('div');
       g.className = 'tool-ghost';
-      const вид = ПРИЗРАКИ[btn.dataset.tool];
-      if (вид) { g.classList.add('tg-real'); g.innerHTML = вид; }
-      else {
-        // Для того, что рисуют протяжкой (фигуры, точка), своего вида нет —
-        // показываем значок инструмента, но уже без подписи.
+      document.body.appendChild(g);
+      const тип = ПРИЗРАК_ТИП[btn.dataset.tool];
+      if (тип && ЗАГОТОВКА_ВИДЖЕТА[тип]) {
+        // Класс wgt-host нужен, чтобы правила вида (таблица без карточки и
+        // тени, окно питона на бумаге доски) сработали и здесь: они написаны
+        // на слой объектов, а призрак живёт вне него.
+        g.classList.add('tg-real', 'tg-live', 'wgt-host');
+        const el = { id: 'ghost-' + тип, type: тип, z: 0, data: Object.assign({ x: 0, y: 0 }, ЗАГОТОВКА_ВИДЖЕТА[тип]()) };
+        const it = собратьОболочкуВиджета(el, g);
+        it._призрак = true;
+        buildWidgetContent(it);
+        g._it = it;
+        // Масштаб доски: на уменьшенной доске объект и лечь должен мельче.
+        const s = stage.scaleX();
+        it.wrapper.style.position = 'static';
+        it.wrapper.style.transformOrigin = 'top left';
+        it.wrapper.style.transform = 'scale(' + s + ')';
+        g.style.width = Math.round((it.wrapper.offsetWidth || 180) * s) + 'px';
+        g.style.height = Math.round((it.wrapper.offsetHeight || 120) * s) + 'px';
+      } else if (btn.dataset.tool === 'venn' || заготовкаФигуры(btn.dataset.tool, { x: 0, y: 0 })) {
+        // ФИГУРА. Её тоже показываем настоящей: собираем тот самый узел теми
+        // же функциями и рисуем его в маленькой сцене внутри призрака.
+        // Заготовку в общую карту elements не кладём — иначе недоношенная
+        // фигура мелькнула бы у всех участников урока; узлу отдаём её через
+        // node._el (см. drawBasicShape).
+        const s = stage.scaleX();
+        const el = (btn.dataset.tool === 'venn')
+          ? заготовкаВенна({ x: VENN_РАЗМЕР[0] / 2, y: VENN_РАЗМЕР[1] / 2 })
+          : заготовкаФигуры(btn.dataset.tool, { x: 0, y: 0 });
+        const d = el.data;
+        const W = (d.width || (d.radiusX ? d.radiusX * 2 : 0) || 160);
+        const H = (d.height || (d.radiusY ? d.radiusY * 2 : 0) || 120);
+        // Фигура ложится ЦЕНТРОМ в точку броска, значит и призрак держим за
+        // середину — класс tg-live тут не нужен.
+        d.x = W / 2; d.y = H / 2;
+        if (el.type === 'rect' || el.type === 'shape' || el.type === 'frame' || el.type === 'venn') { d.x = 0; d.y = 0; }
+        g.classList.add('tg-real');
+        const холст = document.createElement('div');
+        холст.style.cssText = 'width:' + Math.round(W * s) + 'px;height:' + Math.round(H * s) + 'px';
+        g.appendChild(холст);
+        const сцена = new Konva.Stage({ container: холст, width: Math.round(W * s), height: Math.round(H * s) });
+        const слой = new Konva.Layer({ listening: false });
+        слой.scale({ x: s, y: s });
+        сцена.add(слой);
+        const узел = buildNode(el);
+        if (узел) {
+          узел._el = el;
+          if (узел.getChildren) узел.getChildren().forEach((ч) => { ч._el = el; });
+          слой.add(узел); слой.draw();
+        }
+        g._сцена = сцена;
+      } else {
+        // Остальное (текст, встроенная страница, экран) до диалога не имеет
+        // окончательного вида — там остаётся значок инструмента.
         g.innerHTML = btn.innerHTML;
       }
-      document.body.appendChild(g);
       return g;
+    }
+    // Погасить живой призрак: у таймера внутри идёт свой отсчёт, и, если про
+    // него забыть, он продолжит тикать в выброшенной разметке.
+    function убратьПризрак(g) {
+      if (!g) return;
+      const it = g._it;
+      if (it && it.timer) { try { clearInterval(it.timer); } catch (e) { /* уже стоит */ } }
+      if (g._сцена) { try { g._сцена.destroy(); } catch (e) { /* уже разобрана */ } }
+      g.remove();
     }
     function dropAllowed(x, y) {
       const r = stageEl.getBoundingClientRect();
@@ -13441,16 +13814,21 @@
     function cleanup() {
       вернутьРодноеПеретаскивание();
       if (src) { try { src.releasePointerCapture(pid); } catch (e) {} src.classList.remove('tool-dragging'); }
-      if (ghost) { ghost.remove(); ghost = null; }
+      if (ghost) { убратьПризрак(ghost); ghost = null; }
       document.body.classList.remove('tool-dragging-body');
     }
     function finish(e, place) {
       const wasDragging = dragging, btn = src;
+      // Призрак убираем ПОСЛЕ того, как объект создан, а не до: иначе между
+      // исчезновением одного и появлением другого проскакивает пустой кадр —
+      // как будто объект моргнул.
+      const призрак = ghost; ghost = null;
       cleanup();
       src = null; pid = null; dragging = false;
-      if (!wasDragging) return;      // просто клик — обычный выбор инструмента
+      if (!wasDragging) { убратьПризрак(призрак); return; }   // просто клик — обычный выбор инструмента
       suppressNextClick();
       if (place && btn && dropAllowed(e.clientX, e.clientY)) createToolAt(btn.dataset.tool, e);
+      убратьПризрак(призрак);
     }
 
     bar.addEventListener('pointerdown', (e) => {
@@ -14383,7 +14761,7 @@
     return el;
   }
   function closeStickyPops() {
-    ['stp-color-pop'].forEach((id) => { const p = document.getElementById(id); if (p) p.classList.add('ps-hidden'); });
+    ['stp-color-pop', 'stp-text-pop'].forEach((id) => { const p = document.getElementById(id); if (p) p.classList.add('ps-hidden'); });
   }
   function renderStickyPanel() {
     const el = stickySelectedEl(); if (!el) return; const d = el.data;
@@ -14392,6 +14770,16 @@
     document.querySelectorAll('#stp-colors .cp-sw').forEach((sw) => {
       sw.classList.toggle('cp-sel', (sw.dataset.color || '').toLowerCase() === String(col).toLowerCase());
     });
+    const цветБукв = d.textColor || '#2b2b33';
+    const точкаБукв = document.getElementById('stp-text-dot'); if (точкаБукв) точкаБукв.style.background = цветБукв;
+    document.querySelectorAll('#stp-text-colors .cp-sw').forEach((sw) => {
+      sw.classList.toggle('cp-sel', (sw.dataset.color || '').toLowerCase() === String(цветБукв).toLowerCase());
+    });
+    const выборШрифта = document.getElementById('stp-font');
+    if (выборШрифта) выборШрифта.value = d.font || TEXT_FONTS[0].css;
+    document.querySelectorAll('#sticky-panel .stp-st').forEach((b) => b.classList.toggle('cn-on', !!d[b.dataset.st]));
+    const вырав = d.align || 'center';
+    document.querySelectorAll('#sticky-panel .stp-al').forEach((b) => b.classList.toggle('cn-on', b.dataset.al === вырав));
   }
   function positionStickyPanel(el) {
     el = el || stickySelectedEl(); if (!el || !stickyPanel) return;
@@ -14428,6 +14816,32 @@
       b.addEventListener('click', (e) => { e.stopPropagation(); const было = p.classList.contains('ps-hidden'); closeStickyPops(); if (было) p.classList.remove('ps-hidden'); });
     };
     кнопка('stp-color-btn', 'stp-color-pop');
+    // Цвет БУКВ — свой ключ d.textColor. Цвет бумажки живёт в d.color, и это
+    // разные вещи: раньше их писали в одно поле, и выбор синих букв перекрашивал
+    // всю бумажку.
+    const сеткаБукв = document.getElementById('stp-text-colors');
+    if (сеткаБукв) BASE_COLORS.forEach((c) => {
+      const sw = document.createElement('div');
+      sw.className = 'cp-sw'; sw.style.background = c; sw.dataset.color = c; sw.title = c;
+      sw.addEventListener('click', () => applyStickySetting((d) => { d.textColor = c; }));
+      сеткаБукв.appendChild(sw);
+    });
+    кнопка('stp-text-btn', 'stp-text-pop');
+    const выборШрифта = document.getElementById('stp-font');
+    if (выборШрифта) {
+      TEXT_FONTS.forEach((f) => {
+        const o = document.createElement('option');
+        o.value = f.css; o.textContent = f.label; o.style.fontFamily = f.css;
+        выборШрифта.appendChild(o);
+      });
+      выборШрифта.addEventListener('change', () => applyStickySetting((d) => { d.font = выборШрифта.value; }));
+    }
+    stickyPanel.querySelectorAll('.stp-st').forEach((b) => {
+      b.addEventListener('click', () => { const к = b.dataset.st; applyStickySetting((d) => { d[к] = !d[к]; }); });
+    });
+    stickyPanel.querySelectorAll('.stp-al').forEach((b) => {
+      b.addEventListener('click', () => applyStickySetting((d) => { d.align = b.dataset.al; }));
+    });
     document.addEventListener('click', (e) => { if (!stickyPanel.contains(e.target)) closeStickyPops(); });
   })();
   function renderShapePanel() {
@@ -14963,7 +15377,7 @@
     const map = {
       v: 'select',  p: 'pen',     u: 'smartpen', k: 'marker', e: 'eraser_full', q: 'laser',
       l: 'line',    a: 'arrow',   r: 'rect',    o: 'ellipse',     s: 'sticky',
-      t: 'text_plain', f: 'latex', g: 'graph',  c: 'circ_cp',     d: 'point',
+      t: 'text_plain', f: 'text',  g: 'graph',  c: 'circ_cp',     d: 'point',
       w: 'frame',   b: 'table',
     };
     const k = _L;
@@ -15005,7 +15419,7 @@
       ['U', 'умный карандаш: выпрямляет фигуры'], ['K', 'маркер'],
       ['E', 'ластик'], ['Q', 'указка'], ['L', 'линия'], ['A', 'стрелка-объект'],
       ['R', 'прямоугольник'], ['O', 'овал'], ['C', 'окружность'], ['D', 'точка'],
-      ['T', 'текст'], ['F', 'формула'], ['G', 'график'], ['S', 'стикер'],
+      ['T', 'текст'], ['F', 'текст с формулами'], ['G', 'график'], ['S', 'стикер'],
       ['W', 'окно построения'], ['B', 'таблица'],
     ]],
     ['Правка', [
