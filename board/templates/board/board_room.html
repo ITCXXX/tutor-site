@@ -455,7 +455,26 @@
        Сверху поле кода, снизу вывод. Размер окна задаётся своей ручкой в углу
        и живёт в объекте: общее растягивание доски тут не годится — оно
        увеличило бы и кегль кода вместе с рамкой. */
-    .wgt-python .wgt-body { padding: 0; }
+    /* ── ОКНО ПИТОНА ЛЕЖИТ НА ДОСКЕ, А НЕ ВИСИТ НАД НЕЙ ──────────────────
+       Оно было белой карточкой со скруглением, тенью и серой шапкой — ровно
+       тем, что уже убрали у таблицы, и по той же причине: общее правило .wgt
+       (карточка, скругление, тень) объявлено НИЖЕ этих строк, а при равном
+       весе побеждает объявленное позже. Поэтому вес поднят адресом слоя
+       (#widget-layer) — тогда сильнее наше. Остаются линии, как проведённые
+       на доске, и бумага доски, просвечивающая сквозь поле кода. */
+    #widget-layer .wgt-python {
+        background: transparent; border: none; border-radius: 0; box-shadow: none; overflow: visible;
+    }
+    #widget-layer .wgt-python .wgt-bar {
+        background: transparent; border-bottom: none; height: 20px; padding: 0 2px 0 2px;
+    }
+    #widget-layer .wgt-python .wgt-title { font-size: 11px; color: #6b7280; }
+    #widget-layer .wgt-python .wgt-body { padding: 0; }
+    #widget-layer .wgt-python .py-wrap {
+        background: rgba(255,255,255,.72); border: 1px solid #454b59; border-radius: 0;
+    }
+    #widget-layer .wgt-python .py-code { background: transparent; border-bottom: 1px solid #454b59; }
+    #widget-layer .wgt-python .py-out { background: transparent; }
     .py-wrap { position: relative; display: flex; flex-direction: column; width: 460px; height: 280px; background: #fff; overflow: hidden; }
     .py-code {
         flex: 1 1 58%; min-height: 48px; border: 0; border-bottom: 1px solid #e3e3e8; outline: none; resize: none;
