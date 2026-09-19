@@ -174,14 +174,33 @@
     .ctx-gap { display: flex; align-items: center; gap: 6px; padding: 0 6px 4px; font-size: 12px; color: #6b6b76; }
     .ctx-gap input { width: 56px; border: 1px solid #e3e3e8; border-radius: 6px; padding: 3px 6px; font-size: 12px; }
     .ctx-sep { height: 1px; background: #ececf0; margin: 4px 6px; }
-    .wgt-sticky, .wgt-card { min-width: 172px; box-shadow: 0 5px 16px rgba(0,0,0,.18); border: none; }
+    /* Листок — клочок бумаги постоянного размера. Именно поэтому текст на нём
+       подбирает кегль: расти вниз ему некуда, и длинное само становится
+       мельче. Нужен листок побольше — его растягивают угловыми кружками, как
+       любой объект доски, и вместе с рамкой растут буквы. */
+    .wgt-sticky, .wgt-card { width: 180px; box-shadow: 0 5px 16px rgba(0,0,0,.18); border: none; }
     .wgt-sticky .wgt-bar, .wgt-card .wgt-bar { background: transparent; border-bottom: none; height: 18px; padding: 0 4px; }
-    .wgt-sticky .wgt-body, .wgt-card .wgt-body { padding: 0 8px 8px; }
+    .wgt-sticky .wgt-body, .wgt-card .wgt-body { padding: 0 10px 10px; display: flex; }
+    /* Листок: текст стоит по центру и по середине, а размер ему подбирает
+       подогнатьКегльЛистка — поэтому коробка фиксированная, а буквы гибкие. */
+    .stk-wrap { flex: 1; display: flex; align-items: center; justify-content: center; height: 124px; overflow: hidden; }
+    .stk-text {
+        width: 100%; text-align: center; outline: none; border: none; background: transparent;
+        font-family: inherit; color: #2b2b33; line-height: 1.25;
+        white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+    }
+    /* Крестик на листке не нужен: удаляют выделением и корзиной в панели
+       объекта, как всё остальное на доске. */
+    .wgt-sticky .wgt-del, .wgt-card .wgt-del { display: none; }
+    /* Переворот карточки — один значок без подписи. Когда видна изнанка,
+       значок подсвечен: иначе не понять, на какой ты стороне. */
+    .crd-flip { border: 0; background: transparent; cursor: pointer; color: #8a8a94; padding: 0 3px; line-height: 1; display: flex; align-items: center; }
+    .crd-flip:hover { color: #2b2b33; }
+    .wgt-card.crd-back .crd-flip { color: #4d7cfe; }
     .stk-colors { display: flex; gap: 5px; margin-bottom: 5px; }
     .stk-c { width: 14px; height: 14px; border-radius: 50%; cursor: pointer; border: 1px solid rgba(0,0,0,.15); }
     .stk-c.on { outline: 2px solid #4d7cfe; outline-offset: 1px; }
-    .stk-text { width: 100%; min-height: 100px; border: none; background: transparent; resize: vertical; outline: none; font-size: 14px; font-family: inherit; color: #2b2b33; }
-    .wgt-card { min-width: 190px; }
+
     .card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0 4px; }
     .card-label { font-size: 11px; font-weight: 700; color: #5a5a63; text-transform: uppercase; letter-spacing: .03em; }
     .card-flip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid rgba(0,0,0,.18); background: rgba(255,255,255,.65); border-radius: 6px; padding: 2px 7px; font-size: 11px; cursor: pointer; color: #2b2b33; }
@@ -1375,6 +1394,12 @@
     .wgt-del:hover { color: #e7505a; }
     .wgt-body { padding: 8px; font-size: 13px; }
     .wgt-actions { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+    /* Ввод времени таймера прямо на табло: то же начертание и размер, чтобы
+       цифры не прыгали при переходе от показа к правке. */
+    .tm-edit {
+        width: 100%; text-align: center; border: none; background: transparent; outline: none;
+        font: inherit; color: inherit; padding: 0;
+    }
     .wgt-actions button, .kb-add { border: 1px solid #d9d9e0; background: #f7f7fa; border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
     .wgt-actions button:hover, .kb-add:hover { background: #eee; }
     .wgt-slider .wgt-body { min-width: 180px; }
@@ -1389,9 +1414,14 @@
     .wgt-table td:focus { background: #eef3ff; }
     .kb-cols { display: flex; gap: 8px; }
     .kb-col { width: 130px; background: #f6f6f9; border-radius: 8px; padding: 6px; }
-    .kb-coltitle { font-weight: 600; font-size: 12px; margin-bottom: 6px; outline: none; }
+    /* Длинное слово не должно вылезать за колонку. Само по себе оно и не
+       вылезло бы, но у гибкой раскладки есть правило: ячейка не сжимается
+       уже своего содержимого. Поэтому ей разрешаем сжиматься (min-width: 0),
+       а слову — переноситься в любом месте. */
+    .kb-coltitle { font-weight: 600; font-size: 12px; margin-bottom: 6px; outline: none; min-width: 0; overflow-wrap: anywhere; }
     .kb-card { background: #fff; border: 1px solid #e3e3e8; border-radius: 6px; padding: 4px 6px; margin-bottom: 5px; display: flex; align-items: flex-start; gap: 4px; font-size: 12px; }
-    .kb-card span { flex: 1; outline: none; }
+    .kb-card span { flex: 1 1 0; min-width: 0; outline: none; overflow-wrap: anywhere; }
+    .kb-col { overflow: hidden; }
     .kb-cardel, .kb-mv { border: none; background: transparent; color: #b0b0ba; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
     .kb-mv:hover { color: #4d7cfe; }
     .kb-mv:disabled { color: #e3e3e8; cursor: default; }
@@ -2373,19 +2403,14 @@
             <svg viewBox="0 0 24 24" class="cn-ic"><path d="M5 4h9l5 5v11H5z" fill="currentColor" fill-opacity=".25"/><path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/></svg>
             <span class="cn-dot" id="stp-color-dot"></span>
         </button>
-        <button type="button" class="cn-tool" id="stp-size-btn" title="Размер текста">
-            <svg viewBox="0 0 24 24" class="cn-ic"><path d="M4 7h9"/><path d="M8.5 7v12"/><path d="M14 11h6"/><path d="M17 11v8"/></svg>
-        </button>
+        {# Кнопки размера текста здесь больше нет: на листке кегль подбирается
+           сам, чтобы написанное поместилось целиком (подогнатьКегльЛистка в
+           board.js). Ручная настройка спорила бы с этим подбором. #}
     </div>
     <div class="cn-pop ps-hidden" id="stp-color-pop">
         <div class="cp-grid" id="stp-colors"></div>
     </div>
-    <div class="cn-pop ps-hidden" id="stp-size-pop">
-        <div class="cn-wrow"><span class="cn-wlbl">Размер</span>
-            <input type="range" id="stp-size-range" class="cn-range" min="11" max="30">
-            <input type="number" id="stp-size-num" class="cn-num" min="11" max="30">
-        </div>
-    </div>
+
 </div>
 
 <div id="shape-panel" class="conn-panel ps-hidden">

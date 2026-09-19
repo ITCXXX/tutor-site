@@ -3720,12 +3720,21 @@
     const k = (it.el && it.el.data && it.el.data.scale) || 1;
     return { w: (it.wrapper.offsetWidth || 0) * k, h: (it.wrapper.offsetHeight || 0) * k };
   }
+  // Во сколько раз объект показан крупнее своего обычного размера: увеличение
+  // доски, помноженное на собственное увеличение объекта. Нужно тем, кто
+  // рисует себя картинкой (колесо): картинку надо готовить по этому числу,
+  // иначе при приближении она расплывается.
+  function увеличениеВиджета(it) {
+    const d = (it && it.el && it.el.data) || {};
+    return (stage.scaleX() || 1) * (d.scale || 1);
+  }
   function положитьВиджеты() {
     const s = stage.scaleX();
     widgetItems.forEach((it) => {
       const d = it.el.data;
       const k = (d.scale || 1);
       it.wrapper.style.transform = 'translate(' + ((d.x || 0) * s + stage.x()) + 'px,' + ((d.y || 0) * s + stage.y()) + 'px) scale(' + (s * k) + ')';
+      if (it.приЗуме) it.приЗуме(s * k);
     });
     if (typeof shapeTextItems !== 'undefined' && shapeTextItems.size) shapeTextItems.forEach((it) => repositionShapeText(it.shapeId));
     if (typeof activeTbox !== 'undefined' && activeTbox && tboxBar && !tboxBar.classList.contains('ps-hidden')) positionTboxBar(activeTbox);
@@ -3840,17 +3849,91 @@
 
   // — Стикер — цветная заметка с текстом —
   const STICKY_COLORS = ['#fff7ae', '#ffd18c', '#c8f7c5', '#a8e6ff', '#ffc9de', '#e6d6ff', '#ffffff'];
+  // ── Стикер и карточка — один и тот же листок ───────────────────────────
+  // Стикер это клочок бумаги, а не форма для заполнения: ни рамки ввода, ни
+  // подписи «Заметка…», ни ручки растягивания в углу, ни крестика. Текст стоит
+  // посередине и сам подбирает размер, чтобы поместиться целиком, — как на
+  // настоящей бумажке: короткое пишут крупно, длинное мельче.
+  //
+  // Крестика на листке больше нет намеренно. Удаляют на доске везде одинаково:
+  // выделить и нажать корзину в панели объекта или Del. Отдельный крестик на
+  // каждом объекте — это лишняя кнопка, в которую попадают случайно.
+  const ЛИСТОК_КЕГЛЬ_МАКС = 28, ЛИСТОК_КЕГЛЬ_МИН = 9;
+
+  function подогнатьКегльЛистка(поле, коробка) {
+    if (!поле || !коробка) return;
+    // Двоичный поиск самого крупного кегля, при котором текст ещё влезает:
+    // шесть примерок вместо перебора по пикселю. На планшете это разница между
+    // «мгновенно» и «дёргается при каждой букве».
+    let низ = ЛИСТОК_КЕГЛЬ_МИН, верх = ЛИСТОК_КЕГЛЬ_МАКС, лучший = ЛИСТОК_КЕГЛЬ_МИН;
+    while (низ <= верх) {
+      const серёдка = Math.ceil((низ + верх) / 2);
+      поле.style.fontSize = серёдка + 'px';
+      const влез = поле.scrollHeight <= коробка.clientHeight + 1
+        && поле.scrollWidth <= коробка.clientWidth + 1;
+      if (влез) { лучший = серёдка; низ = серёдка + 1; } else { верх = серёдка - 1; }
+    }
+    поле.style.fontSize = лучший + 'px';
+  }
+
+  // Правка уходит соседям с задержкой, а не на каждую клавишу: иначе каждая
+  // буква — отдельное сообщение по сети и отдельный шаг отмены. Таймер гасится
+  // при удалении объекта (removeWidget), иначе сработавший позже воскресил бы
+  // удалённый листок.
+  function листокСинхронПозже(it) {
+    if (it.saveTimer) clearTimeout(it.saveTimer);
+    it.saveTimer = setTimeout(() => { it.saveTimer = null; syncWidget(it); }, 400);
+  }
+
+  // Общая сборка листка. Стикер и карточка отличаются ровно одним: откуда
+  // берётся текст и куда он пишется. Всё остальное — вид, набор, подгонка
+  // кегля, цвет — у них одно и живёт здесь, в одном месте.
+  function собратьЛисток(it, доступ) {
+    const d = it.el.data;
+    it.wrapper.style.background = d.color || STICKY_COLORS[0];
+    it.body.innerHTML = '<div class="stk-wrap"><div class="stk-text" spellcheck="false"></div></div>';
+    const коробка = it.body.querySelector('.stk-wrap');
+    const поле = it.body.querySelector('.stk-text');
+    поле.textContent = доступ.читать();
+    if (!viewOnly) {
+      // plaintext-only — чтобы вставка из буфера не притащила чужую вёрстку.
+      // Где такого значения нет (старый Firefox), браузер оставит обычную
+      // правку, а разметку мы снимаем сами при вставке — ниже.
+      поле.setAttribute('contenteditable', 'plaintext-only');
+      if (!поле.isContentEditable) поле.setAttribute('contenteditable', 'true');
+    }
+    подогнатьКегльЛистка(поле, коробка);
+    поле.addEventListener('input', () => {
+      доступ.писать(поле.textContent || '');
+      подогнатьКегльЛистка(поле, коробка);
+      листокСинхронПозже(it);
+    });
+    поле.addEventListener('paste', (e) => {
+      const буфер = e.clipboardData || window.clipboardData;
+      if (!буфер) return;
+      e.preventDefault();
+      document.execCommand('insertText', false, буфер.getData('text/plain'));
+    });
+    // Набор текста не должен доходить до горячих клавиш доски: иначе буква «l»
+    // посреди слова переключала бы инструмент на линию.
+    поле.addEventListener('keydown', (e) => { e.stopPropagation(); });
+    it._поле = поле; it._коробка = коробка;
+    return поле;
+  }
+
   function buildSticky(it) {
     const render = () => {
-      const d = it.el.data, col = d.color || STICKY_COLORS[0];
-      it.wrapper.style.background = col;
-      // Кружки выбора цвета убраны из тела: они занимали верх заметки и вели
-      // себя не как у прочих объектов доски. Цвет и размер текста теперь в
-      // плавающей панели над выделенным стикером — как у фигур.
-      it.body.innerHTML = '<textarea class="stk-text" placeholder="Заметка…">' + escapeAttr(d.text || '') + '</textarea>';
-      const ta = it.body.querySelector('.stk-text');
-      ta.style.fontSize = (d.fontSize || 14) + 'px';
-      ta.addEventListener('input', () => { it.el.data.text = ta.value; syncWidget(it); });
+      // Пока человек пишет, содержимое не пересобираем: курсор прыгнул бы в
+      // начало. Цвет при этом обновляем — он приходит из панели и мешать не может.
+      if (it._поле && document.activeElement === it._поле) {
+        it.wrapper.style.background = it.el.data.color || STICKY_COLORS[0];
+        подогнатьКегльЛистка(it._поле, it._коробка);
+        return;
+      }
+      собратьЛисток(it, {
+        читать: () => it.el.data.text || '',
+        писать: (t) => { it.el.data.text = t; },
+      });
     };
     it.update = render; render();
   }
@@ -3908,19 +3991,32 @@
   // каждого зрителя (переворот не мешает соседям, как настоящие карточки).
   const CARD_COLORS = STICKY_COLORS;
   const CARD_FLIP_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>';
+  // Карточка — тот же листок, что и стикер, только с двумя сторонами. Ничего
+  // своего у неё нет: вид, набор, подгонка кегля и цвет берутся у стикера,
+  // добавляется одна кнопка переворота значком в шапке. Сторона, которую
+  // видит человек, — его личное дело и соседям не рассылается: преподаватель
+  // смотрит на ответ, ученик в этот же миг на вопрос.
   function buildCard(it) {
     if (it._side == null) it._side = 0; // 0 — лицо (вопрос), 1 — оборот (ответ); ЛОКАЛЬНО
+    const кнопка = document.createElement('button');
+    кнопка.type = 'button';
+    кнопка.className = 'crd-flip';
+    кнопка.innerHTML = CARD_FLIP_SVG;
+    it.bar.insertBefore(кнопка, it.bar.querySelector('.wgt-del'));
     const render = () => {
-      const d = it.el.data, col = d.color || CARD_COLORS[0], back = !!it._side;
-      it.wrapper.style.background = col;
-      it.body.innerHTML = '<div class="stk-colors">' + CARD_COLORS.map((c) => '<span class="stk-c' + (c === col ? ' on' : '') + '" data-c="' + c + '" style="background:' + c + '"></span>').join('') + '</div>'
-        + '<div class="card-head"><span class="card-label">' + (back ? 'Ответ' : 'Вопрос') + '</span><button class="card-flip" title="Перевернуть карточку">' + CARD_FLIP_SVG + ' Перевернуть</button></div>'
-        + '<textarea class="stk-text card-text" placeholder="' + (back ? 'Ответ…' : 'Вопрос…') + '">' + escapeAttr(back ? (d.back || '') : (d.front || '')) + '</textarea>';
-      const ta = it.body.querySelector('.card-text');
-      ta.addEventListener('input', () => { if (it._side) it.el.data.back = ta.value; else it.el.data.front = ta.value; syncWidget(it); });
-      it.body.querySelector('.card-flip').addEventListener('click', () => { it._side = it._side ? 0 : 1; render(); });
-      it.body.querySelectorAll('.stk-c').forEach((s) => s.addEventListener('click', () => { it.el.data.color = s.dataset.c; render(); syncWidget(it); }));
+      кнопка.title = it._side ? 'Перевернуть — сейчас ответ' : 'Перевернуть — сейчас вопрос';
+      it.wrapper.classList.toggle('crd-back', !!it._side);
+      if (it._поле && document.activeElement === it._поле) {
+        it.wrapper.style.background = it.el.data.color || CARD_COLORS[0];
+        подогнатьКегльЛистка(it._поле, it._коробка);
+        return;
+      }
+      собратьЛисток(it, {
+        читать: () => (it._side ? it.el.data.back : it.el.data.front) || '',
+        писать: (t) => { if (it._side) it.el.data.back = t; else it.el.data.front = t; },
+      });
     };
+    кнопка.addEventListener('click', (e) => { e.stopPropagation(); it._side = it._side ? 0 : 1; render(); });
     it.update = render; render();
   }
   function insertCard() { insertWidget('card', { front: '', back: '', color: CARD_COLORS[0] }); }
@@ -4569,10 +4665,50 @@
       return d.remaining;
     };
     const tick = () => { const disp = it.body.querySelector('.tm-disp'); if (disp) disp.textContent = fmt(calcRemaining()); if (calcRemaining() <= 0 && it.timer) { clearInterval(it.timer); it.timer = null; } };
+    // Время можно ввести прямо: нажал на цифры — и пиши. Принимаем и «7»
+    // (семь минут), и «7:30», и «90с». Кнопки ±1 минута остаются: на уроке
+    // чаще нужно «добавь ещё минуту», чем «поставь ровно 7:30».
+    const разобратьВремя = (текст) => {
+      const t = String(текст || '').trim().replace(',', '.');
+      if (!t) return null;
+      if (/^\d+\s*[сc]$/i.test(t)) return Math.max(0, parseInt(t, 10));          // «90с»
+      const части = t.split(':');
+      if (части.length === 2) {
+        const м = parseInt(части[0], 10) || 0, с = parseInt(части[1], 10) || 0;
+        return Math.max(0, м * 60 + с);
+      }
+      const м = parseFloat(t);
+      return isFinite(м) ? Math.max(0, Math.round(м * 60)) : null;
+    };
+    const задатьВремя = (секунд) => {
+      const d = it.el.data;
+      d.duration = секунд; d.remaining = секунд;
+      d.running = false; d.startedAt = 0;
+      syncWidget(it); render();
+    };
     const render = () => {
-      it.body.innerHTML = '<div class="tm-disp">' + fmt(calcRemaining()) + '</div>'
+      it.body.innerHTML = '<div class="tm-disp" title="Нажмите, чтобы ввести время">' + fmt(calcRemaining()) + '</div>'
         + '<div class="wgt-actions"><button data-act="toggle">' + (it.el.data.running ? 'Пауза' : 'Старт') + '</button>'
         + '<button data-act="reset">Сброс</button><button data-act="m1">−1м</button><button data-act="p1">+1м</button></div>';
+      const табло = it.body.querySelector('.tm-disp');
+      табло.addEventListener('click', () => {
+        if (viewOnly) return;
+        табло.innerHTML = '<input class="tm-edit" value="' + escapeAttr(fmt(calcRemaining())) + '" inputmode="numeric" spellcheck="false">';
+        const поле = табло.querySelector('.tm-edit');
+        поле.focus(); поле.select();
+        let закрыто = false;
+        const принять = (сохранять) => {
+          if (закрыто) return; закрыто = true;
+          const сек = сохранять ? разобратьВремя(поле.value) : null;
+          if (сек == null) render(); else задатьВремя(сек);
+        };
+        поле.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') { e.preventDefault(); принять(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); принять(false); }
+        });
+        поле.addEventListener('blur', () => принять(true));
+      });
       it.body.querySelector('[data-act="toggle"]').addEventListener('click', () => {
         const d = it.el.data;
         if (d.running) { d.remaining = calcRemaining(); d.running = false; d.startedAt = 0; }
@@ -4710,12 +4846,20 @@
   const WHEEL_SIZE = 240;                    // видимый размер, px
   const WHEEL_PALETTE = ['#4d7cfe', '#e7505a', '#27ae60', '#e67e22', '#8e44ad', '#16a2b8', '#d63384', '#f1c40f', '#2dd4bf', '#f97316'];
 
-  function wheelDraw(cv, opts, rot, winner) {
-    const dpr = window.devicePixelRatio || 1;
+  // Колесо рисуется картинкой, а картинка на доске живёт в слое, который
+  // ЦЕЛИКОМ растягивается по зуму. Значит мало учесть плотность экрана:
+  // приблизили доску вдвое — и в те же точки холста надо уложить вдвое больше
+  // пикселей, иначе получается «мыло». Поэтому к плотности экрана добавляем
+  // увеличение доски (и собственное увеличение объекта). Потолок в четыре
+  // нужен, чтобы при сильном приближении не готовить картинку в двадцать
+  // мегапикселей ради колеса в ладонь.
+  function wheelDraw(cv, opts, rot, winner, увеличение) {
+    const плотность = Math.min(4, (window.devicePixelRatio || 1) * Math.max(1, увеличение || 1));
     const S = WHEEL_SIZE, R = S / 2 - 10, cx = S / 2, cy = S / 2;
-    if (cv.width !== S * dpr) { cv.width = S * dpr; cv.height = S * dpr; cv.style.width = S + 'px'; cv.style.height = S + 'px'; }
+    const нужно = Math.round(S * плотность);
+    if (cv.width !== нужно) { cv.width = нужно; cv.height = нужно; cv.style.width = S + 'px'; cv.style.height = S + 'px'; }
     const ctx = cv.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(плотность, 0, 0, плотность, 0, 0);
     ctx.clearRect(0, 0, S, S);
     const n = Math.max(1, opts.length);
 
@@ -4785,7 +4929,16 @@
       const ptr = it.body.querySelector('.wh-pointer');
       const res = it.body.querySelector('.wh-result');
       const btn = it.body.querySelector('[data-act="spin"]');
-      wheelDraw(cv, it.el.data.options || [], it._rot || 0, it._winner);
+      it._увеличение = увеличениеВиджета(it);
+      wheelDraw(cv, it.el.data.options || [], it._rot || 0, it._winner, it._увеличение);
+      // Доску приблизили или отдалили — перерисуем колесо погуще. Проверка
+      // идёт на каждом кадре панорамы, поэтому она дешёвая: сравнение двух
+      // чисел, а сама перерисовка только при заметной смене увеличения.
+      it.приЗуме = (у) => {
+        if (it._увеличение && Math.abs(Math.log(у / it._увеличение)) < 0.18) return;
+        it._увеличение = у;
+        wheelDraw(cv, it.el.data.options || [], it._rot || 0, it._winner, у);
+      };
       if (it._winner != null && (it.el.data.options || [])[it._winner] != null) {
         res.textContent = 'Выпало: ' + it.el.data.options[it._winner];
         res.classList.add('on');
@@ -4822,7 +4975,7 @@
           // Замедление пятой степени: долгий разгон-выбег без рывка в конце.
           const ease = 1 - Math.pow(1 - k, 5);
           it._rot = start + (target - start) * ease;
-          wheelDraw(cv, o, it._rot, null);
+          wheelDraw(cv, o, it._rot, null, it._увеличение);
           // Отбойник щёлкает на каждой границе сектора — и всё замедляется вместе с колесом.
           const segNow = Math.floor(((2 * Math.PI - (it._rot % (2 * Math.PI))) % (2 * Math.PI)) / seg);
           if (segNow !== lastSeg) {
@@ -4833,7 +4986,7 @@
           if (k < 1) requestAnimationFrame(anim);
           else {
             it._spinning = false; it._winner = pick; btn.disabled = false;
-            wheelDraw(cv, o, it._rot, pick);
+            wheelDraw(cv, o, it._rot, pick, it._увеличение);
             res.textContent = 'Выпало: ' + o[pick];
             res.classList.add('on');
           }
@@ -13625,12 +13778,14 @@
   function stickySelectedEl() {
     if (tool !== 'select' || selected.size !== 1) return null;
     const el = elements.get(Array.from(selected)[0]);
-    if (!el || el.type !== 'sticky') return null;
+    // Карточка — тот же листок, что и стикер, и цвет ей меняют той же панелью:
+    // своих кружков цвета в теле у неё больше нет.
+    if (!el || (el.type !== 'sticky' && el.type !== 'card')) return null;
     if (el.data && (el.data.locked || el.data.hidden)) return null;
     return el;
   }
   function closeStickyPops() {
-    ['stp-color-pop', 'stp-size-pop'].forEach((id) => { const p = document.getElementById(id); if (p) p.classList.add('ps-hidden'); });
+    ['stp-color-pop'].forEach((id) => { const p = document.getElementById(id); if (p) p.classList.add('ps-hidden'); });
   }
   function renderStickyPanel() {
     const el = stickySelectedEl(); if (!el) return; const d = el.data;
@@ -13639,9 +13794,6 @@
     document.querySelectorAll('#stp-colors .cp-sw').forEach((sw) => {
       sw.classList.toggle('cp-sel', (sw.dataset.color || '').toLowerCase() === String(col).toLowerCase());
     });
-    const fs = d.fontSize || 14;
-    const r = document.getElementById('stp-size-range'), n = document.getElementById('stp-size-num');
-    if (r) r.value = fs; if (n) n.value = fs;
   }
   function positionStickyPanel(el) {
     el = el || stickySelectedEl(); if (!el || !stickyPanel) return;
@@ -13673,16 +13825,11 @@
       sw.addEventListener('click', () => applyStickySetting((d) => { d.color = c; }));
       grid.appendChild(sw);
     });
-    const пара = (id, поле) => {
-      const el = document.getElementById(id); if (!el) return;
-      el.addEventListener('input', () => applyStickySetting((d) => { d[поле] = parseInt(el.value, 10) || 14; }));
-    };
-    пара('stp-size-range', 'fontSize'); пара('stp-size-num', 'fontSize');
     const кнопка = (btn, pop) => {
       const b = document.getElementById(btn), p = document.getElementById(pop); if (!b || !p) return;
       b.addEventListener('click', (e) => { e.stopPropagation(); const было = p.classList.contains('ps-hidden'); closeStickyPops(); if (было) p.classList.remove('ps-hidden'); });
     };
-    кнопка('stp-color-btn', 'stp-color-pop'); кнопка('stp-size-btn', 'stp-size-pop');
+    кнопка('stp-color-btn', 'stp-color-pop');
     document.addEventListener('click', (e) => { if (!stickyPanel.contains(e.target)) closeStickyPops(); });
   })();
   function renderShapePanel() {
