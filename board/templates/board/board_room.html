@@ -475,6 +475,12 @@
     }
     #widget-layer .wgt-python .py-code { background: transparent; border-bottom: 1px solid #454b59; }
     #widget-layer .wgt-python .py-out { background: transparent; }
+    /* В режиме рисования доска намеренно пропускает клики сквозь объекты —
+       чтобы можно было чертить прямо поверх них. Значит и ▶ в это время не
+       нажимается: нажатие уходит в холст и рисует точку. Раньше об этом никак
+       нельзя было догадаться (окно выглядело живым), поэтому гасим кнопки —
+       видно, что сейчас они не работают, и надо взять стрелку. */
+    body.board-draw #widget-layer .wgt-python .py-tools { opacity: .35; }
     .py-wrap { position: relative; display: flex; flex-direction: column; width: 460px; height: 280px; background: #fff; overflow: hidden; }
     .py-code {
         flex: 1 1 58%; min-height: 48px; border: 0; border-bottom: 1px solid #e3e3e8; outline: none; resize: none;
@@ -488,6 +494,9 @@
         font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
     }
     .py-out .py-err { color: #c0392b; margin-top: 4px; }
+    /* Строка ожидания: не вывод программы, а рассказ о том, что сейчас
+       происходит. Поэтому светлее и курсивом — чтобы её не спутали с ответом. */
+    .py-out .py-wait { color: #6b7280; font-style: italic; }
     .py-out img { display: block; max-width: 100%; margin: 6px 0; border-radius: 4px; }
     .py-tools { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
     .py-tools .py-state { font-size: 11px; color: #6b6b76; }
