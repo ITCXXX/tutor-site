@@ -398,28 +398,3 @@ textarea.ui-dialog-input { min-height: 160px; resize: vertical; font-family: var
 .ui-dialog-btn.primary:hover { background: var(--c-primary-700); border-color: var(--c-primary-700); }
 .ui-dialog-btn.primary.danger { background: var(--c-danger); border-color: var(--c-danger); }
 .ui-dialog-btn.primary.danger:hover { filter: brightness(.93); }
-
-/* ── Глазок у поля пароля ─────────────────────────────────────────────────
-   Кнопку ставит static/js/password_eye.js — сам, у любого поля пароля на
-   сайте. Обёртка нужна только как точка отсчёта: кнопка лежит в правом краю
-   поля и растянута на его высоту. Внешние отступы поля скрипт переносит на
-   обёртку, поэтому height: 100% — это ровно высота поля, без отступа снизу. */
-.pw-eye-wrap { position: relative; display: block; }
-/* Отступ поля переехал на обёртку (это делает скрипт), поэтому у самого поля
-   его гасим. С пометкой important — иначе классы отступов бутстрапа (.mb-2 и
-   прочие) объявлены важными и перебивают: поле осталось бы с двойным отступом,
-   а кнопка, растянутая на высоту обёртки, встала бы ниже поля. */
-.pw-eye-wrap > input { padding-right: 2.75rem; margin-top: 0 !important; margin-bottom: 0 !important; }
-/* У Edge поле пароля имеет свой встроенный глазок и крестик очистки. Рядом с
-   нашей кнопкой их было бы два, один поверх другого, — прячем встроенные. */
-.pw-eye-wrap > input::-ms-reveal,
-.pw-eye-wrap > input::-ms-clear { display: none; }
-.pw-eye {
-    position: absolute; top: 0; right: 0; height: 100%; width: 2.6rem;
-    display: flex; align-items: center; justify-content: center;
-    padding: 0; border: 0; background: transparent; cursor: pointer;
-    color: var(--c-text-muted); border-radius: var(--r-md);
-}
-.pw-eye:hover { color: var(--c-primary-600); }
-.pw-eye:focus-visible { outline: 2px solid var(--c-primary-600); outline-offset: -2px; }
-.pw-eye-wrap.pw-eye-on .pw-eye { color: var(--c-primary-600); }

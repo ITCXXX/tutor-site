@@ -3,6 +3,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.utils.safestring import mark_safe
 from unfold.admin import ModelAdmin, TabularInline
+from unfold.forms import AdminPasswordChangeForm, UserCreationForm
 from .models import (
     User, StudentProfile, TeacherProfile,
     Course, Module, Lesson, Assignment, TestQuestion, AnswerOption,
@@ -16,6 +17,17 @@ from .models import (
 # Существующие модели пользователей (не изменяем)
 # --------------------------------------------------
 class CustomUserAdmin(DjangoUserAdmin, ModelAdmin):
+    # Формы из unfold — ТОЛЬКО ради вида: проверки в них те же, что в
+    # стандартных, но поля пароля получают оформление админки. Без этого поля
+    # пароля на страницах «Добавить пользователя» и «Сменить пароль» рисуются
+    # голыми — без рамки и отступов, в отличие от соседнего «Логина».
+    #
+    # Форму правки пользователя (form) НЕ трогаем сознательно: unfold ждёт в
+    # ней поле «password», а у нас вместо него своё «password_display» (сверху
+    # перечислены fieldsets), и страница правки пользователя упала бы.
+    add_form = UserCreationForm
+    change_password_form = AdminPasswordChangeForm
+
     list_display = ('username', 'plaintext_password', 'role', 'is_active', 'date_joined')
     list_filter = ('role', 'is_active', 'is_staff')
     search_fields = ('username',)

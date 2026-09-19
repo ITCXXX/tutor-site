@@ -15,6 +15,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 
+# Адрес файла статики — нужен настройкам админки (UNFOLD ниже).
+from django.templatetags.static import static
+
 # Загружаем переменные из файла .env
 load_dotenv()
 
@@ -404,6 +407,14 @@ UNFOLD = {
     "SHOW_HISTORY": True,
     "SHOW_VIEW_ON_SITE": True,
     "THEME": None,  # None = пользователь сам переключает свет/тьму
+    # Глазок «показать пароль» и в админке: вход, создание ученика, смена
+    # пароля. Свои шаблоны админка берёт из библиотеки unfold, наш общий шаблон
+    # сайта её не касается — зато unfold умеет подключать чужие файлы на все
+    # свои страницы, включая страницу входа. Обёртка в lambda нужна, чтобы
+    # адрес файла считался не при чтении настроек, а при отрисовке страницы:
+    # на сервере имена файлов получают отпечаток при сборке статики.
+    "STYLES": [lambda request: static("css/password_eye.css")],
+    "SCRIPTS": [lambda request: static("js/password_eye.js")],
     "COLORS": {
         "primary": {
             "50": "239 246 255",

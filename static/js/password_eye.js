@@ -56,6 +56,10 @@
         обёртка.className = 'pw-eye-wrap';
         обёртка.style.marginTop = стиль.marginTop;
         обёртка.style.marginBottom = стиль.marginBottom;
+        // Предел ширины — тоже на обёртку. В админке поля ограничены по ширине
+        // (поле уже колонки), и без этого обёртка осталась бы во всю колонку, а
+        // кнопка встала бы правее поля, за его краем.
+        if (стиль.maxWidth && стиль.maxWidth !== 'none') { обёртка.style.maxWidth = стиль.maxWidth; }
         поле.parentNode.insertBefore(обёртка, поле);
         обёртка.appendChild(поле);
         // Сам отступ у поля гасится в стилях (.pw-eye-wrap > input), а не здесь:
