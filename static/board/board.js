@@ -1505,17 +1505,25 @@
     const snap = selectionSnapshot();
     const befores = snap.map((o) => ({ id: o.id, before: clone(elements.get(o.id)) })).filter((b) => b.before);
     let moved = false;
-    const mv = (ev) => { if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) moved = true; if (moved) moveSnapshotBy(snap, (ev.clientX - sx) / s, (ev.clientY - sy) / s); };
-    const up = () => {
-      document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+    const цель = (startEv.currentTarget && startEv.currentTarget.addEventListener) ? startEv.currentTarget : document;
+    const mv = (ev) => {
+      if (startEv.pointerId != null && ev.pointerId !== startEv.pointerId) return;
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) moved = true;
+      if (moved) { moveSnapshotBy(snap, (ev.clientX - sx) / s, (ev.clientY - sy) / s); positionHandles(); }
+    };
+    const up = (ev) => {
+      if (ev && ev.pointerId != null && startEv.pointerId != null && ev.pointerId !== startEv.pointerId) return;
+      цель.removeEventListener('pointermove', mv); цель.removeEventListener('pointerup', up); цель.removeEventListener('pointercancel', up);
       if (!moved) return;
       const ops = [];
       selected.forEach((id) => { const el = elements.get(id); if (!el) return; const n = nodes.get(id); if (n) { el.data.x = n.x(); el.data.y = n.y(); } send({ action: 'element_update', element: el }); });
       befores.forEach((b) => { const after = elements.get(b.id); if (after) ops.push({ kind: 'upd', before: b.before, after: clone(after) }); });
       histBatch(ops);
       if (tr) tr.forceUpdate();
+      positionHandles();
     };
-    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    try { if (цель.setPointerCapture && startEv.pointerId != null) цель.setPointerCapture(startEv.pointerId); } catch (err) { /* без захвата */ }
+    цель.addEventListener('pointermove', mv); цель.addEventListener('pointerup', up); цель.addEventListener('pointercancel', up);
   }
 
   // ── Геометрия: точки и окружности с привязкой ──────────────────────────
@@ -3781,7 +3789,13 @@
     elements.delete(id);
   }
   function enableWidgetDrag(it, handle) {
-    handle.addEventListener('mousedown', (e) => {
+    // СОБЫТИЯ УКАЗАТЕЛЯ, А НЕ МЫШИ. Раньше здесь была подписка только на мышь,
+    // и на планшете ни стикер, ни таблица, ни таймер, ни комментарий пальцем
+    // не двигались вовсе: браузер шлёт мышиные события после касания только
+    // для коротких нажатий, а во время ведения — нет. Указатель один на всех:
+    // мышь, перо и палец приходят сюда одинаково.
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button != null && e.button > 0) return;          // правая кнопка — не перенос
       if (e.target.closest('.wgt-del')) return;
       e.preventDefault();
       if (isAddKey(e)) { toggleSelect(it.el.id); return; }   // добавить к выделению, не тащить
@@ -3794,17 +3808,28 @@
       // соседям «я не сдвинулся» незачем.
       let moved = false;
       const mv = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
         if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return;
         moved = true;
         it.el.data.x = ox + (ev.clientX - sx) / s; it.el.data.y = oy + (ev.clientY - sy) / s;
         repositionWidgets();
+        positionHandles();   // пунктир выделения и кружки едут вместе с объектом
       };
-      const up = () => {
-        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+      const up = (ev) => {
+        if (ev && ev.pointerId != null && ev.pointerId !== e.pointerId) return;
+        handle.removeEventListener('pointermove', mv);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
         if (!moved) { selectOnly(it.el.id); return; }
-        syncWidget(it); syncConnectorsOf([it.el.id]); histUpd(before, it.el);
+        syncWidget(it); syncConnectorsOf([it.el.id]); histUpd(before, it.el); positionHandles();
       };
-      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      // Захват указателя: палец, ушедший за край объекта (а он уходит всегда),
+      // продолжает вести перенос. Без захвата объект отцеплялся на первом же
+      // резком движении.
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* браузер без захвата */ }
+      handle.addEventListener('pointermove', mv);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
     });
   }
 
@@ -5818,7 +5843,10 @@
       const w = worldPoint();
       frameMove = { id, sx: w.x, sy: w.y, ox: el.data.x, oy: el.data.y, moved: false, shift: isAddKey(e.evt) };
     };
-    header.on('mousedown', startMove);
+    // И мышь, и палец: Konva для касания шлёт отдельное событие, и без него
+    // окно на планшете не двигалось вовсе. Образец рядом — крестик удаления
+    // подписан на 'click tap' той же парой.
+    header.on('mousedown touchstart', startMove);
     // Полоса-ручка невидима и ничего не красит. Наведёшь на неё — курсор
     // «перемещение» и проступает крестик; ушёл — гаснут. Серой плашки нет.
     // В перемещении шапка окна — просто часть доски: ни курсора «переместить
@@ -9533,16 +9561,24 @@
     if (widget && widget.wrapper) {
       return { x: d.x || 0, y: d.y || 0, width: размерВиджета(widget).w, height: размерВиджета(widget).h };
     }
+    // ЖИВОЕ ПОЛОЖЕНИЕ, А НЕ СОХРАНЁННОЕ. Пока объект тащат, в данных лежит
+    // СТАРОЕ место: они обновляются только в конце перетаскивания. Рамка
+    // выделения и кружки считаются отсюда — и потому стояли на месте, пока
+    // объект уже уехал, а в конце прыгали к нему. Узел на холсте знает, где он
+    // нарисован прямо сейчас; его и спрашиваем, а к данным возвращаемся, когда
+    // узла нет (объект ещё не создан или это не холст).
+    const жx = (node && typeof node.x === 'function') ? node.x() : (d.x || 0);
+    const жy = (node && typeof node.y === 'function') ? node.y() : (d.y || 0);
     const t = el.type;
-    if (t === 'ellipse') return { x: (d.x || 0) - (d.radiusX || 0), y: (d.y || 0) - (d.radiusY || 0), width: 2 * (d.radiusX || 0), height: 2 * (d.radiusY || 0) };
-    if (t === 'circle') return { x: (d.x || 0) - (d.r || 0), y: (d.y || 0) - (d.r || 0), width: 2 * (d.r || 0), height: 2 * (d.r || 0) };
-    if (t === 'point') return { x: d.x || 0, y: d.y || 0, width: 0, height: 0 };
-    if (d.width && d.height) return { x: d.x || 0, y: d.y || 0, width: d.width, height: d.height };
+    if (t === 'ellipse') return { x: жx - (d.radiusX || 0), y: жy - (d.radiusY || 0), width: 2 * (d.radiusX || 0), height: 2 * (d.radiusY || 0) };
+    if (t === 'circle') return { x: жx - (d.r || 0), y: жy - (d.r || 0), width: 2 * (d.r || 0), height: 2 * (d.r || 0) };
+    if (t === 'point') return { x: жx, y: жy, width: 0, height: 0 };
+    if (d.width && d.height) return { x: жx, y: жy, width: d.width, height: d.height };
     const pts = d.points || [];
     if (pts.length >= 2) {
       let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
       for (let i = 0; i + 1 < pts.length; i += 2) {
-        const px = (d.x || 0) + pts[i], py = (d.y || 0) + pts[i + 1];
+        const px = жx + pts[i], py = жy + pts[i + 1];
         if (px < x1) x1 = px; if (py < y1) y1 = py;
         if (px > x2) x2 = px; if (py > y2) y2 = py;
       }
