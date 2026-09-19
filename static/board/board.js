@@ -6174,6 +6174,61 @@
   const ПИТОН_СТРОК_ХРАНИМ = 200;     // столько строк вывода кладём в объект
   const ПИТОН_ПРИМЕР = 'for n in range(100, 1000):\n    if n % 7 == 0 and "3" in str(n):\n        print(n)';
 
+  // ── РАСКРАСКА ПИТОНА ───────────────────────────────────────────────────
+  // Поле ввода умеет красить текст только целиком, одним цветом. Поэтому под
+  // полем лежит второй слой с тем же текстом, уже раскрашенным, а само поле
+  // делается прозрачным (виден только курсор). Печатают по-прежнему в
+  // настоящее поле ввода — значит работают и отмена, и выделение, и ввод с
+  // телефона, чего не бывает у самодельных редакторов на div-ах.
+  const ПИТОН_КЛЮЧИ = ('False None True and as assert async await break class continue def del elif else '
+    + 'except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'
+  ).split(' ');
+  const ПИТОН_ВСТРОЕННЫЕ = ('abs all any bool chr dict dir divmod enumerate eval filter float format frozenset '
+    + 'getattr hasattr hash help hex id input int isinstance issubclass iter len list map max min next object oct '
+    + 'open ord pow print range repr reversed round set setattr slice sorted str sum super tuple type zip'
+  ).split(' ');
+  // Один проход по тексту: комментарий, строка, число, украшение, слово.
+  // Порядок важен — строка разбирается раньше слова, иначе приставка f в
+  // f"…" будет принята за имя.
+  // Тройные кавычки записаны как '{3} и "{3} — в самом выражении их писать
+  // подряд нельзя: они закрыли бы кавычки вокруг строки в этом файле.
+  const ПИТОН_ЛЕКСЕР = /(#[^\n]*)|([fFrRbBuU]{0,2}(?:'{3}[\s\S]*?(?:'{3}|$)|"{3}[\s\S]*?(?:"{3}|$)|'(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?))|(\b0[xXbBoO][0-9a-fA-F_]+\b|\b\d[\d_]*(?:\.\d*)?(?:[eE][+-]?\d+)?\b)|(@[A-Za-z_][A-Za-z_0-9]*)|([A-Za-z_][A-Za-z_0-9]*)/g;
+  function питонВЦвета(код) {
+    const текст = String(код || '');
+    let html = '', последний = 0, прошлоеСлово = '';
+    текст.replace(ПИТОН_ЛЕКСЕР, function (весь, комм, строка, число, декор, слово, поз) {
+      html += escapeHtml(текст.slice(последний, поз));
+      последний = поз + весь.length;
+      if (комм) { html += '<i class="pt-com">' + escapeHtml(весь) + '</i>'; return весь; }
+      if (строка) { html += '<i class="pt-str">' + escapeHtml(весь) + '</i>'; return весь; }
+      if (число) { html += '<i class="pt-num">' + escapeHtml(весь) + '</i>'; return весь; }
+      if (декор) { html += '<i class="pt-dec">' + escapeHtml(весь) + '</i>'; return весь; }
+      let кл = '';
+      if (прошлоеСлово === 'def' || прошлоеСлово === 'class') кл = 'pt-name';
+      else if (ПИТОН_КЛЮЧИ.indexOf(слово) >= 0) кл = 'pt-key';
+      else if (ПИТОН_ВСТРОЕННЫЕ.indexOf(слово) >= 0) кл = 'pt-bin';
+      прошлоеСлово = слово;
+      html += кл ? ('<i class="' + кл + '">' + escapeHtml(весь) + '</i>') : escapeHtml(весь);
+      return весь;
+    });
+    html += escapeHtml(текст.slice(последний));
+    // Последнюю строку без перевода <pre> схлопывает — даём ей пробел, иначе
+    // номер последней строки уезжает от текста.
+    return html + '\n ';
+  }
+  // Где именно ошибка. Питон пишет номер строки несколько раз — по разу на
+  // каждый вложенный вызов; нам нужен последний, который относится к НАШЕМУ
+  // коду (у него имя файла в угловых скобках, например <exec>).
+  function питонСтрокаОшибки(текст) {
+    const т = String(текст || '');
+    const re = /File "([^"]*)", line (\d+)/g;
+    let m, найдено = null;
+    while ((m = re.exec(т))) { if (m[1].charAt(0) === '<') найдено = +m[2]; }
+    if (найдено) return найдено;
+    const одна = /line (\d+)/.exec(т);
+    return одна ? +одна[1] : null;
+  }
+
   function питонОбрезать(текст) {
     const строки = String(текст || '').split('\n');
     if (строки.length <= ПИТОН_СТРОК_ХРАНИМ) return текст;
@@ -6205,19 +6260,60 @@
     it.bar.insertBefore(tools, it.bar.querySelector('.wgt-del'));
 
     const wrap = document.createElement('div'); wrap.className = 'py-wrap';
+    // Редактор: слева номера строк, дальше слой с раскраской, а поверх него —
+    // настоящее поле ввода, прозрачное. Три части обязаны совпадать по шрифту
+    // и высоте строки до пикселя, иначе раскраска «поедет» относительно букв.
+    const редактор = document.createElement('div'); редактор.className = 'py-editor';
+    const номера = document.createElement('div'); номера.className = 'py-lines';
+    const окно = document.createElement('div'); окно.className = 'py-pane';
+    const цвета = document.createElement('pre'); цвета.className = 'py-hl'; цвета.setAttribute('aria-hidden', 'true');
     const поле = document.createElement('textarea');
-    поле.className = 'py-code'; поле.spellcheck = false;
+    поле.className = 'py-code'; поле.spellcheck = false; поле.wrap = 'off';
     поле.setAttribute('autocapitalize', 'off'); поле.setAttribute('autocorrect', 'off');
     поле.placeholder = 'Пишите код и нажмите ▶\n\n' + ПИТОН_ПРИМЕР;
+    окно.appendChild(цвета); окно.appendChild(поле);
+    редактор.appendChild(номера); редактор.appendChild(окно);
     const вывод = document.createElement('div'); вывод.className = 'py-out';
     const ручка = document.createElement('div'); ручка.className = 'py-grip'; ручка.title = 'Потянуть — изменить размер окна';
-    wrap.appendChild(поле); wrap.appendChild(вывод); wrap.appendChild(ручка);
+    wrap.appendChild(редактор); wrap.appendChild(вывод); wrap.appendChild(ручка);
     it.body.appendChild(wrap);
     it.поле = поле; it.выводЭл = вывод;
 
     const состояниеЭл = tools.querySelector('.py-state');
     const кнПуск = tools.querySelector('.py-run');
     const кнСтоп = tools.querySelector('.py-stop');
+
+    let битаяСтрока = 0;       // строка, на которой споткнулся питон
+    let полнаяОшибка = '';     // полный рассказ питона — для «подробнее»
+    function перерисовать() {
+      const код = поле.value;
+      цвета.innerHTML = питонВЦвета(код);
+      const всего = код.split('\n').length;
+      let н = '';
+      for (let i = 1; i <= всего; i++) н += '<i' + (i === битаяСтрока ? ' class="pl-bad"' : '') + '>' + i + '</i>';
+      номера.innerHTML = н;
+      подогнатьСвиток();
+    }
+    // Слой раскраски и номера едут за полем: прокручивает всё только поле, по
+    // нему и равняемся.
+    function подогнатьСвиток() {
+      цвета.scrollTop = поле.scrollTop; цвета.scrollLeft = поле.scrollLeft;
+      номера.scrollTop = поле.scrollTop;
+    }
+    поле.addEventListener('scroll', подогнатьСвиток);
+    // Отметить строку с ошибкой и показать её человеку.
+    function отметитьОшибку(строка) {
+      битаяСтрока = строка || 0;
+      перерисовать();
+      if (!битаяСтрока) return;
+      const строк = Math.max(1, поле.value.split('\n').length);
+      const высотаСтроки = поле.scrollHeight / строк;
+      const верх = (битаяСтрока - 1) * высотаСтроки;
+      if (верх < поле.scrollTop || верх > поле.scrollTop + поле.clientHeight - высотаСтроки) {
+        поле.scrollTop = Math.max(0, верх - поле.clientHeight / 2);
+        подогнатьСвиток();
+      }
+    }
 
     function applySize() {
       const d = it.el.data;
@@ -6234,7 +6330,24 @@
         img.src = 'data:image/png;base64,' + б;
         вывод.appendChild(img);
       });
-      if (ошибка) { const e = document.createElement('div'); e.className = 'py-err'; e.textContent = ошибка; вывод.appendChild(e); }
+      if (ошибка) {
+        const e = document.createElement('div'); e.className = 'py-err'; e.textContent = ошибка;
+        вывод.appendChild(e);
+        // Полный рассказ питона прячем, но не выбрасываем: в ошибке внутри
+        // библиотеки суть бывает именно там, и преподавателю она нужна.
+        if (полнаяОшибка && полнаяОшибка.replace(/\s+/g, ' ') !== ошибка.replace(/\s+/g, ' ')) {
+          const кн = document.createElement('button');
+          кн.className = 'py-more'; кн.type = 'button'; кн.textContent = 'подробнее';
+          const весь = document.createElement('pre');
+          весь.className = 'py-raw'; весь.textContent = полнаяОшибка; весь.hidden = true;
+          кн.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            весь.hidden = !весь.hidden;
+            кн.textContent = весь.hidden ? 'подробнее' : 'свернуть';
+          });
+          вывод.appendChild(кн); вывод.appendChild(весь);
+        }
+      }
       вывод.scrollTop = вывод.scrollHeight;
     }
     function render() {
@@ -6242,7 +6355,8 @@
       // Пока человек печатает, чужую правку в поле не вписываем: курсор
       // прыгнул бы в начало посреди слова. Свежий текст он увидит, как только
       // уйдёт из поля.
-      if (document.activeElement !== поле && поле.value !== (d.code || '')) поле.value = d.code || '';
+      if (document.activeElement !== поле && поле.value !== (d.code || '')) { поле.value = d.code || ''; битаяСтрока = 0; }
+      перерисовать();
       показать(d.out || '', d.err || '', d.imgs || []);
       applySize();
       поле.readOnly = !!viewOnly;
@@ -6256,6 +6370,10 @@
     let былоДоПравки = null;
     поле.addEventListener('focus', () => { былоДоПравки = clone(it.el); });
     поле.addEventListener('input', () => {
+      // Раскраску обновляем всегда, даже наблюдателю: она ничего не меняет в
+      // объекте, это только показ.
+      if (битаяСтрока) битаяСтрока = 0;   // код поменяли — метка ошибки устарела
+      перерисовать();
       if (viewOnly) return;
       it.el.data.code = поле.value;
       if (it.saveTimer) clearTimeout(it.saveTimer);
@@ -6267,16 +6385,83 @@
       if ((былоДоПравки.data.code || '') !== (it.el.data.code || '')) histUpd(былоДоПравки, it.el);
       былоДоПравки = null;
     });
-    // Отступы в питоне — часть языка, поэтому Tab внутри поля ставит четыре
-    // пробела, а не уводит фокус на следующую кнопку.
+    // ── ОТСТУПЫ ───────────────────────────────────────────────────────────
+    // В питоне сдвиг вправо — часть языка, а не украшение: им показывают, что
+    // внутри «если» и внутри цикла. Поэтому редактор ставит отступ сам.
+    // Вставляем всегда через execCommand: только так правка попадает в
+    // СОБСТВЕННУЮ отмену поля ввода и Ctrl+Z возвращает её по шагам, как
+    // обычный набор. Прямая запись в value отмену стирает начисто.
+    function заменить(н0, н1, текст) {
+      поле.selectionStart = н0; поле.selectionEnd = н1;
+      let вышло = false;
+      try {
+        вышло = текст ? document.execCommand('insertText', false, текст) : document.execCommand('delete');
+      } catch (err) { вышло = false; }
+      if (!вышло) {
+        const v = поле.value;
+        поле.value = v.slice(0, н0) + текст + v.slice(н1);
+      }
+      // Курсор ставим САМИ. Браузеры кладут его после такой правки по-разному,
+      // и после снятия отступа в конце текста он уезжал на строку выше — новая
+      // буква попадала в хвост предыдущей строки.
+      поле.selectionStart = поле.selectionEnd = н0 + текст.length;
+      поле.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    function вставить(текст) { заменить(поле.selectionStart, поле.selectionEnd, текст); }
+    function отступСтроки(строка) { const m = /^[ \t]*/.exec(строка); return m ? m[0] : ''; }
+    // Строка кончается двоеточием (комментарий не в счёт) — значит дальше
+    // вложенный кусок, и следующая строка уходит вправо.
+    function открываетБлок(строка) { return /:\s*$/.test(строка.replace(/#.*$/, '')); }
+    const ПИТОН_ЗАКРЫВАЮТ = /^\s*(return|pass|break|continue|raise)\b/;
     поле.addEventListener('keydown', (e) => {
+      const v = поле.value, н = поле.selectionStart, к = поле.selectionEnd;
+      const началоСтроки = v.lastIndexOf('\n', н - 1) + 1;
+      if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        const текущая = v.slice(началоСтроки, н);
+        let отступ = отступСтроки(текущая);
+        if (открываетБлок(текущая)) отступ += '    ';
+        else if (ПИТОН_ЗАКРЫВАЮТ.test(текущая) && отступ.length >= 4) отступ = отступ.slice(4);
+        вставить('\n' + отступ);
+        return;
+      }
       if (e.key === 'Tab') {
         e.preventDefault();
-        const н = поле.selectionStart, к = поле.selectionEnd;
-        поле.value = поле.value.slice(0, н) + '    ' + поле.value.slice(к);
-        поле.selectionStart = поле.selectionEnd = н + 4;
-        поле.dispatchEvent(new Event('input'));
+        if (н !== к && v.slice(н, к).indexOf('\n') >= 0) {
+          // Выделено несколько строк — двигаем их все разом: это самый частый
+          // способ поправить отступы.
+          const конецБлока = v.indexOf('\n', к) < 0 ? v.length : v.indexOf('\n', к);
+          const кусок = v.slice(началоСтроки, конецБлока);
+          const новый = e.shiftKey
+            ? кусок.split('\n').map((с) => с.replace(/^ {1,4}/, '')).join('\n')
+            : кусок.split('\n').map((с) => '    ' + с).join('\n');
+          заменить(началоСтроки, конецБлока, новый);
+          поле.selectionStart = началоСтроки; поле.selectionEnd = началоСтроки + новый.length;
+          return;
+        }
+        if (e.shiftKey) {
+          const до = v.slice(началоСтроки, н);
+          let убрать = 0;
+          if (/ {4}$/.test(до)) убрать = 4;
+          else if (/^ +$/.test(до)) убрать = до.length;
+          if (убрать > 0) заменить(н - убрать, н, '');
+          return;
+        }
+        // Табуляцию доводим до ближайшего кратного четырём — так столбцы
+        // сходятся, даже если строка начиналась не с ровного отступа.
+        const столбец = н - началоСтроки;
+        вставить(' '.repeat(4 - (столбец % 4)));
         return;
+      }
+      if (e.key === 'Backspace' && н === к) {
+        const до = v.slice(началоСтроки, н);
+        if (до.length >= 4 && /^ +$/.test(до) && до.length % 4 === 0) {
+          // Курсор стоит в отступе — стираем сразу всю ступеньку, а не по
+          // пробелу: иначе на каждый уровень четыре нажатия.
+          e.preventDefault();
+          заменить(н - 4, н, '');
+          return;
+        }
       }
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); пуск(); }
       e.stopPropagation();   // горячие клавиши доски не должны ловить набор кода
@@ -6323,9 +6508,14 @@
           кнСтоп.hidden = true;
           состояние('');
           if (итог && итог.остановлен) { показать(собрано, 'Остановлено', []); return; }
-          const ошибка = итог && итог.ошибка ? питонОшибкаПоРусски(итог.ошибка) : '';
+          полнаяОшибка = (итог && итог.ошибка) ? String(итог.ошибка) : '';
+          const строкаБеды = итог && итог.ошибка ? питонСтрокаОшибки(итог.ошибка) : null;
+          const ошибка = итог && итог.ошибка
+            ? ((строкаБеды ? ('Ошибка в строке ' + строкаБеды + '\n') : '') + питонОшибкаПоРусски(итог.ошибка))
+            : '';
           const картинки = (итог && итог.картинки) || [];
           показать(собрано, ошибка, картинки);
+          отметитьОшибку(строкаБеды);
           // Код мог отработать и ничего не напечатать (например, «x = 2»).
           // Пустая панель в этом случае неотличима от поломки, поэтому
           // говорим прямо.
@@ -6385,8 +6575,31 @@
   // Ошибку питона показываем как есть (в ней номер строки и суть), но самые
   // частые беды новичка подписываем по-русски: английское «IndentationError»
   // семикласснику не говорит ничего.
-  function питонОшибкаПоРусски(текст) {
+  // Из рассказа питона об ошибке оставляем только то, что касается НАШЕГО
+  // кода. Сам питон печатает ещё десяток строк о своих внутренностях
+  // (/lib/python314.zip/_pyodide/_base.py и прочее) — ученику они не говорят
+  // ничего, а суть в них тонет. Полный текст никуда не девается: он
+  // раскрывается кнопкой «подробнее».
+  function питонКороткоОбОшибке(текст) {
     const т = String(текст || '');
+    const все = т.split('\n');
+    let последняя = '', где = -1;
+    for (let i = все.length - 1; i >= 0; i--) { const с = все[i].trim(); if (с) { последняя = с; где = i; break; } }
+    // Перед последней строкой питон показывает сам кусок кода и «галочку» под
+    // местом ошибки — это как раз полезно, оставляем (до трёх строк). Идём
+    // именно от НАЙДЕННОЙ строки, а не от конца текста: в конце обычно пусто,
+    // и отсчёт «минус один» приводил к той же строке — она печаталась дважды.
+    const хвост = [];
+    for (let i = где - 1; i >= 0 && хвост.length < 3; i--) {
+      const с = все[i];
+      if (!с.trim()) continue;
+      if (/File "/.test(с) || /Traceback/.test(с)) break;
+      хвост.unshift(с.replace(/^\s{0,4}/, ''));
+    }
+    return хвост.concat(последняя).join('\n') || т;
+  }
+  function питонОшибкаПоРусски(текст) {
+    const т = питонКороткоОбОшибке(текст);
     const подсказки = [
       ['IndentationError', 'не сошлись отступы: в питоне сдвиг вправо — часть языка'],
       ['SyntaxError', 'опечатка в записи: проверьте двоеточие, скобки и кавычки'],
@@ -6400,7 +6613,7 @@
       ['RecursionError', 'слишком глубокая рекурсия'],
     ];
     for (let i = 0; i < подсказки.length; i++) {
-      if (т.indexOf(подсказки[i][0]) >= 0) return т + '\n\n↑ ' + подсказки[i][1];
+      if (String(текст || '').indexOf(подсказки[i][0]) >= 0) return т + '\n↑ ' + подсказки[i][1];
     }
     return т;
   }

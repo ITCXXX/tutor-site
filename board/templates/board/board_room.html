@@ -480,7 +480,8 @@
     .wgt-host .wgt-python .py-wrap {
         background: rgba(255,255,255,.72); border: 1px solid #454b59; border-radius: 0;
     }
-    .wgt-host .wgt-python .py-code { background: transparent; border-bottom: 1px solid #454b59; }
+    .wgt-host .wgt-python .py-editor { background: transparent; border-bottom: 1px solid #454b59; }
+    .wgt-host .wgt-python .py-lines { background: rgba(0,0,0,.04); }
     .wgt-host .wgt-python .py-out { background: transparent; }
     /* В режиме рисования доска намеренно пропускает клики сквозь объекты —
        чтобы можно было чертить прямо поверх них. Значит и ▶ в это время не
@@ -488,13 +489,59 @@
        нельзя было догадаться (окно выглядело живым), поэтому гасим кнопки —
        видно, что сейчас они не работают, и надо взять стрелку. */
     body.board-draw .wgt-host .wgt-python .py-tools { opacity: .35; }
-    .py-wrap { position: relative; display: flex; flex-direction: column; width: 460px; height: 280px; background: #fff; overflow: hidden; }
+    .py-wrap {
+        position: relative; display: flex; flex-direction: column; width: 460px; height: 280px;
+        background: #fff; overflow: hidden;
+        /* Шрифт и высота строки заданы ОДИН раз: их делят между собой три
+           слоя редактора — номера строк, раскраска и поле ввода. Разойдутся
+           хоть на полпикселя — раскраска поедет относительно букв. */
+        --py-font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        --py-pad: 8px;
+    }
+    /* ── РЕДАКТОР КОДА ───────────────────────────────────────────────────
+       Поле ввода красит текст только целиком, одним цветом. Поэтому под ним
+       лежит слой с тем же текстом, уже раскрашенным, а само поле прозрачное:
+       виден лишь курсор. Печатают по-прежнему в настоящее поле — значит целы
+       отмена, выделение и ввод с телефона. */
+    .py-editor {
+        flex: 1 1 58%; min-height: 48px; display: flex; overflow: hidden;
+        border-bottom: 1px solid #e3e3e8; background: #fff;
+    }
+    .py-lines {
+        flex: 0 0 auto; overflow: hidden; padding: var(--py-pad) 6px var(--py-pad) 8px;
+        font: var(--py-font); color: #b6bcc8; text-align: right; user-select: none;
+        background: rgba(0,0,0,.02);
+    }
+    .py-lines i { display: block; font-style: normal; }
+    .py-lines i.pl-bad { color: #dc2626; font-weight: 700; }
+    .py-pane { position: relative; flex: 1 1 auto; min-width: 0; }
+    .py-hl, .py-code {
+        margin: 0; border: 0; padding: var(--py-pad) 10px;
+        font: var(--py-font); tab-size: 4;
+        white-space: pre; word-break: normal; overflow-wrap: normal;
+    }
+    .py-hl {
+        position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+        color: #1f2937; background: transparent;
+    }
+    .py-hl i { font-style: normal; }
     .py-code {
-        flex: 1 1 58%; min-height: 48px; border: 0; border-bottom: 1px solid #e3e3e8; outline: none; resize: none;
-        padding: 8px 10px; background: #fff; color: #1f2937; tab-size: 4;
-        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        position: absolute; inset: 0; width: 100%; height: 100%; resize: none; outline: none;
+        background: transparent; color: transparent; caret-color: #1f2937; overflow: auto;
     }
     .py-code::placeholder { color: #b0b0ba; }
+    /* Выделение полупрозрачное: под ним лежит раскрашенный текст, и плотная
+       заливка спрятала бы его целиком. */
+    .py-code::selection { background: rgba(77,124,254,.28); }
+    /* Цвета кода. Ключевые слова и встроенные имена разведены намеренно:
+       ученику полезно видеть, что print — не часть языка, а просто имя. */
+    .pt-key { color: #7c3aed; font-weight: 600; }
+    .pt-bin { color: #0369a1; }
+    .pt-str { color: #15803d; }
+    .pt-num { color: #b45309; }
+    .pt-com { color: #94a3b8; font-style: italic; }
+    .pt-name { color: #2563eb; font-weight: 600; }
+    .pt-dec { color: #b45309; }
     .py-out {
         flex: 1 1 42%; overflow: auto; padding: 6px 10px; background: #fbfbfd; color: #2b2b33;
         white-space: pre-wrap; overflow-wrap: break-word;
@@ -504,6 +551,14 @@
     /* Строка ожидания: не вывод программы, а рассказ о том, что сейчас
        происходит. Поэтому светлее и курсивом — чтобы её не спутали с ответом. */
     .py-out .py-wait { color: #6b7280; font-style: italic; }
+    /* Полный рассказ питона об ошибке — под кнопкой: ученику нужна суть, а
+       преподавателю иногда и вся цепочка вызовов. */
+    .py-out .py-more {
+        border: 0; background: transparent; color: #6b7280; cursor: pointer;
+        font: inherit; text-decoration: underline dotted; padding: 2px 0;
+    }
+    .py-out .py-more:hover { color: #2b5bd7; }
+    .py-out .py-raw { margin: 2px 0 0; white-space: pre-wrap; color: #8a8f9c; font: inherit; }
     .py-out img { display: block; max-width: 100%; margin: 6px 0; border-radius: 4px; }
     .py-tools { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
     .py-tools .py-state { font-size: 11px; color: #6b6b76; }
