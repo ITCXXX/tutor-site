@@ -82,7 +82,15 @@ _BOARD_FILES = [
 # Заодно файлы не попадают под служебного работника (он ловит только /static/),
 # а он для этой рамки всё равно вреден: отдаёт ей ответы, которых ей брать
 # нельзя, и запрос падает.
-_PYODIDE_DIR = os.path.join(settings.BASE_DIR, 'static', 'vendor', 'pyodide')
+#
+# И ПОЭТОМУ ЖЕ ОНИ ЛЕЖАТ НЕ В static/. Сборка статики на сервере не просто
+# копирует файлы: она читает каждый js и css и переписывает внутри них ссылки
+# на соседние файлы, добавляя к именам отпечаток. В pyodide.js есть ссылка на
+# карту исходников (pyodide.js.map), которой в нашей сборке нет, — и сборка
+# падала с ошибкой, обрывая всю выкладку на полпути: сайт оставался со старым
+# кодом. Вынесли папку из static/ — сборка её больше не видит, а отдаём мы эти
+# файлы сами, вьюхой ниже.
+_PYODIDE_DIR = os.path.join(settings.BASE_DIR, 'vendor', 'pyodide')
 _PYODIDE_TYPES = {
     '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json',
     '.wasm': 'application/wasm', '.zip': 'application/zip', '.whl': 'application/zip',
